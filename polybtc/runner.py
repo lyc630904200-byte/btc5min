@@ -180,23 +180,61 @@ def book_matches_market(market: MarketState, direction: Direction, book: OrderBo
     return True
 
 
+async def emit_rest_books(client: PolymarketClient, market: MarketState, queue: asyncio.Queue) -> None:
+    up_book, down_book = await asyncio.gather(client.book(market.up_token_id), client.book(market.down_token_id))
+    current_market = market
+    if book_matches_market(current_market, Direction.UP, up_book):
+        await queue.put(("book", (Direction.UP, up_book)))
+    if book_matches_market(current_market, Direction.DOWN, down_book):
+        await queue.put(("book", (Direction.DOWN, down_book)))
+
+
 async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
+    timeout_seconds = max(poll_ms / 1000, 0.2)
     while True:
         market = engine.market
         if not market:
             await asyncio.sleep(0.2)
             continue
+
+        current_market_id = market.condition_id
+        websocket_active = False
+        stream = client.book_stream((market.up_token_id, market.down_token_id))
         try:
-            market_id = market.condition_id
-            up_book, down_book = await asyncio.gather(client.book(market.up_token_id), client.book(market.down_token_id))
-            current_market = engine.market
-            if current_market and current_market.condition_id == market_id:
-                if book_matches_market(market, Direction.UP, up_book) and book_matches_market(market, Direction.DOWN, down_book):
-                    await queue.put(("book", (Direction.UP, up_book)))
-                    await queue.put(("book", (Direction.DOWN, down_book)))
+            try:
+                await emit_rest_books(client, market, queue)
+            except Exception as exc:
+                await queue.put(("error", {"source": "clob", "error": str(exc)}))
+
+            while True:
+                current_market = engine.market
+                if not current_market or current_market.condition_id != current_market_id:
+                    break
+                try:
+                    token_id, book = await asyncio.wait_for(stream.__anext__(), timeout=timeout_seconds)
+                except asyncio.TimeoutError:
+                    continue
+                except StopAsyncIteration:
+                    break
+                websocket_active = True
+                current_market = engine.market
+                if not current_market or current_market.condition_id != current_market_id:
+                    break
+                if token_id == current_market.up_token_id:
+                    direction = Direction.UP
+                elif token_id == current_market.down_token_id:
+                    direction = Direction.DOWN
+                else:
+                    continue
+                if book_matches_market(current_market, direction, book):
+                    await queue.put(("book", (direction, book)))
         except Exception as exc:
-            await queue.put(("error", {"source": "clob", "error": str(exc)}))
-        await asyncio.sleep(poll_ms / 1000)
+            source = "clob_ws" if websocket_active else "clob"
+            await queue.put(("error", {"source": source, "error": str(exc)}))
+            await asyncio.sleep(timeout_seconds)
+        finally:
+            await stream.aclose()
+        await asyncio.sleep(0.05)
 
 
 def flush_engine_updates(engine: PaperEngine, journal: RunJournal, counters: dict[str, int]) -> None:

@@ -14,6 +14,7 @@ class SourceConfig(BaseModel):
     binance_ws_url: str = "wss://stream.binance.com:9443/ws/btcusdt@trade"
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
+    clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     poly_book_poll_ms: int = 500
     market_refresh_seconds: int = 20
     max_start_price_lag_ms: int = 2000
