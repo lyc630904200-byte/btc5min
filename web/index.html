@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>polybtc 实时面板</title>
+  <style>
+    :root {
+      --bg: #f5f7f6;
+      --panel: #ffffff;
+      --panel-soft: #fafbfb;
+      --text: #15201a;
+      --muted: #65716c;
+      --line: #dce2df;
+      --green: #14805a;
+      --green-soft: #def4ea;
+      --red: #bd4438;
+      --red-soft: #f8e4e0;
+      --blue: #2c6f98;
+      --blue-soft: #deedf5;
+      --amber: #a86614;
+      --amber-soft: #f8ecd9;
+      --ink: #0f1713;
+      --shadow: 0 1px 2px rgba(15, 23, 19, .05), 0 8px 22px rgba(15, 23, 19, .04);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+      font-size: 14px;
+    }
+
+    .app { min-height: 100vh; display: grid; grid-template-rows: 58px 1fr; }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .92);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 220px; }
+    .mark { width: 32px; height: 32px; border-radius: 7px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #14805a, #2c6f98 70%, #a86614); font-weight: 800; }
+    h1 { margin: 0; font-size: 16px; line-height: 1; }
+    .subline { margin-top: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .topbar { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-soft);
+      padding: 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+    .dot.live { background: var(--green); }
+    .dot.off { background: var(--red); }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr) minmax(310px, 390px);
+      gap: 14px;
+      padding: 14px;
+      min-height: 0;
+    }
+
+    .stack { display: grid; gap: 14px; align-content: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
+    .panel-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 13px; border-bottom: 1px solid var(--line); background: var(--panel-soft); }
+    .panel-title { font-size: 13px; font-weight: 760; color: var(--ink); white-space: nowrap; }
+    .panel-body { padding: 13px; }
+
+    .kv { display: grid; gap: 9px; }
+    .kv-row { display: grid; grid-template-columns: 108px 1fr; gap: 10px; min-height: 26px; align-items: center; }
+    .kv-label { color: var(--muted); font-size: 12px; }
+    .kv-value { text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+    .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .metric { min-height: 74px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: grid; align-content: space-between; gap: 8px; }
+    .metric-name { color: var(--muted); font-size: 12px; }
+    .metric-value { color: var(--ink); font-size: 23px; line-height: 1; font-weight: 780; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+    .tag { display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 0 8px; border-radius: 5px; font-size: 12px; font-weight: 740; white-space: nowrap; }
+    .tag.green { color: var(--green); background: var(--green-soft); }
+    .tag.red { color: var(--red); background: var(--red-soft); }
+    .tag.blue { color: var(--blue); background: var(--blue-soft); }
+    .tag.amber { color: var(--amber); background: var(--amber-soft); }
+
+    .chart-wrap { height: 220px; padding: 12px; }
+    canvas { width: 100%; height: 100%; display: block; }
+
+    .book-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .book-side { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+    .book-title { height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 760; }
+    .levels { display: grid; }
+    .level { position: relative; display: grid; grid-template-columns: 58px 1fr 72px; gap: 8px; align-items: center; height: 28px; padding: 0 9px; border-bottom: 1px solid #edf1ef; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .level:last-child { border-bottom: 0; }
+    .level span { position: relative; z-index: 1; }
+    .level span:last-child { text-align: right; }
+    .bar { position: absolute; right: 0; top: 4px; bottom: 4px; border-radius: 4px 0 0 4px; opacity: .75; }
+    .bar.ask { background: var(--red-soft); }
+    .bar.bid { background: var(--green-soft); }
+
+    .signal { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 12px; align-items: stretch; }
+    .signal-box { border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-height: 116px; display: grid; align-content: space-between; }
+    .signal-box.up { border-color: #addfca; background: var(--green-soft); }
+    .signal-box.down { border-color: #edb7ae; background: var(--red-soft); }
+    .signal-box.flat { border-color: #e7c991; background: var(--amber-soft); }
+    .signal-big { font-size: 28px; line-height: 1; font-weight: 820; }
+    .small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .reason-list { display: grid; gap: 8px; }
+    .reason { min-height: 28px; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .reason strong { font-weight: 720; }
+
+    .timeline { display: grid; gap: 8px; max-height: 392px; overflow: auto; padding-right: 4px; }
+    .event-row { display: grid; grid-template-columns: 68px 1fr; gap: 9px; min-height: 34px; align-items: center; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 7px 9px; font-size: 12px; }
+    .mono { font-variant-numeric: tabular-nums; }
+
+    @media (max-width: 1180px) {
+      .shell { grid-template-columns: 320px 1fr; }
+      .right { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 800px) {
+      header { min-height: 58px; height: auto; align-items: flex-start; padding: 12px 14px; flex-direction: column; }
+      .topbar { width: 100%; justify-content: flex-start; }
+      .shell { grid-template-columns: 1fr; padding: 10px; }
+      .book-grid, .signal, .metrics { grid-template-columns: 1fr; }
+      .metric-value { font-size: 21px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="mark">P</div>
+        <div>
+          <h1>polybtc 实时面板</h1>
+          <div class="subline" id="runPath">等待运行数据</div>
+        </div>
+      </div>
+      <div class="topbar">
+        <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
+        <div class="pill"><span id="wsText">WebSocket</span></div>
+        <div class="pill"><span id="updatedAt">--</span></div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="stack">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">市场</div><div class="tag blue" id="marketState">--</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">窗口</div><div class="kv-value" id="marketWindow">--</div></div>
+            <div class="kv-row"><div class="kv-label">Slug</div><div class="kv-value" id="marketSlug">--</div></div>
+            <div class="kv-row"><div class="kv-label">阈值</div><div class="kv-value" id="threshold">--</div></div>
+            <div class="kv-row"><div class="kv-label">来源</div><div class="kv-value" id="thresholdSource">--</div></div>
+            <div class="kv-row"><div class="kv-label">剩余</div><div class="kv-value" id="timeLeft">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">行情</div><div class="tag" id="edgeTag">--</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">Binance BTC</div><div class="metric-value" id="btcPrice">--</div></div>
+            <div class="metric"><div class="metric-name">价格偏离</div><div class="metric-value" id="edgeValue">--</div></div>
+            <div class="metric"><div class="metric-name">UP 卖一</div><div class="metric-value" id="upAsk">--</div></div>
+            <div class="metric"><div class="metric-name">DOWN 卖一</div><div class="metric-value" id="downAsk">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">统计</div><div class="tag amber" id="summaryState">paper</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">信号</div><div class="metric-value" id="signals">0</div></div>
+            <div class="metric"><div class="metric-name">成交</div><div class="metric-value" id="fills">0</div></div>
+            <div class="metric"><div class="metric-name">拒绝</div><div class="metric-value" id="rejections">0</div></div>
+            <div class="metric"><div class="metric-name">PnL</div><div class="metric-value" id="pnl">0.00</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="stack">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">价格偏离</div><div class="tag blue" id="tickAge">--</div></div>
+          <div class="chart-wrap"><canvas id="priceCanvas" width="900" height="260"></canvas></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">盘口</div><div class="tag blue" id="bookAge">--</div></div>
+          <div class="panel-body book-grid">
+            <div class="book-side">
+              <div class="book-title"><span>UP / YES</span><span id="upTop">--</span></div>
+              <div class="levels" id="upLevels"></div>
+            </div>
+            <div class="book-side">
+              <div class="book-title"><span>DOWN / NO</span><span id="downTop">--</span></div>
+              <div class="levels" id="downLevels"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">决策</div><div class="tag" id="decisionTag">等待</div></div>
+          <div class="panel-body signal">
+            <div class="signal-box flat" id="signalBox">
+              <div class="small">当前状态</div>
+              <div class="signal-big" id="signalText">观察</div>
+              <div class="small" id="signalMeta">--</div>
+            </div>
+            <div class="reason-list" id="reasonList"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="stack right">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">持仓</div><div class="tag blue" id="positionState">空仓</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">方向</div><div class="metric-value" id="posDir">--</div></div>
+            <div class="metric"><div class="metric-name">均价</div><div class="metric-value" id="posEntry">--</div></div>
+            <div class="metric"><div class="metric-name">数量</div><div class="metric-value" id="posQty">--</div></div>
+            <div class="metric"><div class="metric-name">浮动</div><div class="metric-value" id="posUnrealized">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">最近事件</div><div class="tag amber" id="eventCount">0</div></div>
+          <div class="panel-body"><div class="timeline" id="timeline"></div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const history = [];
+    let latest = null;
+    let reconnectTimer = null;
+
+    function fmtNumber(value, digits = 2) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
+      return Number(value).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
+
+    function fmtPrice(value) { return fmtNumber(value, 2); }
+    function fmtProb(value) { return value === null || value === undefined ? '--' : Number(value).toFixed(2); }
+    function fmtTime(value) {
+      if (!value) return '--';
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? '--' : d.toLocaleTimeString('zh-CN', { hour12: false });
+    }
+
+    function secondsLeft(market) {
+      if (!market?.end_time) return null;
+      return Math.max(0, Math.floor((new Date(market.end_time).getTime() - Date.now()) / 1000));
+    }
+
+    function bestAsk(book) {
+      const asks = book?.asks || [];
+      return asks.length ? Math.min(...asks.map((x) => Number(x.price))) : null;
+    }
+
+    function bestBid(book) {
+      const bids = book?.bids || [];
+      return bids.length ? Math.max(...bids.map((x) => Number(x.price))) : null;
+    }
+
+    function classForEdge(edge) {
+      if (edge === null || Math.abs(edge) < 15) return 'amber';
+      return edge > 0 ? 'green' : 'red';
+    }
+
+    function setConnection(status) {
+      const dot = $('connDot');
+      dot.className = 'dot ' + (status === 'live' ? 'live' : status === 'off' ? 'off' : '');
+      $('connText').textContent = status === 'live' ? '实时' : status === 'off' ? '断线' : '连接中';
+    }
+
+    function updateHistory(tick, market) {
+      if (!tick?.price) return;
+      const threshold = market?.threshold_price;
+      const edge = threshold ? Number(tick.price) - Number(threshold) : null;
+      const last = history[history.length - 1];
+      if (last && last.time === tick.received_at) return;
+      history.push({ time: tick.received_at, price: Number(tick.price), threshold: threshold ? Number(threshold) : null, edge });
+      while (history.length > 180) history.shift();
+    }
+
+    function drawChart() {
+      const canvas = $('priceCanvas');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, w, h);
+      if (!history.length) {
+        ctx.fillStyle = '#65716c';
+        ctx.fillText('等待 tick', 24, 32);
+        return;
+      }
+      const values = history.map((x) => x.price);
+      const thresholds = history.map((x) => x.threshold).filter((x) => x !== null);
+      const min = Math.min(...values, ...thresholds) - 8;
+      const max = Math.max(...values, ...thresholds) + 8;
+      const y = (v) => h - 24 - ((v - min) / Math.max(1, max - min)) * (h - 48);
+      const x = (i) => 22 + (i / Math.max(1, history.length - 1)) * (w - 44);
+      const lastThreshold = history.slice().reverse().find((p) => p.threshold !== null)?.threshold;
+      if (lastThreshold !== undefined) {
+        ctx.strokeStyle = '#dce2df';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(18, y(lastThreshold));
+        ctx.lineTo(w - 18, y(lastThreshold));
+        ctx.stroke();
+        ctx.fillStyle = '#65716c';
+        ctx.fillText(`阈值 ${fmtPrice(lastThreshold)}`, 24, y(lastThreshold) - 8);
+      }
+      ctx.strokeStyle = '#2c6f98';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      history.forEach((p, i) => i ? ctx.lineTo(x(i), y(p.price)) : ctx.moveTo(x(i), y(p.price)));
+      ctx.stroke();
+      const last = history[history.length - 1];
+      ctx.fillStyle = classForEdge(last.edge) === 'green' ? '#14805a' : classForEdge(last.edge) === 'red' ? '#bd4438' : '#a86614';
+      ctx.beginPath();
+      ctx.arc(x(history.length - 1), y(last.price), 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function renderLevels(id, book) {
+      const target = $(id);
+      if (!book) {
+        target.innerHTML = '<div class="level"><span>--</span><span></span><span>--</span></div>';
+        return;
+      }
+      const asks = [...(book.asks || [])].sort((a, b) => Number(b.price) - Number(a.price)).slice(-8).map((x) => ['ask', Number(x.price), Number(x.size)]);
+      const bids = [...(book.bids || [])].sort((a, b) => Number(b.price) - Number(a.price)).slice(0, 8).map((x) => ['bid', Number(x.price), Number(x.size)]);
+      const levels = asks.concat(bids);
+      const maxSize = Math.max(1, ...levels.map(([, , size]) => size));
+      target.innerHTML = levels.map(([kind, price, size]) => {
+        const pct = Math.max(6, Math.min(100, size / maxSize * 100));
+        return `<div class="level"><div class="bar ${kind}" style="width:${pct}%"></div><span>${price.toFixed(2)}</span><span></span><span>${size.toFixed(2)}</span></div>`;
+      }).join('');
+    }
+
+    function describeEvent(event) {
+      const type = event?.type || 'event';
+      const p = event?.payload || {};
+      if (type === 'market') return ['市场', p.slug || '--', 'blue'];
+      if (type === 'tick') return ['行情', `BTC ${fmtPrice(p.price)}`, 'blue'];
+      if (type === 'book') return ['盘口', `${p.direction || ''} bid ${fmtProb(p.best_bid ?? bestBid(p))} ask ${fmtProb(p.best_ask ?? bestAsk(p))}`, 'amber'];
+      if (type === 'signal') return ['信号', `${p.direction || ''} edge ${fmtNumber(p.edge_usd, 0)}`, 'green'];
+      if (type === 'fill') return ['成交', `${p.side || ''} ${p.direction || ''} ${fmtProb(p.avg_price)}`, 'green'];
+      if (type === 'exit') return ['退出', `${p.reason || ''} ${fmtNumber(p.pnl, 2)}`, 'red'];
+      if (type === 'error') return ['错误', p.error || '--', 'red'];
+      return [type, JSON.stringify(p).slice(0, 80), 'amber'];
+    }
+
+    function render(snapshot) {
+      latest = snapshot;
+      const market = snapshot.market;
+      const tick = snapshot.tick;
+      const upBook = snapshot.books?.UP;
+      const downBook = snapshot.books?.DOWN;
+      const summary = snapshot.summary || {};
+      const position = snapshot.open_position;
+      updateHistory(tick, market);
+
+      $('runPath').textContent = snapshot.output_dir || '等待运行数据';
+      $('updatedAt').textContent = fmtTime(snapshot.created_at);
+      $('marketState').textContent = market ? (market.threshold_price ? '已定阈值' : '等开盘') : '未发现';
+      $('marketState').className = 'tag ' + (market?.threshold_price ? 'green' : market ? 'amber' : 'red');
+      $('marketWindow').textContent = market ? `${fmtTime(market.start_time)} - ${fmtTime(market.end_time)}` : '--';
+      $('marketSlug').textContent = market?.slug || '--';
+      $('threshold').textContent = market?.threshold_price ? fmtPrice(market.threshold_price) : '--';
+      $('thresholdSource').textContent = market?.threshold_source || '--';
+      const left = secondsLeft(market);
+      $('timeLeft').textContent = left === null ? '--' : `${left}s`;
+
+      const threshold = market?.threshold_price ? Number(market.threshold_price) : null;
+      const price = tick?.price ? Number(tick.price) : null;
+      const edge = threshold !== null && price !== null ? price - threshold : null;
+      $('btcPrice').textContent = fmtPrice(price);
+      $('edgeValue').textContent = edge === null ? '--' : `${edge > 0 ? '+' : ''}${fmtNumber(edge, 2)}`;
+      $('edgeTag').textContent = edge === null ? '--' : `${edge > 0 ? '+' : ''}${fmtNumber(edge, 0)} USD`;
+      $('edgeTag').className = 'tag ' + classForEdge(edge);
+      $('upAsk').textContent = fmtProb(bestAsk(upBook));
+      $('downAsk').textContent = fmtProb(bestAsk(downBook));
+      $('upTop').textContent = `bid ${fmtProb(bestBid(upBook))} / ask ${fmtProb(bestAsk(upBook))}`;
+      $('downTop').textContent = `bid ${fmtProb(bestBid(downBook))} / ask ${fmtProb(bestAsk(downBook))}`;
+      $('tickAge').textContent = tick?.received_at ? fmtTime(tick.received_at) : '--';
+      $('bookAge').textContent = upBook?.timestamp ? fmtTime(upBook.timestamp) : '--';
+
+      $('signals').textContent = summary.signals ?? 0;
+      $('fills').textContent = summary.fills ?? 0;
+      $('rejections').textContent = summary.rejections ?? 0;
+      $('pnl').textContent = fmtNumber(summary.realized_pnl ?? 0, 2);
+      $('pnl').style.color = Number(summary.realized_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+
+      const lastRejection = snapshot.last_rejection?.reason;
+      const lastEvent = snapshot.event;
+      let mode = 'flat';
+      let signalText = '观察';
+      let meta = lastRejection || '--';
+      if (position) {
+        mode = position.direction === 'UP' ? 'up' : 'down';
+        signalText = `持有 ${position.direction}`;
+        meta = `entry ${fmtProb(position.entry_price)}`;
+      } else if (lastEvent?.type === 'signal') {
+        mode = lastEvent.payload.direction === 'UP' ? 'up' : 'down';
+        signalText = `买入 ${lastEvent.payload.direction}`;
+        meta = `edge ${fmtNumber(lastEvent.payload.edge_usd, 0)}`;
+      }
+      $('signalBox').className = `signal-box ${mode}`;
+      $('signalText').textContent = signalText;
+      $('signalMeta').textContent = meta;
+      $('decisionTag').textContent = position ? '持仓' : lastRejection ? '拒绝' : '等待';
+      $('decisionTag').className = 'tag ' + (position ? 'green' : lastRejection ? 'amber' : 'blue');
+      const reasons = [
+        ['阈值', market?.threshold_price ? fmtPrice(market.threshold_price) : '等待开盘'],
+        ['偏离', edge === null ? '--' : `${edge > 0 ? '+' : ''}${fmtNumber(edge, 2)}`],
+        ['UP 盘口', $('upTop').textContent],
+        ['DOWN 盘口', $('downTop').textContent],
+        ['最近拒绝', lastRejection || '--']
+      ];
+      $('reasonList').innerHTML = reasons.map(([k, v]) => `<div class="reason"><strong>${k}</strong><span class="mono">${v}</span></div>`).join('');
+
+      $('positionState').textContent = position ? '持仓' : '空仓';
+      $('positionState').className = 'tag ' + (position ? 'green' : 'blue');
+      $('posDir').textContent = position?.direction || '--';
+      $('posEntry').textContent = fmtProb(position?.entry_price);
+      $('posQty').textContent = position?.quantity ? fmtNumber(position.quantity, 2) : '--';
+      const bid = position?.direction === 'UP' ? bestBid(upBook) : position?.direction === 'DOWN' ? bestBid(downBook) : null;
+      const unrealized = position && bid !== null ? Number(position.quantity) * (Number(bid) - Number(position.entry_price)) : null;
+      $('posUnrealized').textContent = unrealized === null ? '--' : fmtNumber(unrealized, 2);
+      $('posUnrealized').style.color = unrealized === null || unrealized >= 0 ? 'var(--green)' : 'var(--red)';
+
+      renderLevels('upLevels', upBook);
+      renderLevels('downLevels', downBook);
+      drawChart();
+
+      const events = (snapshot.events || []).slice(-45).reverse();
+      $('eventCount').textContent = snapshot.events?.length || 0;
+      $('timeline').innerHTML = events.map((event) => {
+        const [type, text, color] = describeEvent(event);
+        return `<div class="event-row"><span class="tag ${color}">${type}</span><span>${text}</span></div>`;
+      }).join('') || '<div class="event-row"><span class="tag amber">等待</span><span>--</span></div>';
+    }
+
+    async function loadInitial() {
+      try {
+        const response = await fetch('/api/state', { cache: 'no-store' });
+        const state = await response.json();
+        render(state);
+        connectWebSocket(state.ws_url);
+      } catch (error) {
+        setConnection('off');
+        $('wsText').textContent = String(error).slice(0, 80);
+        scheduleReconnect();
+      }
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        loadInitial();
+      }, 1500);
+    }
+
+    function connectWebSocket(url) {
+      if (!url) {
+        setConnection('off');
+        scheduleReconnect();
+        return;
+      }
+      setConnection('pending');
+      $('wsText').textContent = url;
+      const ws = new WebSocket(url);
+      ws.onopen = () => setConnection('live');
+      ws.onmessage = (event) => render(JSON.parse(event.data));
+      ws.onclose = () => { setConnection('off'); scheduleReconnect(); };
+      ws.onerror = () => { setConnection('off'); ws.close(); };
+    }
+
+    setInterval(() => { if (latest) render(latest); }, 1000);
+    loadInitial();
+  </script>
+</body>
+</html>

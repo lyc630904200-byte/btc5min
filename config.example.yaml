@@ -1,0 +1,33 @@
+data_dir: data
+
+sources:
+  market_slug: btc-updown-5m-1783704300
+  binance_symbol: BTCUSDT
+  binance_rest_url: https://api.binance.com
+  binance_ws_url: wss://stream.binance.com:9443/ws/btcusdt@trade
+  gamma_url: https://gamma-api.polymarket.com
+  clob_url: https://clob.polymarket.com
+  poly_book_poll_ms: 500
+  market_refresh_seconds: 5
+  max_start_price_lag_ms: 2000
+  market_slug_patterns:
+    - bitcoin
+    - btc
+    - up-or-down
+    - updown
+  observe_only_on_unverified_settlement: true
+
+strategy:
+  min_entry_edge_usd: 50
+  stop_edge_usd: 15
+  max_buy_price: 0.75
+  take_profit_ticks: 0.10
+  min_profit_after_slippage: 0.04
+  min_seconds_to_entry: 12
+  force_exit_seconds: 5
+
+risk:
+  max_order_usd: 10
+  max_market_usd: 30
+  max_data_age_ms: 1000
+  max_hold_seconds: 90
