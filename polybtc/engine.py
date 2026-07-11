@@ -30,6 +30,16 @@ class PaperEngine:
             self.books = {}
         self.market_exposure_usd = sum(pos.entry_quote for pos in self.positions if pos.market_id == market.condition_id)
 
+    def book_matches_current_market(self, direction: Direction, book: OrderBookSnapshot) -> bool:
+        if not self.market:
+            return False
+        expected_token = self.market.up_token_id if direction == Direction.UP else self.market.down_token_id
+        if book.token_id != expected_token:
+            return False
+        if book.market_id and book.market_id != self.market.condition_id:
+            return False
+        return True
+
     def set_tick(self, tick: PriceTick) -> None:
         self.tick = tick
         self.capture_dynamic_threshold(tick)
@@ -62,6 +72,9 @@ class PaperEngine:
         return True
 
     def set_book(self, direction: Direction, book: OrderBookSnapshot) -> None:
+        if not self.book_matches_current_market(direction, book):
+            self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_market"})
+            return
         self.books[direction] = book
         self.evaluate(book.timestamp)
 

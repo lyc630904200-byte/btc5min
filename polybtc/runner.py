@@ -171,6 +171,15 @@ async def binance_loop(client: BinanceClient, queue: asyncio.Queue) -> None:
         await queue.put(("error", {"source": "binance", "error": str(exc)}))
 
 
+def book_matches_market(market: MarketState, direction: Direction, book: OrderBookSnapshot) -> bool:
+    expected_token = market.up_token_id if direction == Direction.UP else market.down_token_id
+    if book.token_id != expected_token:
+        return False
+    if book.market_id and book.market_id != market.condition_id:
+        return False
+    return True
+
+
 async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
     while True:
         market = engine.market
@@ -178,9 +187,13 @@ async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asynci
             await asyncio.sleep(0.2)
             continue
         try:
+            market_id = market.condition_id
             up_book, down_book = await asyncio.gather(client.book(market.up_token_id), client.book(market.down_token_id))
-            await queue.put(("book", (Direction.UP, up_book)))
-            await queue.put(("book", (Direction.DOWN, down_book)))
+            current_market = engine.market
+            if current_market and current_market.condition_id == market_id:
+                if book_matches_market(market, Direction.UP, up_book) and book_matches_market(market, Direction.DOWN, down_book):
+                    await queue.put(("book", (Direction.UP, up_book)))
+                    await queue.put(("book", (Direction.DOWN, down_book)))
         except Exception as exc:
             await queue.put(("error", {"source": "clob", "error": str(exc)}))
         await asyncio.sleep(poll_ms / 1000)

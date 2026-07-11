@@ -23,6 +23,7 @@ def market(now: datetime) -> MarketState:
 def book(token_id: str, bid: float, ask: float, now: datetime) -> OrderBookSnapshot:
     return OrderBookSnapshot(
         token_id=token_id,
+        market_id="m1",
         timestamp=now,
         bids=[BookLevel(price=bid, size=100)],
         asks=[BookLevel(price=ask, size=100)],
@@ -148,3 +149,28 @@ def test_engine_does_not_capture_stale_dynamic_threshold() -> None:
     assert captured is False
     assert engine.market is not None
     assert engine.market.threshold_price is None
+
+
+def test_engine_rejects_book_from_wrong_market() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    engine.set_tick(PriceTick(price=118070, received_at=now))
+
+    stale_book = OrderBookSnapshot(
+        token_id="old-up",
+        market_id="old-market",
+        timestamp=now,
+        bids=[BookLevel(price=0.99, size=1000)],
+        asks=[BookLevel(price=0.01, size=1000)],
+    )
+
+    engine.set_book(Direction.UP, stale_book)
+
+    assert Direction.UP not in engine.books
+    assert engine.rejections[-1]["reason"] == "stale_book_market"
+    assert engine.positions == []
+
+    engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
+
+    assert engine.books[Direction.UP].token_id == "up"
