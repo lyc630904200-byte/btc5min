@@ -75,6 +75,10 @@ class PaperEngine:
         if not self.book_matches_current_market(direction, book):
             self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_market"})
             return
+        existing = self.books.get(direction)
+        if existing and book.timestamp < existing.timestamp:
+            self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_timestamp"})
+            return
         self.books[direction] = book
         self.evaluate(book.timestamp)
 

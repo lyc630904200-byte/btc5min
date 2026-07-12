@@ -174,3 +174,18 @@ def test_engine_rejects_book_from_wrong_market() -> None:
     engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
 
     assert engine.books[Direction.UP].token_id == "up"
+
+
+def test_engine_ignores_older_book_for_same_market() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    newer = book("up", 0.60, 0.61, now + timedelta(seconds=2))
+    older = book("up", 0.40, 0.41, now)
+
+    engine.set_book(Direction.UP, newer)
+    engine.set_book(Direction.UP, older)
+
+    assert engine.books[Direction.UP].best_bid == 0.60
+    assert engine.books[Direction.UP].best_ask == 0.61
+    assert engine.rejections[-1]["reason"] == "stale_book_timestamp"

@@ -258,6 +258,17 @@
     const history = [];
     let latest = null;
     let reconnectTimer = null;
+    let renderScheduled = false;
+
+    function scheduleRender(snapshot) {
+      latest = snapshot;
+      if (renderScheduled) return;
+      renderScheduled = true;
+      requestAnimationFrame(() => {
+        renderScheduled = false;
+        if (latest) render(latest);
+      });
+    }
 
     function fmtNumber(value, digits = 2) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
@@ -474,7 +485,7 @@
       try {
         const response = await fetch('/api/state', { cache: 'no-store' });
         const state = await response.json();
-        render(state);
+        scheduleRender(state);
         connectWebSocket(state.ws_url);
       } catch (error) {
         setConnection('off');
@@ -501,12 +512,13 @@
       $('wsText').textContent = url;
       const ws = new WebSocket(url);
       ws.onopen = () => setConnection('live');
-      ws.onmessage = (event) => render(JSON.parse(event.data));
+      ws.onmessage = (event) => scheduleRender(JSON.parse(event.data));
       ws.onclose = () => { setConnection('off'); scheduleReconnect(); };
       ws.onerror = () => { setConnection('off'); ws.close(); };
     }
 
-    setInterval(() => { if (latest) render(latest); }, 1000);
+    const UI_REFRESH_MS = 250;
+    setInterval(() => { if (latest) scheduleRender(latest); }, UI_REFRESH_MS);
     loadInitial();
   </script>
 </body>

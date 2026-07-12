@@ -16,7 +16,7 @@ class SourceConfig(BaseModel):
     clob_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     poly_book_poll_ms: int = 500
-    market_refresh_seconds: int = 20
+    market_refresh_seconds: int = 2
     max_start_price_lag_ms: int = 2000
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])
     observe_only_on_unverified_settlement: bool = True

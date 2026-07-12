@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +37,8 @@ class DashboardHub:
         self.events: list[dict[str, Any]] = []
         self.clients: set[Any] = set()
         self.lock = asyncio.Lock()
+        self.last_push_at = datetime.min.replace(tzinfo=timezone.utc)
+        self.push_interval = timedelta(milliseconds=100)
 
     @property
     def ws_url(self) -> str:
@@ -140,6 +143,12 @@ class DashboardHub:
             snapshot["events"] = list(self.events)
             snapshot["ws_url"] = self.ws_url
             self.latest = snapshot
+            now = datetime.now(timezone.utc)
+            event_type = event.get("type") if isinstance(event, dict) else None
+            should_push = event_type != "tick" or now - self.last_push_at >= self.push_interval
+            if not should_push:
+                return
+            self.last_push_at = now
             message = json.dumps(snapshot, ensure_ascii=False)
             clients = set(self.clients)
         if clients:
@@ -165,6 +174,11 @@ class DashboardHub:
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     hub: DashboardHub
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Pragma", "no-cache")
+        super().end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.startswith("/api/state"):

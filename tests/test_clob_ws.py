@@ -67,7 +67,7 @@ def test_clob_market_parser_accepts_enveloped_messages() -> None:
     assert books["down"].best_ask == 0.56
 
 
-def test_clob_market_ignores_best_bid_ask_without_depth() -> None:
+def test_clob_market_updates_best_bid_ask_from_top_of_book_event() -> None:
     books = {}
     update_books_from_market_message(
         {
@@ -93,9 +93,9 @@ def test_clob_market_ignores_best_bid_ask_without_depth() -> None:
         books,
     )
 
-    assert updates == []
-    assert [(level.price, level.size) for level in books["up"].bids] == [(0.48, 10.0)]
-    assert [(level.price, level.size) for level in books["up"].asks] == [(0.52, 12.0)]
+    assert [token_id for token_id, _ in updates] == ["up"]
+    assert books["up"].best_bid == 0.49
+    assert books["up"].best_ask == 0.51
 
 
 def test_websocket_connections_try_direct_before_env_proxy() -> None:

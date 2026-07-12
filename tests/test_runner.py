@@ -2,8 +2,14 @@ from datetime import datetime, timedelta, timezone
 
 from polybtc.config import AppConfig
 from polybtc.engine import PaperEngine
-from polybtc.models import MarketState
-from polybtc.runner import apply_polymarket_page_threshold, current_market_with_page_threshold, should_retry_threshold, should_keep_current_market
+from polybtc.models import Direction, MarketState
+from polybtc.runner import (
+    apply_polymarket_page_threshold,
+    coalesce_live_events,
+    current_market_with_page_threshold,
+    should_keep_current_market,
+    should_retry_threshold,
+)
 
 
 def market(now: datetime, threshold: float | None, end_delta: timedelta) -> MarketState:
@@ -125,3 +131,25 @@ def test_threshold_retry_is_throttled_by_refresh_interval() -> None:
     next_retry = now + timedelta(seconds=5)
     assert should_retry_threshold(now + timedelta(seconds=1), next_retry) is False
     assert should_retry_threshold(now + timedelta(seconds=5), next_retry) is True
+
+
+def test_coalesce_live_events_keeps_latest_tick_and_books() -> None:
+    events = [
+        ("tick", {"price": 1}),
+        ("book", (Direction.UP, "old-up")),
+        ("book", (Direction.DOWN, "old-down")),
+        ("tick", {"price": 2}),
+        ("book", (Direction.UP, "new-up")),
+        ("market", {"slug": "m1"}),
+        ("tick", {"price": 3}),
+        ("book", (Direction.DOWN, "new-down")),
+    ]
+
+    assert coalesce_live_events(events) == [
+        ("book", (Direction.DOWN, "old-down")),
+        ("tick", {"price": 2}),
+        ("book", (Direction.UP, "new-up")),
+        ("market", {"slug": "m1"}),
+        ("tick", {"price": 3}),
+        ("book", (Direction.DOWN, "new-down")),
+    ]

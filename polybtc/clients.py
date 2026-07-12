@@ -19,6 +19,11 @@ from .models import BookLevel, MarketState, OrderBookSnapshot, PriceTick
 CLOB_SUBSCRIPTION_TYPE = "market"
 
 
+def btc_updown_5m_slugs(now: datetime, *, before: int = 3, after: int = 12) -> list[str]:
+    base = int(now.timestamp()) // 300 * 300
+    return [f"btc-updown-5m-{base + offset * 300}" for offset in range(-before, after + 1)]
+
+
 def direct_websocket_options() -> dict[str, Any]:
     if "proxy" in inspect.signature(websockets.connect).parameters:
         return {"proxy": None}
@@ -122,6 +127,34 @@ def apply_clob_price_change(book: OrderBookSnapshot, payload: dict[str, Any], ch
     )
 
 
+def apply_clob_best_bid_ask(book: OrderBookSnapshot, payload: dict[str, Any]) -> OrderBookSnapshot:
+    bids = list(book.bids)
+    asks = list(book.asks)
+    best_bid = payload.get("best_bid") or payload.get("bid")
+    best_ask = payload.get("best_ask") or payload.get("ask")
+
+    if best_bid is not None:
+        price = float(best_bid)
+        size = next((level.size for level in bids if level.price == price), bids[0].size if bids else book.min_order_size)
+        bids = sort_book_levels(update_levels([level for level in bids if level.price <= price], price, size), reverse=True)
+
+    if best_ask is not None:
+        price = float(best_ask)
+        size = next((level.size for level in asks if level.price == price), asks[0].size if asks else book.min_order_size)
+        asks = sort_book_levels(update_levels([level for level in asks if level.price >= price], price, size), reverse=False)
+
+    return OrderBookSnapshot(
+        token_id=book.token_id,
+        market_id=str(payload.get("market") or book.market_id or ""),
+        timestamp=clob_timestamp(payload.get("timestamp")),
+        bids=bids,
+        asks=asks,
+        min_order_size=book.min_order_size,
+        tick_size=book.tick_size,
+        raw=payload,
+    )
+
+
 def clob_price_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
     changes = payload.get("price_changes")
     if isinstance(changes, list):
@@ -182,6 +215,18 @@ def update_books_from_market_message(
                 updated = apply_clob_price_change(book, payload, change)
                 books[token_id] = updated
                 updates.append((token_id, updated))
+            continue
+
+        if event_type == "best_bid_ask":
+            token_id = str(payload.get("asset_id") or payload.get("token_id") or "")
+            if not token_id:
+                continue
+            book = books.get(token_id)
+            if book is None:
+                continue
+            updated = apply_clob_best_bid_ask(book, payload)
+            books[token_id] = updated
+            updates.append((token_id, updated))
             continue
     return updates
 
@@ -293,12 +338,35 @@ class BinanceClient:
             "server_time": server_time.isoformat(),
         }
 
+    async def rest_price_tick(self) -> PriceTick:
+        response, _, _, _ = await get_direct_first(
+            f"{self.config.binance_rest_url}/api/v3/ticker/price",
+            timeout=5,
+            params={"symbol": self.config.binance_symbol},
+        )
+        payload = response.json()
+        now = datetime.now(timezone.utc)
+        return PriceTick(
+            source="binance_rest",
+            symbol=str(payload.get("symbol") or self.config.binance_symbol),
+            price=float(payload["price"]),
+            exchange_timestamp=now,
+            received_at=now,
+        )
+
     async def trades(self) -> AsyncIterator[PriceTick]:
         while True:
             for options in websocket_option_attempts():
                 connected = False
                 try:
-                    async with websockets.connect(self.config.binance_ws_url, ping_interval=20, **options) as websocket:
+                    async with websockets.connect(
+                        self.config.binance_ws_url,
+                        ping_interval=20,
+                        ping_timeout=20,
+                        close_timeout=5,
+                        open_timeout=5,
+                        **options,
+                    ) as websocket:
                         connected = True
                         async for message in websocket:
                             payload = json.loads(message)
@@ -317,7 +385,12 @@ class BinanceClient:
                     break
                 except Exception:
                     if connected or options == websocket_option_attempts()[-1]:
-                        raise
+                        try:
+                            yield await self.rest_price_tick()
+                        except Exception as exc:
+                            raise ConnectionError(f"binance websocket/rest unavailable: {exc}") from exc
+                        await asyncio.sleep(1)
+                        break
                     continue
 
 
@@ -325,34 +398,16 @@ class PolymarketClient:
     def __init__(self, config: SourceConfig):
         self.config = config
 
-    async def discover_markets(self) -> list[MarketState]:
-        requests: list[tuple[str, dict[str, Any]]] = []
-        if self.config.market_slug:
-            slugs = expand_market_slugs(self.config.market_slug)
-            requests.extend(
-                (f"{self.config.gamma_url}/{path}", {"slug": slug})
-                for slug in slugs
-                for path in ("markets", "events")
-            )
-        requests.extend(
-            (
-                f"{self.config.gamma_url}/markets",
-                {"limit": 500, "offset": offset, "active": "true", "closed": "false"},
-            )
-            for offset in (0, 500, 1000)
-        )
-        requests.extend(
-            (
-                f"{self.config.gamma_url}/markets",
-                {"limit": 100, "active": "true", "closed": "false", "search": query},
-            )
-            for query in ("Bitcoin", "BTC", "up-or-down")
-        )
+    async def _discover_from_requests(
+        self,
+        requests: list[tuple[str, dict[str, Any]]],
+        now: datetime,
+        timeout: float,
+    ) -> list[MarketState]:
         responses = await asyncio.gather(
-            *(get_direct_first(url, timeout=10, params=params) for url, params in requests),
+            *(get_direct_first(url, timeout=timeout, params=params) for url, params in requests),
             return_exceptions=True,
         )
-        now = datetime.now(timezone.utc)
         seen: set[str] = set()
         markets: list[MarketState] = []
         for response in responses:
@@ -369,6 +424,41 @@ class PolymarketClient:
                         seen.add(market.condition_id)
                         markets.append(market)
         return sorted(markets, key=lambda market: market.end_time)
+
+    async def discover_markets(self) -> list[MarketState]:
+        priority_requests: list[tuple[str, dict[str, Any]]] = []
+        now = datetime.now(timezone.utc)
+        if self.config.market_slug:
+            slugs = expand_market_slugs(self.config.market_slug)
+            priority_requests.extend(
+                (f"{self.config.gamma_url}/{path}", {"slug": slug})
+                for slug in slugs
+                for path in ("markets", "events")
+            )
+        priority_requests.extend(
+            (f"{self.config.gamma_url}/markets", {"slug": slug})
+            for slug in btc_updown_5m_slugs(now)
+        )
+        markets = await self._discover_from_requests(priority_requests, now=now, timeout=3)
+        if markets:
+            return markets
+
+        fallback_requests: list[tuple[str, dict[str, Any]]] = []
+        fallback_requests.extend(
+            (
+                f"{self.config.gamma_url}/markets",
+                {"limit": 500, "offset": offset, "active": "true", "closed": "false"},
+            )
+            for offset in (0, 500, 1000)
+        )
+        fallback_requests.extend(
+            (
+                f"{self.config.gamma_url}/markets",
+                {"limit": 100, "active": "true", "closed": "false", "search": query},
+            )
+            for query in ("Bitcoin", "BTC", "up-or-down")
+        )
+        return await self._discover_from_requests(fallback_requests, now=now, timeout=6)
 
     async def current_market(self) -> MarketState | None:
         return choose_current_market(

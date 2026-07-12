@@ -14,6 +14,7 @@ from .models import Direction, MarketState, OrderBookSnapshot, PriceTick
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
 
 
 def run_dir(base: Path) -> Path:
@@ -135,11 +136,37 @@ async def current_market_with_page_threshold(
     return choose_current_market(markets, now=now, max_start_price_lag_ms=max_start_price_lag_ms)
 
 
+async def initialize_current_market(
+    client: PolymarketClient,
+    engine: PaperEngine,
+    journal: RunJournal,
+    output_dir: Path,
+    on_update: UpdateCallback | None,
+) -> None:
+    try:
+        now = datetime.now(timezone.utc)
+        markets = await asyncio.wait_for(client.discover_markets(), timeout=5)
+        market = choose_current_market(
+            markets,
+            now=now,
+            max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
+        )
+    except Exception as exc:
+        journal.latency_row("gamma", "initial_market", False, None, str(exc))
+        return
+    if market is None:
+        return
+    engine.set_market(market)
+    journal.market(market)
+    await emit_update(on_update, live_snapshot(engine, output_dir, "market", market))
+
+
 async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, interval_seconds: int) -> None:
-    last_market_id = None
+    last_market_id = engine.market.condition_id if engine.market else None
     while True:
         try:
-            if engine.market and engine.market.threshold_price is None:
+            now_utc = datetime.now(timezone.utc)
+            if engine.market and engine.market.threshold_price is None and engine.market.end_time > now_utc:
                 try:
                     if await apply_polymarket_page_threshold(client, engine.market):
                         await queue.put(("market", engine.market))
@@ -147,28 +174,40 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
                         continue
                 except Exception as exc:
                     await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
-            if should_keep_current_market(engine):
+            if should_keep_current_market(engine, now=now_utc):
                 await asyncio.sleep(interval_seconds)
                 continue
-            market = await current_market_with_page_threshold(client, engine.config.sources.max_start_price_lag_ms)
+            markets = await client.discover_markets()
+            market = choose_current_market(
+                markets,
+                now=now_utc,
+                max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
+            )
             if market and (market.condition_id != last_market_id or market.threshold_price is None):
-                try:
-                    await apply_polymarket_page_threshold(client, market)
-                except Exception as exc:
-                    await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
                 last_market_id = market.condition_id
                 await queue.put(("market", market))
+                try:
+                    if await apply_polymarket_page_threshold(client, market):
+                        await queue.put(("market", market))
+                except Exception as exc:
+                    await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
         except Exception as exc:
             await queue.put(("error", {"source": "gamma", "error": str(exc)}))
         await asyncio.sleep(interval_seconds)
 
 
 async def binance_loop(client: BinanceClient, queue: asyncio.Queue) -> None:
-    try:
-        async for tick in client.trades():
-            await queue.put(("tick", tick))
-    except Exception as exc:
-        await queue.put(("error", {"source": "binance", "error": str(exc)}))
+    last_emit_at = datetime.min.replace(tzinfo=timezone.utc)
+    while True:
+        try:
+            async for tick in client.trades():
+                if tick.received_at - last_emit_at < BINANCE_TICK_EMIT_INTERVAL:
+                    continue
+                last_emit_at = tick.received_at
+                await queue.put(("tick", tick))
+        except Exception as exc:
+            await queue.put(("error", {"source": "binance", "error": str(exc)}))
+            await asyncio.sleep(1)
 
 
 def book_matches_market(market: MarketState, direction: Direction, book: OrderBookSnapshot) -> bool:
@@ -191,31 +230,55 @@ async def emit_rest_books(client: PolymarketClient, market: MarketState, queue: 
 
 async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
     timeout_seconds = max(poll_ms / 1000, 0.2)
+    rest_refresh_seconds = timeout_seconds
     while True:
         market = engine.market
         if not market:
             await asyncio.sleep(0.2)
             continue
+        if market.end_time <= datetime.now(timezone.utc):
+            await asyncio.sleep(0.05)
+            continue
 
         current_market_id = market.condition_id
         websocket_active = False
         stream = client.book_stream((market.up_token_id, market.down_token_id))
+        next_book_task: asyncio.Task[tuple[str, OrderBookSnapshot]] | None = None
+        rest_task: asyncio.Task[None] | None = None
         try:
-            try:
-                await emit_rest_books(client, market, queue)
-            except Exception as exc:
-                await queue.put(("error", {"source": "clob", "error": str(exc)}))
+            next_book_task = asyncio.create_task(stream.__anext__())
+            rest_task = asyncio.create_task(emit_rest_books(client, market, queue))
+            next_rest_refresh_at = datetime.now(timezone.utc) + timedelta(seconds=rest_refresh_seconds)
 
             while True:
                 current_market = engine.market
-                if not current_market or current_market.condition_id != current_market_id:
+                now = datetime.now(timezone.utc)
+                if not current_market or current_market.condition_id != current_market_id or current_market.end_time <= now:
                     break
                 try:
-                    token_id, book = await asyncio.wait_for(stream.__anext__(), timeout=timeout_seconds)
-                except asyncio.TimeoutError:
-                    continue
+                    wait_tasks = {task for task in (next_book_task, rest_task) if task is not None}
+                    done, _ = await asyncio.wait(wait_tasks, timeout=timeout_seconds)
+                    if rest_task and rest_task in done:
+                        try:
+                            rest_task.result()
+                        except Exception as exc:
+                            await queue.put(("error", {"source": "clob_rest", "error": str(exc)}))
+                        rest_task = None
+                        next_rest_refresh_at = datetime.now(timezone.utc) + timedelta(seconds=rest_refresh_seconds)
+                    if rest_task is None and now >= next_rest_refresh_at:
+                        rest_task = asyncio.create_task(emit_rest_books(client, current_market, queue))
+                    if not done:
+                        continue
+                    if next_book_task not in done:
+                        continue
+                    token_id, book = next_book_task.result()
+                    next_book_task = asyncio.create_task(stream.__anext__())
                 except StopAsyncIteration:
                     break
+                except Exception:
+                    if next_book_task and next_book_task.done():
+                        next_book_task = None
+                    raise
                 websocket_active = True
                 current_market = engine.market
                 if not current_market or current_market.condition_id != current_market_id:
@@ -233,6 +296,18 @@ async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asynci
             await queue.put(("error", {"source": source, "error": str(exc)}))
             await asyncio.sleep(timeout_seconds)
         finally:
+            if next_book_task and not next_book_task.done():
+                next_book_task.cancel()
+                try:
+                    await next_book_task
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+            if rest_task and not rest_task.done():
+                rest_task.cancel()
+                try:
+                    await rest_task
+                except asyncio.CancelledError:
+                    pass
             await stream.aclose()
         await asyncio.sleep(0.05)
 
@@ -249,6 +324,31 @@ def flush_engine_updates(engine: PaperEngine, journal: RunJournal, counters: dic
         counters["exits"] += 1
 
 
+def coalesce_live_events(events: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+    result: list[tuple[str, Any]] = []
+    buffered: dict[tuple[str, str], tuple[int, tuple[str, Any]]] = {}
+
+    def flush_buffered() -> None:
+        for _, event in sorted(buffered.values(), key=lambda item: item[0]):
+            result.append(event)
+        buffered.clear()
+
+    for index, event in enumerate(events):
+        event_type, payload = event
+        if event_type == "tick":
+            buffered[("tick", "latest")] = (index, event)
+            continue
+        if event_type == "book" and isinstance(payload, tuple) and payload:
+            direction = payload[0]
+            direction_key = direction.value if isinstance(direction, Direction) else str(direction)
+            buffered[("book", direction_key)] = (index, event)
+            continue
+        flush_buffered()
+        result.append(event)
+    flush_buffered()
+    return result
+
+
 async def run_live(config: AppConfig, max_seconds: int | None = None, on_update: UpdateCallback | None = None) -> Path:
     output_dir = run_dir(config.data_dir)
     journal = RunJournal(output_dir)
@@ -257,7 +357,8 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
     poly = PolymarketClient(config.sources)
     binance = BinanceClient(config.sources)
     counters = {"signals": 0, "fills": 0, "exits": 0}
-    next_threshold_retry_at = datetime.min.replace(tzinfo=timezone.utc)
+
+    await initialize_current_market(poly, engine, journal, output_dir, on_update)
 
     tasks = [
         asyncio.create_task(market_loop(poly, engine, queue, config.sources.market_refresh_seconds)),
@@ -270,38 +371,29 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
             if max_seconds is not None and (datetime.now(timezone.utc) - started).total_seconds() >= max_seconds:
                 break
             try:
-                event_type, payload = await asyncio.wait_for(queue.get(), timeout=1)
+                pending_events = [await asyncio.wait_for(queue.get(), timeout=1)]
             except asyncio.TimeoutError:
                 continue
-            if event_type == "market":
-                market: MarketState = payload
-                engine.set_market(market)
-                journal.market(market)
-            elif event_type == "tick":
-                tick: PriceTick = payload
-                prior_threshold = engine.market.threshold_price if engine.market else None
-                now_utc = datetime.now(timezone.utc)
-                if engine.market and prior_threshold is None and should_retry_threshold(now_utc, next_threshold_retry_at):
-                    try:
-                        if await apply_polymarket_page_threshold(poly, engine.market):
-                            journal.market(engine.market)
-                    except Exception as exc:
-                        journal.latency_row("polymarket_page", "threshold", False, None, str(exc))
-                    finally:
-                        next_threshold_retry_at = now_utc + timedelta(seconds=max(1, config.sources.market_refresh_seconds))
-                engine.set_tick(tick)
-                journal.tick(tick)
-                if engine.market and prior_threshold is None and engine.market.threshold_price is not None:
-                    journal.market(engine.market)
-            elif event_type == "book":
-                direction, book = payload
-                assert isinstance(book, OrderBookSnapshot)
-                engine.set_book(direction, book)
-                journal.book(direction.value, book)
-            elif event_type == "error":
-                journal.latency_row(payload.get("source", "unknown"), "stream", False, None, payload.get("error", ""))
-            flush_engine_updates(engine, journal, counters)
-            await emit_update(on_update, live_snapshot(engine, output_dir, event_type, payload))
+            while not queue.empty() and len(pending_events) < 500:
+                pending_events.append(queue.get_nowait())
+            for event_type, payload in coalesce_live_events(pending_events):
+                if event_type == "market":
+                    market: MarketState = payload
+                    engine.set_market(market)
+                    journal.market(market)
+                elif event_type == "tick":
+                    tick: PriceTick = payload
+                    engine.set_tick(tick)
+                    journal.tick(tick)
+                elif event_type == "book":
+                    direction, book = payload
+                    assert isinstance(book, OrderBookSnapshot)
+                    engine.set_book(direction, book)
+                    journal.book(direction.value, book)
+                elif event_type == "error":
+                    journal.latency_row(payload.get("source", "unknown"), "stream", False, None, payload.get("error", ""))
+                flush_engine_updates(engine, journal, counters)
+                await emit_update(on_update, live_snapshot(engine, output_dir, event_type, payload))
     finally:
         for task in tasks:
             task.cancel()
