@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import json
 import socket
 from datetime import datetime, timedelta, timezone
@@ -17,11 +18,12 @@ from .runner import run_live
 
 
 class DashboardHub:
-    def __init__(self, http_host: str, http_port: int, ws_host: str, ws_port: int):
+    def __init__(self, http_host: str, http_port: int, ws_host: str, ws_port: int, config: AppConfig):
         self.http_host = http_host
         self.http_port = http_port
         self.ws_host = ws_host
         self.ws_port = ws_port
+        self.config = config
         self.latest: dict[str, Any] = {
             "type": "snapshot",
             "created_at": None,
@@ -32,6 +34,7 @@ class DashboardHub:
             "open_position": None,
             "summary": {},
             "events": [],
+            "strategy": self.config_json()["strategy"],
             "ws_url": self.ws_url,
         }
         self.events: list[dict[str, Any]] = []
@@ -127,7 +130,18 @@ class DashboardHub:
         payload = dict(snapshot)
         payload["market"] = self.compact_market(payload.get("market"))
         payload["books"] = {direction: self.compact_book(book) for direction, book in (payload.get("books") or {}).items()}
+        payload["strategy"] = self.config_json()["strategy"]
         return payload
+
+    def config_json(self) -> dict[str, Any]:
+        return {"strategy": {"edge_correction_usd": self.config.strategy.edge_correction_usd}}
+
+    def set_edge_correction(self, value: Any) -> dict[str, Any]:
+        correction = float(value)
+        if not math.isfinite(correction):
+            raise ValueError("edge_correction_usd must be finite")
+        self.config.strategy.edge_correction_usd = correction
+        return self.config_json()
 
     async def publish(self, snapshot: dict[str, Any]) -> None:
         message: str
@@ -169,11 +183,21 @@ class DashboardHub:
         payload = dict(self.latest)
         payload["events"] = list(self.events)
         payload["ws_url"] = self.ws_url
+        payload["strategy"] = self.config_json()["strategy"]
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     hub: DashboardHub
+
+    def send_json(self, status: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -190,9 +214,25 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path.startswith("/api/config"):
+            self.send_json(200, self.hub.config_json())
+            return
         if self.path == "/" or self.path.startswith("/dashboard"):
             self.path = "/index.html"
         super().do_GET()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self.path.startswith("/api/config"):
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            strategy = payload.get("strategy") if isinstance(payload, dict) else None
+            value = strategy.get("edge_correction_usd") if isinstance(strategy, dict) else payload.get("edge_correction_usd")
+            self.send_json(200, self.hub.set_edge_correction(value))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            self.send_json(400, {"error": str(exc)})
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
@@ -234,7 +274,7 @@ async def run_dashboard(
     http_port = choose_port(host, port)
     websocket_port = choose_port(host, ws_port if ws_port != http_port else http_port + 1)
     web_dir = Path(__file__).resolve().parent.parent / "web"
-    hub = DashboardHub(host, http_port, host, websocket_port)
+    hub = DashboardHub(host, http_port, host, websocket_port, config)
     http_server = start_http_server(web_dir, hub, host, http_port)
     ws_server = await websockets.serve(hub.ws_handler, host, websocket_port)
     started = {"url": f"http://{host}:{http_port}", "ws_url": hub.ws_url}

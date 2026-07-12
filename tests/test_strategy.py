@@ -7,6 +7,10 @@ from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot,
 from polybtc.strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry
 
 
+def raw_edge_strategy() -> StrategyConfig:
+    return StrategyConfig(edge_correction_usd=0)
+
+
 def market(now: datetime) -> MarketState:
     return MarketState(
         condition_id="m1",
@@ -40,7 +44,7 @@ def test_entry_accepts_up_edge_with_depth() -> None:
         now=now,
     )
 
-    decision = evaluate_entry(state, StrategyConfig(), RiskConfig())
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
 
     assert decision.accepted is True
     assert decision.signal is not None
@@ -59,7 +63,39 @@ def test_entry_rejects_expensive_ask() -> None:
         now=now,
     )
 
-    decision = evaluate_entry(state, StrategyConfig(), RiskConfig())
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is False
+    assert decision.reason == "ask_too_expensive"
+
+
+def test_entry_rejects_edge_equal_to_threshold() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118010, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is False
+    assert decision.reason == "edge_too_small"
+
+
+def test_entry_rejects_ask_equal_to_max_buy_price() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.74, 0.75, now),
+        down_book=book("down", 0.18, 0.20, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
 
     assert decision.accepted is False
     assert decision.reason == "ask_too_expensive"
@@ -77,7 +113,7 @@ def test_entry_rejects_market_before_start() -> None:
         now=now,
     )
 
-    decision = evaluate_entry(state, StrategyConfig(), RiskConfig())
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
 
     assert decision.accepted is False
     assert decision.reason == "market_not_started"
@@ -99,15 +135,133 @@ def test_exit_take_profit() -> None:
         down_book=book("down", 0.38, 0.40, now),
         now=now,
     )
-    entry = evaluate_entry(entry_state, StrategyConfig(), RiskConfig())
+    strategy = raw_edge_strategy()
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
     assert entry.fill is not None
     position = position_from_entry(entry.fill, edge=70, opened_at=now)
 
-    decision = evaluate_exit(position, state, StrategyConfig(), RiskConfig())
+    decision = evaluate_exit(position, state, strategy, RiskConfig())
 
     assert decision.should_exit is True
     assert decision.reason is not None
     assert decision.reason.value == "take_profit"
+
+
+def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = raw_edge_strategy()
+    entry_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=117980, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
+    assert entry.fill is not None
+    position = position_from_entry(entry.fill, edge=-20, opened_at=now)
+    exit_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=117988, received_at=now + timedelta(seconds=1)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=1)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=1)),
+        now=now + timedelta(seconds=1),
+    )
+
+    decision = evaluate_exit(position, exit_state, strategy, RiskConfig())
+
+    assert decision.should_exit is False
+
+
+def test_down_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = raw_edge_strategy()
+    entry_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=117980, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
+    assert entry.fill is not None
+    position = position_from_entry(entry.fill, edge=-20, opened_at=now)
+    exit_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=117990, received_at=now + timedelta(seconds=1)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=1)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=1)),
+        now=now + timedelta(seconds=1),
+    )
+
+    decision = evaluate_exit(position, exit_state, strategy, RiskConfig())
+
+    assert decision.should_exit is True
+    assert decision.reason is not None
+    assert decision.reason.value == "edge_faded"
+
+
+def test_up_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = raw_edge_strategy()
+    entry_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118020, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
+    assert entry.fill is not None
+    position = position_from_entry(entry.fill, edge=20, opened_at=now)
+    exit_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118010, received_at=now + timedelta(seconds=1)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=1)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=1)),
+        now=now + timedelta(seconds=1),
+    )
+
+    decision = evaluate_exit(position, exit_state, strategy, RiskConfig())
+
+    assert decision.should_exit is True
+    assert decision.reason is not None
+    assert decision.reason.value == "edge_faded"
+
+
+def test_entry_uses_default_edge_correction() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, StrategyConfig(), RiskConfig())
+
+    assert decision.accepted is True
+    assert decision.signal is not None
+    assert decision.signal.edge_usd == 22.25
+
+
+def test_entry_records_corrected_edge() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118100, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, StrategyConfig(), RiskConfig())
+
+    assert decision.accepted is True
+    assert decision.signal is not None
+    assert decision.signal.direction == Direction.UP
+    assert decision.signal.edge_usd == 52.25
 
 
 def test_engine_captures_dynamic_threshold_only_near_start() -> None:

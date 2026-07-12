@@ -16,22 +16,23 @@ class SourceConfig(BaseModel):
     clob_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     poly_book_poll_ms: int = 500
-    market_refresh_seconds: int = 2
+    market_refresh_seconds: float = 0.5
     max_start_price_lag_ms: int = 2000
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])
     observe_only_on_unverified_settlement: bool = True
 
     @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms")
     @classmethod
-    def positive_interval(cls, value: int) -> int:
+    def positive_interval(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("interval values must be positive")
         return value
 
 
 class StrategyConfig(BaseModel):
-    min_entry_edge_usd: float = 50.0
+    min_entry_edge_usd: float = 10.0
     stop_edge_usd: float = 15.0
+    edge_correction_usd: float = -47.75
     max_buy_price: float = 0.75
     take_profit_ticks: float = 0.10
     min_profit_after_slippage: float = 0.04

@@ -49,8 +49,10 @@ def test_replay_recomputes_entry_and_exit(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    engine = replay_events(path, AppConfig())
-    engine2 = replay_events(path, AppConfig())
+    config = AppConfig()
+    config.strategy.edge_correction_usd = 0
+    engine = replay_events(path, config)
+    engine2 = replay_events(path, config)
 
     assert engine.summary()["signals"] == 1
     assert engine.summary()["closed_positions"] == 1

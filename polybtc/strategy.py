@@ -50,6 +50,13 @@ def edge_usd(market: MarketState, tick: PriceTick) -> float | None:
     return tick.price - market.threshold_price
 
 
+def corrected_edge_usd(market: MarketState, tick: PriceTick, strategy: StrategyConfig) -> float | None:
+    edge = edge_usd(market, tick)
+    if edge is None:
+        return None
+    return edge + strategy.edge_correction_usd
+
+
 def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskConfig) -> str | None:
     market = state.market
     if market.observe_only:
@@ -87,15 +94,15 @@ def evaluate_entry(
     if has_open_position:
         return EntryDecision(False, "open_position_exists")
 
-    edge = edge_usd(state.market, state.price_tick)
+    edge = corrected_edge_usd(state.market, state.price_tick, strategy)
     if edge is None:
         return EntryDecision(False, "threshold_unavailable")
 
-    if edge >= strategy.min_entry_edge_usd:
+    if edge > strategy.min_entry_edge_usd:
         direction = Direction.UP
         book = state.up_book
         token_id = state.market.up_token_id
-    elif edge <= -strategy.min_entry_edge_usd:
+    elif edge < -strategy.min_entry_edge_usd:
         direction = Direction.DOWN
         book = state.down_book
         token_id = state.market.down_token_id
@@ -105,7 +112,7 @@ def evaluate_entry(
     ask = book.best_ask
     if ask is None:
         return EntryDecision(False, "ask_unavailable")
-    if ask > strategy.max_buy_price:
+    if ask >= strategy.max_buy_price:
         return EntryDecision(False, "ask_too_expensive")
 
     execution = simulate_buy(book, risk.max_order_usd)
@@ -166,7 +173,7 @@ def choose_exit_reason(
     strategy: StrategyConfig,
     risk: RiskConfig,
 ) -> ExitReason | None:
-    edge = edge_usd(state.market, state.price_tick)
+    edge = corrected_edge_usd(state.market, state.price_tick, strategy)
     if edge is None:
         return None
     held_seconds = (state.now - position.opened_at).total_seconds()
@@ -178,9 +185,9 @@ def choose_exit_reason(
         return ExitReason.REVERSE_BREAK
     if position.direction == Direction.DOWN and edge >= strategy.stop_edge_usd:
         return ExitReason.REVERSE_BREAK
-    if position.direction == Direction.UP and 0 <= edge <= strategy.stop_edge_usd:
+    if position.direction == Direction.UP and edge <= strategy.min_entry_edge_usd:
         return ExitReason.EDGE_FADED
-    if position.direction == Direction.DOWN and -strategy.stop_edge_usd <= edge <= 0:
+    if position.direction == Direction.DOWN and edge >= -strategy.min_entry_edge_usd:
         return ExitReason.EDGE_FADED
     if best_bid is not None and best_bid >= position.entry_price + strategy.take_profit_ticks:
         return ExitReason.TAKE_PROFIT
@@ -226,7 +233,7 @@ def evaluate_exit(
         market_id=position.market_id,
         direction=position.direction,
         reason=reason,
-        edge_usd=edge_usd(state.market, state.price_tick),
+        edge_usd=corrected_edge_usd(state.market, state.price_tick, strategy),
         price=execution.avg_price,
         quantity=execution.quantity,
         pnl=pnl,

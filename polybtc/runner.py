@@ -48,6 +48,7 @@ def live_snapshot(engine: PaperEngine, output_dir: Path, event_type: str, payloa
         "books": books,
         "open_position": engine.open_position.model_dump(mode="json") if engine.open_position else None,
         "summary": engine.summary(),
+        "strategy": {"edge_correction_usd": engine.config.strategy.edge_correction_usd},
         "last_rejection": engine.rejections[-1] if engine.rejections else None,
     }
 
@@ -104,13 +105,24 @@ async def apply_polymarket_page_threshold(client: PolymarketClient, market: Mark
         return False
     if market.threshold_price is not None and market.threshold_source not in {"binance_first_tick_after_start", "polymarket_page_previous_close"}:
         return False
-    outcome_price = await client.outcome_price(market.slug)
+    page_data = getattr(client, "market_page_data", None)
+    if page_data is not None:
+        outcome_price, results = await page_data(market.slug)
+    else:
+        outcome_result, results_result = await asyncio.gather(
+            client.outcome_price(market.slug),
+            client.past_results(market.slug),
+            return_exceptions=True,
+        )
+        if isinstance(outcome_result, Exception) and isinstance(results_result, Exception):
+            raise outcome_result
+        outcome_price = None if isinstance(outcome_result, Exception) else outcome_result
+        results = [] if isinstance(results_result, Exception) else results_result
     if outcome_price is not None:
         market.threshold_price = outcome_price.open_price
         market.threshold_source = "polymarket_page_open_price"
         market.threshold_observed_at = market.start_time
         return True
-    results = await client.past_results(market.slug)
     previous = [result for result in results if result.end_time == market.start_time]
     if not previous:
         return False
@@ -127,13 +139,13 @@ async def current_market_with_page_threshold(
     now: datetime | None = None,
 ) -> MarketState | None:
     markets = await client.discover_markets()
-    for market in markets:
-        if market.threshold_price is None:
-            try:
-                await apply_polymarket_page_threshold(client, market)
-            except Exception:
-                continue
-    return choose_current_market(markets, now=now, max_start_price_lag_ms=max_start_price_lag_ms)
+    market = choose_current_market(markets, now=now, max_start_price_lag_ms=max_start_price_lag_ms)
+    if market and market.threshold_price is None:
+        try:
+            await apply_polymarket_page_threshold(client, market)
+        except Exception:
+            pass
+    return market
 
 
 async def initialize_current_market(
@@ -151,6 +163,11 @@ async def initialize_current_market(
             now=now,
             max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
         )
+        if market and market.threshold_price is None:
+            try:
+                await apply_polymarket_page_threshold(client, market)
+            except Exception as exc:
+                journal.latency_row("polymarket_page", "initial_threshold", False, None, str(exc))
     except Exception as exc:
         journal.latency_row("gamma", "initial_market", False, None, str(exc))
         return
@@ -161,7 +178,7 @@ async def initialize_current_market(
     await emit_update(on_update, live_snapshot(engine, output_dir, "market", market))
 
 
-async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, interval_seconds: int) -> None:
+async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, interval_seconds: float) -> None:
     last_market_id = engine.market.condition_id if engine.market else None
     while True:
         try:
@@ -185,12 +202,11 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
             )
             if market and (market.condition_id != last_market_id or market.threshold_price is None):
                 last_market_id = market.condition_id
-                await queue.put(("market", market))
                 try:
-                    if await apply_polymarket_page_threshold(client, market):
-                        await queue.put(("market", market))
+                    await apply_polymarket_page_threshold(client, market)
                 except Exception as exc:
                     await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
+                await queue.put(("market", market))
         except Exception as exc:
             await queue.put(("error", {"source": "gamma", "error": str(exc)}))
         await asyncio.sleep(interval_seconds)

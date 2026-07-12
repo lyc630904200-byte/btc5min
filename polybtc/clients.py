@@ -478,23 +478,25 @@ class PolymarketClient:
         )
         return {"ok": True, "latency_ms": (end - start).total_seconds() * 1000, "used_env_proxy": used_env_proxy, "payload": response.json()}
 
-    async def past_results(self, market_slug: str) -> list[PolymarketPastResult]:
+    async def event_page_text(self, market_slug: str) -> str:
         response, _, _, _ = await get_direct_first(
             f"https://polymarket.com/event/{market_slug}",
             timeout=12,
             follow_redirects=True,
             headers={"user-agent": "Mozilla/5.0"},
         )
-        return parse_polymarket_past_results(response.text)
+        return response.text
+
+    async def market_page_data(self, market_slug: str) -> tuple[PolymarketOutcomePrice | None, list[PolymarketPastResult]]:
+        text = await self.event_page_text(market_slug)
+        outcome_price = next((price for price in parse_polymarket_outcome_prices(text) if price.slug == market_slug), None)
+        return outcome_price, parse_polymarket_past_results(text)
+
+    async def past_results(self, market_slug: str) -> list[PolymarketPastResult]:
+        return parse_polymarket_past_results(await self.event_page_text(market_slug))
 
     async def outcome_price(self, market_slug: str) -> PolymarketOutcomePrice | None:
-        response, _, _, _ = await get_direct_first(
-            f"https://polymarket.com/event/{market_slug}",
-            timeout=12,
-            follow_redirects=True,
-            headers={"user-agent": "Mozilla/5.0"},
-        )
-        for price in parse_polymarket_outcome_prices(response.text):
+        for price in parse_polymarket_outcome_prices(await self.event_page_text(market_slug)):
             if price.slug == market_slug:
                 return price
         return None
