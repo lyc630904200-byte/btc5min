@@ -15,7 +15,8 @@ class SourceConfig(BaseModel):
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-    poly_book_poll_ms: int = 500
+    rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
+    poly_book_poll_ms: int = 200
     market_refresh_seconds: float = 0.5
     max_start_price_lag_ms: int = 2000
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])

@@ -17,6 +17,7 @@ from .models import BookLevel, MarketState, OrderBookSnapshot, PriceTick
 
 
 CLOB_SUBSCRIPTION_TYPE = "market"
+POLYMARKET_RTDS_CRYPTO_TOPIC = "crypto_prices_chainlink"
 
 
 def btc_updown_5m_slugs(now: datetime, *, before: int = 3, after: int = 12) -> list[str]:
@@ -82,6 +83,22 @@ def parse_clob_book(payload: dict[str, Any]) -> OrderBookSnapshot:
         bids=[BookLevel(price=float(level["price"]), size=float(level["size"])) for level in payload.get("bids", [])],
         asks=[BookLevel(price=float(level["price"]), size=float(level["size"])) for level in payload.get("asks", [])],
         min_order_size=float(payload.get("min_order_size") or 5),
+        tick_size=float(payload.get("tick_size") or 0.01),
+        raw=payload,
+    )
+
+
+def parse_clob_best_bid_ask(payload: dict[str, Any]) -> OrderBookSnapshot:
+    best_bid = payload.get("best_bid") or payload.get("bid")
+    best_ask = payload.get("best_ask") or payload.get("ask")
+    min_order_size = float(payload.get("min_order_size") or 5)
+    return OrderBookSnapshot(
+        token_id=str(payload.get("asset_id") or payload.get("token_id") or ""),
+        market_id=str(payload.get("market") or ""),
+        timestamp=clob_timestamp(payload.get("timestamp")),
+        bids=[BookLevel(price=float(best_bid), size=min_order_size)] if best_bid is not None else [],
+        asks=[BookLevel(price=float(best_ask), size=min_order_size)] if best_ask is not None else [],
+        min_order_size=min_order_size,
         tick_size=float(payload.get("tick_size") or 0.01),
         raw=payload,
     )
@@ -199,12 +216,14 @@ def update_books_from_market_message(
 
         if event_type == "book":
             book = parse_clob_book(payload)
-            if book.token_id:
+            existing = books.get(book.token_id)
+            if book.token_id and (existing is None or book.timestamp > existing.timestamp):
                 books[book.token_id] = book
                 updates.append((book.token_id, book))
             continue
 
         if event_type == "price_change":
+            prior_timestamps: dict[str, datetime] = {}
             for change in clob_price_changes(payload):
                 token_id = str(change.get("asset_id") or change.get("token_id") or payload.get("asset_id") or payload.get("token_id") or "")
                 if not token_id:
@@ -212,7 +231,10 @@ def update_books_from_market_message(
                 book = books.get(token_id)
                 if book is None:
                     continue
+                prior_timestamp = prior_timestamps.setdefault(token_id, book.timestamp)
                 updated = apply_clob_price_change(book, payload, change)
+                if updated.timestamp <= prior_timestamp:
+                    continue
                 books[token_id] = updated
                 updates.append((token_id, updated))
             continue
@@ -223,12 +245,66 @@ def update_books_from_market_message(
                 continue
             book = books.get(token_id)
             if book is None:
+                updated = parse_clob_best_bid_ask(payload)
+            else:
+                updated = apply_clob_best_bid_ask(book, payload)
+            if updated.timestamp <= (book.timestamp if book else datetime.min.replace(tzinfo=timezone.utc)):
                 continue
-            updated = apply_clob_best_bid_ask(book, payload)
             books[token_id] = updated
             updates.append((token_id, updated))
             continue
     return updates
+
+
+def parse_rtds_crypto_price_message(
+    raw: object,
+    *,
+    symbol: str = "btc/usd",
+    received_at: datetime | None = None,
+) -> list[PriceTick]:
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    elif isinstance(raw, dict):
+        payload = raw
+    else:
+        return []
+
+    message_payload = payload.get("payload") if isinstance(payload, dict) else None
+    if not isinstance(message_payload, dict):
+        return []
+    if str(message_payload.get("symbol") or "").lower() != symbol.lower():
+        return []
+
+    now = received_at or datetime.now(timezone.utc)
+    rows = message_payload.get("data")
+    if not isinstance(rows, list):
+        rows = [message_payload] if "value" in message_payload else []
+
+    ticks: list[PriceTick] = []
+    for row in rows:
+        if not isinstance(row, dict) or "value" not in row:
+            continue
+        timestamp = row.get("timestamp") or payload.get("timestamp")
+        try:
+            price = float(row["value"])
+            exchange_timestamp = datetime.fromtimestamp(float(timestamp) / 1000, tz=timezone.utc) if timestamp else None
+        except (TypeError, ValueError):
+            continue
+        ticks.append(
+            PriceTick(
+                source="polymarket_rtds",
+                symbol=symbol.upper(),
+                price=price,
+                exchange_timestamp=exchange_timestamp,
+                received_at=now,
+            )
+        )
+    return ticks
 
 
 @dataclass(frozen=True)
@@ -467,8 +543,10 @@ class PolymarketClient:
         )
 
     async def book(self, token_id: str) -> OrderBookSnapshot:
-        response, _, _, _ = await get_direct_first(f"{self.config.clob_url}/book", timeout=8, params={"token_id": token_id})
-        return parse_clob_book(response.json())
+        response, _, end, _ = await get_direct_first(f"{self.config.clob_url}/book", timeout=8, params={"token_id": token_id})
+        book = parse_clob_book(response.json())
+        book.timestamp = end
+        return book
 
     async def price_probe(self, token_id: str) -> dict[str, Any]:
         response, start, end, used_env_proxy = await get_direct_first(
@@ -477,6 +555,39 @@ class PolymarketClient:
             params={"token_id": token_id, "side": "BUY"},
         )
         return {"ok": True, "latency_ms": (end - start).total_seconds() * 1000, "used_env_proxy": used_env_proxy, "payload": response.json()}
+
+    async def rtds_crypto_price_ticks(self, symbol: str = "btc/usd") -> AsyncIterator[PriceTick]:
+        subscription = {
+            "action": "subscribe",
+            "subscriptions": [
+                {
+                    "topic": POLYMARKET_RTDS_CRYPTO_TOPIC,
+                    "type": "*",
+                    "filters": json.dumps({"symbol": symbol}, separators=(",", ":")),
+                }
+            ],
+        }
+        for options in websocket_option_attempts():
+            connected = False
+            try:
+                async with websockets.connect(
+                    self.config.rtds_ws_url,
+                    origin="https://polymarket.com",
+                    ping_interval=10,
+                    ping_timeout=10,
+                    close_timeout=5,
+                    open_timeout=15,
+                    **options,
+                ) as websocket:
+                    connected = True
+                    await websocket.send(json.dumps(subscription, separators=(",", ":"), ensure_ascii=False))
+                    async for message in websocket:
+                        for tick in parse_rtds_crypto_price_message(message, symbol=symbol):
+                            yield tick
+            except Exception:
+                if connected or options == websocket_option_attempts()[-1]:
+                    raise
+                continue
 
     async def event_page_text(self, market_slug: str) -> str:
         response, _, _, _ = await get_direct_first(
@@ -509,7 +620,7 @@ class PolymarketClient:
         subscription = {
             "type": CLOB_SUBSCRIPTION_TYPE,
             "assets_ids": ids,
-            "custom_feature_enabled": False,
+            "custom_feature_enabled": True,
         }
         try:
             for options in websocket_option_attempts():

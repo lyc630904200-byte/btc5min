@@ -30,6 +30,7 @@ class DashboardHub:
             "status": "starting",
             "market": None,
             "tick": None,
+            "polymarket_tick": None,
             "books": {},
             "open_position": None,
             "summary": {},
@@ -41,7 +42,7 @@ class DashboardHub:
         self.clients: set[Any] = set()
         self.lock = asyncio.Lock()
         self.last_push_at = datetime.min.replace(tzinfo=timezone.utc)
-        self.push_interval = timedelta(milliseconds=100)
+        self.push_interval = timedelta(milliseconds=50)
 
     @property
     def ws_url(self) -> str:
@@ -50,6 +51,19 @@ class DashboardHub:
     def compact_event(self, event: dict[str, Any]) -> dict[str, Any]:
         event_type = event.get("type")
         payload = event.get("payload") or {}
+        if event_type == "fill" and isinstance(payload, dict):
+            return {
+                "type": "fill",
+                "payload": {
+                    "side": payload.get("side"),
+                    "direction": payload.get("direction"),
+                    "avg_price": payload.get("avg_price"),
+                    "quantity": payload.get("quantity"),
+                    "quote": payload.get("quote"),
+                    "reason": payload.get("reason"),
+                    "created_at": payload.get("created_at"),
+                },
+            }
         if event_type == "book" and isinstance(payload, dict):
             bids = payload.get("bids") or []
             asks = payload.get("asks") or []
@@ -63,8 +77,6 @@ class DashboardHub:
                     "timestamp": payload.get("timestamp"),
                     "best_bid": best_bid,
                     "best_ask": best_ask,
-                    "bid_levels": len(bids),
-                    "ask_levels": len(asks),
                 },
             }
         if event_type == "tick" and isinstance(payload, dict):
@@ -74,6 +86,17 @@ class DashboardHub:
                     "price": payload.get("price"),
                     "received_at": payload.get("received_at"),
                     "exchange_timestamp": payload.get("exchange_timestamp"),
+                },
+            }
+        if event_type == "polymarket_tick" and isinstance(payload, dict):
+            return {
+                "type": "polymarket_tick",
+                "payload": {
+                    "price": payload.get("price"),
+                    "received_at": payload.get("received_at"),
+                    "exchange_timestamp": payload.get("exchange_timestamp"),
+                    "source": payload.get("source"),
+                    "symbol": payload.get("symbol"),
                 },
             }
         if event_type == "market" and isinstance(payload, dict):
@@ -111,17 +134,19 @@ class DashboardHub:
         ]
         return {key: market.get(key) for key in keys if key in market}
 
-    def compact_book(self, book: dict[str, Any] | None, levels: int = 20) -> dict[str, Any] | None:
+    def compact_book(self, book: dict[str, Any] | None) -> dict[str, Any] | None:
         if not book:
             return None
-        bids = sorted(book.get("bids") or [], key=lambda level: float(level.get("price", 0)), reverse=True)[:levels]
-        asks = sorted(book.get("asks") or [], key=lambda level: float(level.get("price", 0)))[:levels]
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        best_bid = max((float(level.get("price")) for level in bids), default=None)
+        best_ask = min((float(level.get("price")) for level in asks), default=None)
         return {
             "token_id": book.get("token_id"),
             "market_id": book.get("market_id"),
             "timestamp": book.get("timestamp"),
-            "bids": bids,
-            "asks": asks,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
             "min_order_size": book.get("min_order_size"),
             "tick_size": book.get("tick_size"),
         }
@@ -130,7 +155,7 @@ class DashboardHub:
         payload = dict(snapshot)
         payload["market"] = self.compact_market(payload.get("market"))
         payload["books"] = {direction: self.compact_book(book) for direction, book in (payload.get("books") or {}).items()}
-        payload["strategy"] = self.config_json()["strategy"]
+        payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
         return payload
 
     def config_json(self) -> dict[str, Any]:
@@ -149,7 +174,7 @@ class DashboardHub:
         async with self.lock:
             event = snapshot.get("event")
             compacted_event = self.compact_event(event) if event else None
-            if event:
+            if compacted_event and compacted_event.get("type") == "fill":
                 self.events.append(compacted_event)
                 self.events = self.events[-250:]
             snapshot["event"] = compacted_event
@@ -159,7 +184,7 @@ class DashboardHub:
             self.latest = snapshot
             now = datetime.now(timezone.utc)
             event_type = event.get("type") if isinstance(event, dict) else None
-            should_push = event_type != "tick" or now - self.last_push_at >= self.push_interval
+            should_push = event_type not in {"tick", "polymarket_tick"} or now - self.last_push_at >= self.push_interval
             if not should_push:
                 return
             self.last_push_at = now
@@ -183,7 +208,7 @@ class DashboardHub:
         payload = dict(self.latest)
         payload["events"] = list(self.events)
         payload["ws_url"] = self.ws_url
-        payload["strategy"] = self.config_json()["strategy"]
+        payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 

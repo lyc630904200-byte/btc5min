@@ -264,6 +264,40 @@ def test_entry_records_corrected_edge() -> None:
     assert decision.signal.edge_usd == 52.25
 
 
+def test_entry_can_use_dynamic_edge_correction() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+        edge_correction_usd=-30,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is True
+    assert decision.signal is not None
+    assert decision.signal.edge_usd == 40
+
+
+def test_engine_uses_polymarket_minus_binance_as_edge_correction() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    engine.set_tick(PriceTick(price=118070, received_at=now))
+    engine.set_polymarket_tick(PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now))
+
+    assert engine.edge_correction_usd() == -30
+    assert engine.edge_correction_source() == "polymarket_minus_binance"
+
+    engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
+    engine.set_book(Direction.DOWN, book("down", 0.38, 0.40, now))
+
+    assert engine.signals[-1].edge_usd == 40
+
+
 def test_engine_captures_dynamic_threshold_only_near_start() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     dynamic_market = market(now)

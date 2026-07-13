@@ -8,7 +8,8 @@ sources:
   gamma_url: https://gamma-api.polymarket.com
   clob_url: https://clob.polymarket.com
   clob_ws_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
-  poly_book_poll_ms: 500
+  rtds_ws_url: wss://ws-live-data.polymarket.com
+  poly_book_poll_ms: 200
   market_refresh_seconds: 0.5
   max_start_price_lag_ms: 2000
   market_slug_patterns:

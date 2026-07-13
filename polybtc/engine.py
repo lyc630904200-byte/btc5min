@@ -12,6 +12,7 @@ class PaperEngine:
         self.config = config
         self.market: MarketState | None = None
         self.tick: PriceTick | None = None
+        self.polymarket_tick: PriceTick | None = None
         self.books: dict[Direction, OrderBookSnapshot] = {}
         self.open_position: Position | None = None
         self.positions: list[Position] = []
@@ -45,6 +46,20 @@ class PaperEngine:
         self.capture_dynamic_threshold(tick)
         self.evaluate(tick.received_at)
 
+    def set_polymarket_tick(self, tick: PriceTick) -> None:
+        self.polymarket_tick = tick
+        self.evaluate(tick.received_at)
+
+    def edge_correction_usd(self) -> float:
+        if self.tick and self.polymarket_tick:
+            return self.polymarket_tick.price - self.tick.price
+        return self.config.strategy.edge_correction_usd
+
+    def edge_correction_source(self) -> str:
+        if self.tick and self.polymarket_tick:
+            return "polymarket_minus_binance"
+        return "configured_fallback"
+
     def capture_dynamic_threshold(self, tick: PriceTick) -> bool:
         if not self.market or self.market.threshold_price is not None:
             return False
@@ -76,7 +91,7 @@ class PaperEngine:
             self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_market"})
             return
         existing = self.books.get(direction)
-        if existing and book.timestamp < existing.timestamp:
+        if existing and book.timestamp <= existing.timestamp:
             self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_timestamp"})
             return
         self.books[direction] = book
@@ -97,6 +112,7 @@ class PaperEngine:
             down_book=self.books[Direction.DOWN],
             now=now,
             market_exposure_usd=self.market_exposure_usd,
+            edge_correction_usd=self.edge_correction_usd(),
         )
         if self.open_position:
             exit_decision = evaluate_exit(self.open_position, state, self.config.strategy, self.config.risk)

@@ -100,8 +100,14 @@ class RunJournal:
         self.event("tick", payload)
 
     def book(self, direction: str, book: OrderBookSnapshot) -> None:
-        payload = serialize(book)
-        payload["direction"] = direction
+        payload = {
+            "direction": direction,
+            "token_id": book.token_id,
+            "market_id": book.market_id,
+            "timestamp": book.timestamp.isoformat(),
+            "best_bid": book.best_bid,
+            "best_ask": book.best_ask,
+        }
         self.ticks.write({"type": "book", **payload})
         self.event("book", payload)
 

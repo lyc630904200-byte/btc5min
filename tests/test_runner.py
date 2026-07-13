@@ -2,9 +2,10 @@ from datetime import datetime, timedelta, timezone
 
 from polybtc.config import AppConfig
 from polybtc.engine import PaperEngine
-from polybtc.models import Direction, MarketState
+from polybtc.models import Direction, MarketState, OrderBookSnapshot
 from polybtc.runner import (
     apply_polymarket_page_threshold,
+    books_need_rest_refresh,
     coalesce_live_events,
     current_market_with_page_threshold,
     should_keep_current_market,
@@ -153,3 +154,25 @@ def test_coalesce_live_events_keeps_latest_tick_and_books() -> None:
         ("tick", {"price": 3}),
         ("book", (Direction.DOWN, "new-down")),
     ]
+
+
+def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    current_market = market(now, threshold=64000, end_delta=timedelta(minutes=3))
+    engine.set_market(current_market)
+
+    assert books_need_rest_refresh(engine, current_market, now) is True
+
+    engine.set_book(
+        Direction.UP,
+        OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now),
+    )
+    engine.set_book(
+        Direction.DOWN,
+        OrderBookSnapshot(token_id="down", market_id="m1", timestamp=now),
+    )
+    assert books_need_rest_refresh(engine, current_market, now) is False
+
+    engine.books[Direction.DOWN].timestamp = now - timedelta(seconds=2)
+    assert books_need_rest_refresh(engine, current_market, now) is True

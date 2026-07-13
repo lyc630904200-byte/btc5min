@@ -114,15 +114,12 @@
     .book-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .book-side { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
     .book-title { height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 760; }
-    .levels { display: grid; }
-    .level { position: relative; display: grid; grid-template-columns: 58px 1fr 72px; gap: 8px; align-items: center; height: 28px; padding: 0 9px; border-bottom: 1px solid #edf1ef; font-size: 12px; font-variant-numeric: tabular-nums; }
-    .level:last-child { border-bottom: 0; }
-    .level span { position: relative; z-index: 1; }
-    .level span:last-child { text-align: right; }
-    .bar { position: absolute; right: 0; top: 4px; bottom: 4px; border-radius: 4px 0 0 4px; opacity: .75; }
-    .bar.ask { background: var(--red-soft); }
-    .bar.bid { background: var(--green-soft); }
-
+    .levels { display: grid; gap: 8px; padding: 10px; }
+    .quote-row { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; font-variant-numeric: tabular-nums; }
+    .quote-row span { color: var(--muted); font-size: 12px; }
+    .quote-row strong { color: var(--ink); font-size: 24px; line-height: 1; }
+    .quote-row.buy strong { color: var(--green); }
+    .quote-row.sell strong { color: var(--red); }
     .signal { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 12px; align-items: stretch; }
     .signal-box { border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-height: 116px; display: grid; align-content: space-between; }
     .signal-box.up { border-color: #addfca; background: var(--green-soft); }
@@ -186,8 +183,9 @@
           <div class="panel-head"><div class="panel-title">行情</div><div class="tag" id="edgeTag">--</div></div>
           <div class="panel-body metrics">
             <div class="metric"><div class="metric-name">Binance BTC</div><div class="metric-value" id="btcPrice">--</div></div>
+            <div class="metric"><div class="metric-name">Polymarket BTC</div><div class="metric-value" id="polymarketPrice">--</div></div>
             <div class="metric"><div class="metric-name">价格偏离</div><div class="metric-value" id="edgeValue">--</div></div>
-            <div class="metric"><div class="metric-name">偏离修正</div><input class="metric-input" id="edgeCorrection" type="number" step="0.01" value="-47.75"></div>
+            <div class="metric"><div class="metric-name">偏离修正</div><div class="metric-value" id="edgeCorrection">--</div></div>
             <div class="metric"><div class="metric-name">UP 卖一</div><div class="metric-value" id="upAsk">--</div></div>
             <div class="metric"><div class="metric-name">DOWN 卖一</div><div class="metric-value" id="downAsk">--</div></div>
           </div>
@@ -262,7 +260,6 @@
     let latest = null;
     let reconnectTimer = null;
     let renderScheduled = false;
-    let correctionSaveTimer = null;
     const EDGE_CORRECTION_DEFAULT = -47.75;
 
     function scheduleRender(snapshot) {
@@ -283,34 +280,10 @@
     function fmtPrice(value) { return fmtNumber(value, 2); }
     function fmtProb(value) { return value === null || value === undefined ? '--' : Number(value).toFixed(2); }
     function fmtSigned(value, digits = 2) { return value === null ? '--' : `${value > 0 ? '+' : ''}${fmtNumber(value, digits)}`; }
-    function edgeCorrection() {
-      const input = $('edgeCorrection');
-      const value = Number(input?.value);
-      return Number.isFinite(value) ? value : EDGE_CORRECTION_DEFAULT;
-    }
-
-    function syncEdgeCorrection(state) {
-      const value = Number(state?.strategy?.edge_correction_usd);
-      const input = $('edgeCorrection');
-      if (input && Number.isFinite(value) && document.activeElement !== input) input.value = String(value);
-    }
-
-    function saveEdgeCorrection() {
-      const value = edgeCorrection();
-      clearTimeout(correctionSaveTimer);
-      correctionSaveTimer = setTimeout(async () => {
-        try {
-          const response = await fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ strategy: { edge_correction_usd: value } }),
-          });
-          const state = await response.json();
-          syncEdgeCorrection(state);
-        } catch (error) {
-          console.warn('failed to save edge correction', error);
-        }
-      }, 250);
+    function effectiveCorrection(state, polymarketDiff) {
+      if (Number.isFinite(polymarketDiff)) return polymarketDiff;
+      const configured = Number(state?.strategy?.edge_correction_usd);
+      return Number.isFinite(configured) ? configured : EDGE_CORRECTION_DEFAULT;
     }
     function fmtTime(value) {
       if (!value) return '--';
@@ -324,11 +297,13 @@
     }
 
     function bestAsk(book) {
+      if (book?.best_ask !== null && book?.best_ask !== undefined) return Number(book.best_ask);
       const asks = book?.asks || [];
       return asks.length ? Math.min(...asks.map((x) => Number(x.price))) : null;
     }
 
     function bestBid(book) {
+      if (book?.best_bid !== null && book?.best_bid !== undefined) return Number(book.best_bid);
       const bids = book?.bids || [];
       return bids.length ? Math.max(...bids.map((x) => Number(x.price))) : null;
     }
@@ -344,10 +319,10 @@
       $('connText').textContent = status === 'live' ? '实时' : status === 'off' ? '断线' : '连接中';
     }
 
-    function updateHistory(tick, market) {
+    function updateHistory(tick, market, correction) {
       if (!tick?.price) return;
       const threshold = market?.threshold_price;
-      const edge = threshold ? Number(tick.price) - Number(threshold) + edgeCorrection() : null;
+      const edge = threshold ? Number(tick.price) - Number(threshold) + correction : null;
       const last = history[history.length - 1];
       if (last && last.time === tick.received_at) return;
       history.push({ time: tick.received_at, price: Number(tick.price), threshold: threshold ? Number(threshold) : null, edge });
@@ -399,41 +374,35 @@
     function renderLevels(id, book) {
       const target = $(id);
       if (!book) {
-        target.innerHTML = '<div class="level"><span>--</span><span></span><span>--</span></div>';
+        target.innerHTML = '<div class="quote-row"><span>买入价</span><strong>--</strong></div><div class="quote-row"><span>卖出价</span><strong>--</strong></div>';
         return;
       }
-      const asks = [...(book.asks || [])].sort((a, b) => Number(b.price) - Number(a.price)).slice(-8).map((x) => ['ask', Number(x.price), Number(x.size)]);
-      const bids = [...(book.bids || [])].sort((a, b) => Number(b.price) - Number(a.price)).slice(0, 8).map((x) => ['bid', Number(x.price), Number(x.size)]);
-      const levels = asks.concat(bids);
-      const maxSize = Math.max(1, ...levels.map(([, , size]) => size));
-      target.innerHTML = levels.map(([kind, price, size]) => {
-        const pct = Math.max(6, Math.min(100, size / maxSize * 100));
-        return `<div class="level"><div class="bar ${kind}" style="width:${pct}%"></div><span>${price.toFixed(2)}</span><span></span><span>${size.toFixed(2)}</span></div>`;
-      }).join('');
+      target.innerHTML = `
+        <div class="quote-row buy"><span>买入价</span><strong>${fmtProb(bestBid(book))}</strong></div>
+        <div class="quote-row sell"><span>卖出价</span><strong>${fmtProb(bestAsk(book))}</strong></div>
+      `;
     }
 
     function describeEvent(event) {
       const type = event?.type || 'event';
       const p = event?.payload || {};
-      if (type === 'market') return ['市场', p.slug || '--', 'blue'];
-      if (type === 'tick') return ['行情', `BTC ${fmtPrice(p.price)}`, 'blue'];
-      if (type === 'book') return ['盘口', `${p.direction || ''} bid ${fmtProb(p.best_bid ?? bestBid(p))} ask ${fmtProb(p.best_ask ?? bestAsk(p))}`, 'amber'];
-      if (type === 'signal') return ['信号', `${p.direction || ''} edge ${fmtNumber(p.edge_usd, 0)}`, 'green'];
-      if (type === 'fill') return ['成交', `${p.side || ''} ${p.direction || ''} ${fmtProb(p.avg_price)}`, 'green'];
-      if (type === 'exit') return ['退出', `${p.reason || ''} ${fmtNumber(p.pnl, 2)}`, 'red'];
-      if (type === 'error') return ['错误', p.error || '--', 'red'];
-      return [type, JSON.stringify(p).slice(0, 80), 'amber'];
+      if (type === 'fill') {
+        const side = p.side === 'BUY' ? '买入' : p.side === 'SELL' ? '卖出' : p.side || '成交';
+        const color = p.side === 'BUY' ? 'green' : 'red';
+        return [side, `${p.direction || ''} ${fmtProb(p.avg_price)} / ${fmtNumber(p.quantity, 2)}`, color];
+      }
+      return ['成交', '--', 'amber'];
     }
 
     function render(snapshot) {
       latest = snapshot;
       const market = snapshot.market;
       const tick = snapshot.tick;
+      const polymarketTick = snapshot.polymarket_tick;
       const upBook = snapshot.books?.UP;
       const downBook = snapshot.books?.DOWN;
       const summary = snapshot.summary || {};
       const position = snapshot.open_position;
-      updateHistory(tick, market);
 
       $('runPath').textContent = snapshot.output_dir || '等待运行数据';
       $('updatedAt').textContent = fmtTime(snapshot.created_at);
@@ -448,17 +417,23 @@
 
       const threshold = market?.threshold_price ? Number(market.threshold_price) : null;
       const price = tick?.price ? Number(tick.price) : null;
+      const polymarketPrice = polymarketTick?.price ? Number(polymarketTick.price) : null;
+      const polymarketDiff = polymarketPrice !== null && price !== null ? polymarketPrice - price : null;
+      const correction = effectiveCorrection(snapshot, polymarketDiff);
       const rawEdge = threshold !== null && price !== null ? price - threshold : null;
-      const correction = edgeCorrection();
       const edge = rawEdge !== null ? rawEdge + correction : null;
+      updateHistory(tick, market, correction);
       $('btcPrice').textContent = fmtPrice(price);
+      $('polymarketPrice').textContent = fmtPrice(polymarketPrice);
+      $('edgeCorrection').textContent = fmtSigned(correction, 2);
+      $('edgeCorrection').style.color = correction >= 0 ? 'var(--green)' : 'var(--red)';
       $('edgeValue').textContent = fmtSigned(edge, 2);
       $('edgeTag').textContent = edge === null ? '--' : `${fmtSigned(edge, 0)} USD`;
       $('edgeTag').className = 'tag ' + classForEdge(edge);
       $('upAsk').textContent = fmtProb(bestAsk(upBook));
       $('downAsk').textContent = fmtProb(bestAsk(downBook));
-      $('upTop').textContent = `bid ${fmtProb(bestBid(upBook))} / ask ${fmtProb(bestAsk(upBook))}`;
-      $('downTop').textContent = `bid ${fmtProb(bestBid(downBook))} / ask ${fmtProb(bestAsk(downBook))}`;
+      $('upTop').textContent = `买 ${fmtProb(bestBid(upBook))} / 卖 ${fmtProb(bestAsk(upBook))}`;
+      $('downTop').textContent = `买 ${fmtProb(bestBid(downBook))} / 卖 ${fmtProb(bestAsk(downBook))}`;
       $('tickAge').textContent = tick?.received_at ? fmtTime(tick.received_at) : '--';
       $('bookAge').textContent = upBook?.timestamp ? fmtTime(upBook.timestamp) : '--';
 
@@ -491,6 +466,7 @@
         ['阈值', market?.threshold_price ? fmtPrice(market.threshold_price) : '等待开盘'],
         ['偏离', fmtSigned(edge, 2)],
         ['修正', fmtSigned(correction, 2)],
+        ['Polymarket BTC', fmtPrice(polymarketPrice)],
         ['UP 盘口', $('upTop').textContent],
         ['DOWN 盘口', $('downTop').textContent],
         ['最近拒绝', lastRejection || '--']
@@ -516,14 +492,13 @@
       $('timeline').innerHTML = events.map((event) => {
         const [type, text, color] = describeEvent(event);
         return `<div class="event-row"><span class="tag ${color}">${type}</span><span>${text}</span></div>`;
-      }).join('') || '<div class="event-row"><span class="tag amber">等待</span><span>--</span></div>';
+      }).join('') || '<div class="event-row"><span class="tag amber">暂无</span><span>还没有买入/卖出</span></div>';
     }
 
     async function loadInitial() {
       try {
         const response = await fetch('/api/state', { cache: 'no-store' });
         const state = await response.json();
-        syncEdgeCorrection(state);
         scheduleRender(state);
         connectWebSocket(state.ws_url);
       } catch (error) {
@@ -553,18 +528,13 @@
       ws.onopen = () => setConnection('live');
       ws.onmessage = (event) => {
         const state = JSON.parse(event.data);
-        syncEdgeCorrection(state);
         scheduleRender(state);
       };
       ws.onclose = () => { setConnection('off'); scheduleReconnect(); };
       ws.onerror = () => { setConnection('off'); ws.close(); };
     }
 
-    const UI_REFRESH_MS = 250;
-    $('edgeCorrection').addEventListener('input', () => {
-      saveEdgeCorrection();
-      if (latest) scheduleRender(latest);
-    });
+    const UI_REFRESH_MS = 100;
     setInterval(() => { if (latest) scheduleRender(latest); }, UI_REFRESH_MS);
     loadInitial();
   </script>

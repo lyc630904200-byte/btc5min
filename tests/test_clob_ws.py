@@ -98,6 +98,42 @@ def test_clob_market_updates_best_bid_ask_from_top_of_book_event() -> None:
     assert books["up"].best_ask == 0.51
 
 
+def test_clob_best_bid_ask_can_seed_a_book_and_reject_stale_update() -> None:
+    books = {}
+
+    updates = update_books_from_market_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739401000,
+            "best_bid": "0.49",
+            "best_ask": "0.51",
+        },
+        books,
+    )
+
+    assert [token_id for token_id, _ in updates] == ["up"]
+    assert books["up"].best_bid == 0.49
+    assert books["up"].best_ask == 0.51
+
+    updates = update_books_from_market_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739400000,
+            "best_bid": "0.47",
+            "best_ask": "0.53",
+        },
+        books,
+    )
+
+    assert updates == []
+    assert books["up"].best_bid == 0.49
+    assert books["up"].best_ask == 0.51
+
+
 def test_websocket_connections_try_direct_before_env_proxy() -> None:
     attempts = websocket_option_attempts()
     if "proxy" in attempts[0]:
