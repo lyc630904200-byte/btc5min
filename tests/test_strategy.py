@@ -8,7 +8,7 @@ from polybtc.strategy import StrategyState, evaluate_entry, evaluate_exit, posit
 
 
 def raw_edge_strategy() -> StrategyConfig:
-    return StrategyConfig(edge_correction_usd=0)
+    return StrategyConfig(min_entry_edge_usd=10, edge_correction_usd=0)
 
 
 def market(now: datetime) -> MarketState:

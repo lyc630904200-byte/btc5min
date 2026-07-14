@@ -20,7 +20,7 @@ sources:
   observe_only_on_unverified_settlement: true
 
 strategy:
-  min_entry_edge_usd: 10
+  min_entry_edge_usd: 15
   stop_edge_usd: 15
   edge_correction_usd: -47.75
   max_buy_price: 0.75

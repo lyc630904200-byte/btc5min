@@ -31,7 +31,7 @@ class SourceConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    min_entry_edge_usd: float = 10.0
+    min_entry_edge_usd: float = 15.0
     stop_edge_usd: float = 15.0
     edge_correction_usd: float = -47.75
     max_buy_price: float = 0.75
