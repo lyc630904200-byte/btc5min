@@ -1,4 +1,6 @@
 data_dir: data
+data_retention_hours: 24
+data_cleanup_interval_seconds: 300
 
 sources:
   market_slug: btc-updown-5m-1783704300

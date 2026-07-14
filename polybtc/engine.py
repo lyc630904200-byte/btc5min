@@ -7,6 +7,9 @@ from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Posit
 from .strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry, settle_position
 
 
+MAX_RECENT_REJECTIONS = 500
+
+
 class PaperEngine:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -20,7 +23,14 @@ class PaperEngine:
         self.fills = []
         self.exit_events = []
         self.rejections: list[dict[str, str]] = []
+        self.rejection_count = 0
         self.market_exposure_usd = 0.0
+
+    def record_rejection(self, reason: str, now: datetime | None = None) -> None:
+        self.rejection_count += 1
+        self.rejections.append({"created_at": (now or datetime.now(timezone.utc)).isoformat(), "reason": reason})
+        if len(self.rejections) > MAX_RECENT_REJECTIONS:
+            del self.rejections[:-MAX_RECENT_REJECTIONS]
 
     def set_market(self, market: MarketState) -> None:
         is_new_market = self.market is None or self.market.condition_id != market.condition_id
@@ -88,11 +98,11 @@ class PaperEngine:
 
     def set_book(self, direction: Direction, book: OrderBookSnapshot) -> None:
         if not self.book_matches_current_market(direction, book):
-            self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_market"})
+            self.record_rejection("stale_book_market")
             return
         existing = self.books.get(direction)
         if existing and book.timestamp <= existing.timestamp:
-            self.rejections.append({"created_at": datetime.now(timezone.utc).isoformat(), "reason": "stale_book_timestamp"})
+            self.record_rejection("stale_book_timestamp")
             return
         self.books[direction] = book
         self.evaluate(book.timestamp)
@@ -133,7 +143,7 @@ class PaperEngine:
             self.positions.append(self.open_position)
             self.market_exposure_usd += entry.fill.quote
         else:
-            self.rejections.append({"created_at": now.isoformat(), "reason": entry.reason})
+            self.record_rejection(entry.reason, now)
 
     def _apply_exit(self, reason: ExitReason, price: float, quote: float, pnl: float, now: datetime) -> None:
         if not self.open_position:
@@ -177,7 +187,7 @@ class PaperEngine:
             "open_positions": len([pos for pos in self.positions if pos.status == "OPEN"]),
             "fills": len(self.fills),
             "signals": len(self.signals),
-            "rejections": len(self.rejections),
+            "rejections": self.rejection_count,
             "realized_pnl": realized,
             "take_profit_pnl": take_profit,
             "risk_exit_pnl": risk_exit,

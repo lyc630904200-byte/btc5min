@@ -64,9 +64,18 @@ class RiskConfig(BaseModel):
 
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
+    data_retention_hours: float = 24.0
+    data_cleanup_interval_seconds: float = 300.0
     sources: SourceConfig = Field(default_factory=SourceConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+
+    @field_validator("data_retention_hours", "data_cleanup_interval_seconds")
+    @classmethod
+    def positive_data_cleanup_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("data cleanup values must be positive")
+        return value
 
 
 def load_config(path: str | Path | None) -> AppConfig:

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from polybtc.config import RiskConfig, StrategyConfig
-from polybtc.engine import PaperEngine
+from polybtc.engine import MAX_RECENT_REJECTIONS, PaperEngine
 from polybtc.config import AppConfig
 from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceTick
 from polybtc.strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry
@@ -377,3 +377,13 @@ def test_engine_ignores_older_book_for_same_market() -> None:
     assert engine.books[Direction.UP].best_bid == 0.60
     assert engine.books[Direction.UP].best_ask == 0.61
     assert engine.rejections[-1]["reason"] == "stale_book_timestamp"
+
+
+def test_engine_caps_retained_rejections_but_keeps_total_count() -> None:
+    engine = PaperEngine(AppConfig())
+
+    for _ in range(MAX_RECENT_REJECTIONS + 10):
+        engine.record_rejection("edge_too_small")
+
+    assert len(engine.rejections) == MAX_RECENT_REJECTIONS
+    assert engine.summary()["rejections"] == MAX_RECENT_REJECTIONS + 10

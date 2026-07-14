@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -21,6 +22,43 @@ BOOK_REST_FALLBACK_AFTER = timedelta(seconds=2)
 def run_dir(base: Path) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return base / stamp
+
+
+def cleanup_expired_runs(
+    data_dir: Path,
+    active_run: Path,
+    retention: timedelta,
+    now: datetime | None = None,
+) -> list[Path]:
+    """Remove expired completed run directories while preserving the active run and unrelated files."""
+    if not data_dir.exists():
+        return []
+    base_dir = data_dir.resolve()
+    active_dir = active_run.resolve()
+    current_time = now or datetime.now(timezone.utc)
+    run_markers = ("events.jsonl", "markets.jsonl", "fills.csv", "summary.json")
+    removed: list[Path] = []
+    for candidate in base_dir.iterdir():
+        if not candidate.is_dir() or candidate.resolve() == active_dir or candidate.resolve().parent != base_dir:
+            continue
+        if not any((candidate / marker).exists() for marker in run_markers):
+            continue
+        modified_at = datetime.fromtimestamp(candidate.stat().st_mtime, tz=timezone.utc)
+        if current_time - modified_at < retention:
+            continue
+        shutil.rmtree(candidate)
+        removed.append(candidate)
+    return removed
+
+
+async def data_cleanup_loop(config: AppConfig, active_run: Path, journal: RunJournal) -> None:
+    retention = timedelta(hours=config.data_retention_hours)
+    while True:
+        try:
+            cleanup_expired_runs(config.data_dir, active_run, retention)
+        except OSError as exc:
+            journal.latency_row("data_cleanup", "remove_expired_runs", False, None, str(exc))
+        await asyncio.sleep(config.data_cleanup_interval_seconds)
 
 
 def model_payload(value: Any) -> Any:
@@ -413,6 +451,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
     await initialize_current_market(poly, engine, journal, output_dir, on_update)
 
     tasks = [
+        asyncio.create_task(data_cleanup_loop(config, output_dir, journal)),
         asyncio.create_task(market_loop(poly, engine, queue, config.sources.market_refresh_seconds)),
         asyncio.create_task(binance_loop(binance, queue)),
         asyncio.create_task(polymarket_price_loop(poly, queue)),
