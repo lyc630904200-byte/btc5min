@@ -31,8 +31,10 @@ def direct_websocket_options() -> dict[str, Any]:
     return {}
 
 
-def websocket_option_attempts() -> list[dict[str, Any]]:
+def websocket_option_attempts(proxy_url: str | None = None) -> list[dict[str, Any]]:
     direct_options = direct_websocket_options()
+    if proxy_url and "proxy" in direct_options:
+        return [{"proxy": proxy_url}, direct_options, {}]
     if "proxy" in direct_options:
         return [direct_options, {}]
     return [{}]
@@ -406,7 +408,11 @@ class BinanceClient:
         self.config = config
 
     async def server_time(self) -> dict[str, Any]:
-        response, start, end, used_env_proxy = await get_direct_first(f"{self.config.binance_rest_url}/api/v3/time", timeout=8)
+        response, start, end, used_env_proxy = await get_direct_first(
+            f"{self.config.binance_rest_url}/api/v3/time",
+            timeout=8,
+            proxy_url=self.config.proxy_url,
+        )
         payload = response.json()
         server_time = datetime.fromtimestamp(payload["serverTime"] / 1000, tz=timezone.utc)
         local_midpoint = start + (end - start) / 2
@@ -423,6 +429,7 @@ class BinanceClient:
             f"{self.config.binance_rest_url}/api/v3/ticker/price",
             timeout=5,
             params={"symbol": self.config.binance_symbol},
+            proxy_url=self.config.proxy_url,
         )
         payload = response.json()
         now = datetime.now(timezone.utc)
@@ -436,7 +443,8 @@ class BinanceClient:
 
     async def trades(self) -> AsyncIterator[PriceTick]:
         while True:
-            for options in websocket_option_attempts():
+            options_list = websocket_option_attempts(self.config.proxy_url)
+            for options in options_list:
                 connected = False
                 try:
                     async with websockets.connect(
@@ -464,7 +472,7 @@ class BinanceClient:
                     await asyncio.sleep(1)
                     break
                 except Exception:
-                    if connected or options == websocket_option_attempts()[-1]:
+                    if connected or options == options_list[-1]:
                         try:
                             yield await self.rest_price_tick()
                         except Exception as exc:
@@ -485,7 +493,7 @@ class PolymarketClient:
         timeout: float,
     ) -> list[MarketState]:
         responses = await asyncio.gather(
-            *(get_direct_first(url, timeout=timeout, params=params) for url, params in requests),
+            *(get_direct_first(url, timeout=timeout, params=params, proxy_url=self.config.proxy_url) for url, params in requests),
             return_exceptions=True,
         )
         seen: set[str] = set()
@@ -569,9 +577,17 @@ class PolymarketClient:
         )
 
     async def book(self, token_id: str) -> OrderBookSnapshot:
-        response, _, end, _ = await get_direct_first(f"{self.config.clob_url}/book", timeout=8, params={"token_id": token_id})
+        response, _, end, _ = await get_direct_first(
+            f"{self.config.clob_url}/book",
+            timeout=8,
+            params={"token_id": token_id},
+            proxy_url=self.config.proxy_url,
+        )
         book = parse_clob_book(response.json())
-        book.timestamp = end
+        # Preserve the CLOB timestamp for ordering against WebSocket updates.
+        # Using the request end time here made every following WebSocket update
+        # look older and caused it to be discarded.
+        book.received_at = end
         return book
 
     async def price_probe(self, token_id: str) -> dict[str, Any]:
@@ -579,6 +595,7 @@ class PolymarketClient:
             f"{self.config.clob_url}/price",
             timeout=8,
             params={"token_id": token_id, "side": "BUY"},
+            proxy_url=self.config.proxy_url,
         )
         return {"ok": True, "latency_ms": (end - start).total_seconds() * 1000, "used_env_proxy": used_env_proxy, "payload": response.json()}
 
@@ -593,7 +610,8 @@ class PolymarketClient:
                 }
             ],
         }
-        for options in websocket_option_attempts():
+        options_list = websocket_option_attempts(self.config.proxy_url)
+        for options in options_list:
             connected = False
             try:
                 async with websockets.connect(
@@ -611,7 +629,7 @@ class PolymarketClient:
                         for tick in parse_rtds_crypto_price_message(message, symbol=symbol):
                             yield tick
             except Exception:
-                if connected or options == websocket_option_attempts()[-1]:
+                if connected or options == options_list[-1]:
                     raise
                 continue
 
@@ -650,7 +668,8 @@ class PolymarketClient:
             "custom_feature_enabled": True,
         }
         try:
-            for options in websocket_option_attempts():
+            options_list = websocket_option_attempts(self.config.proxy_url)
+            for options in options_list:
                 connected = False
                 try:
                     async with websockets.connect(
@@ -668,7 +687,7 @@ class PolymarketClient:
                                 if token_id in ids:
                                     yield token_id, book
                 except Exception:
-                    if connected or options == websocket_option_attempts()[-1]:
+                    if connected or options == options_list[-1]:
                         raise
                     continue
         except websockets.ConnectionClosed as exc:

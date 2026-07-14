@@ -29,6 +29,7 @@ def book(token_id: str, bid: float, ask: float, now: datetime) -> OrderBookSnaps
         token_id=token_id,
         market_id="m1",
         timestamp=now,
+        received_at=now,
         bids=[BookLevel(price=bid, size=100)],
         asks=[BookLevel(price=ask, size=100)],
     )
@@ -67,6 +68,26 @@ def test_entry_rejects_expensive_ask() -> None:
 
     assert decision.accepted is False
     assert decision.reason == "ask_too_expensive"
+
+
+def test_entry_uses_book_received_time_for_freshness() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    up_book = book("up", 0.58, 0.60, now)
+    down_book = book("down", 0.38, 0.40, now)
+    # The exchange sequence time may lag, but the data was just received.
+    up_book.timestamp = now - timedelta(seconds=5)
+    down_book.timestamp = now - timedelta(seconds=5)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=up_book,
+        down_book=down_book,
+        now=now,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is True
 
 
 def test_entry_rejects_edge_equal_to_threshold() -> None:
@@ -376,7 +397,7 @@ def test_engine_ignores_older_book_for_same_market() -> None:
 
     assert engine.books[Direction.UP].best_bid == 0.60
     assert engine.books[Direction.UP].best_ask == 0.61
-    assert engine.rejections[-1]["reason"] == "stale_book_timestamp"
+    assert engine.rejections == []
 
 
 def test_engine_caps_retained_rejections_but_keeps_total_count() -> None:

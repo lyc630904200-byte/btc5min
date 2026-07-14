@@ -196,6 +196,16 @@ def test_coalesce_live_events_keeps_latest_tick_and_books() -> None:
     ]
 
 
+def test_coalesce_live_events_keeps_newest_book_timestamp() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    newer = OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now + timedelta(milliseconds=2))
+    older = OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now + timedelta(milliseconds=1))
+
+    events = [("book", (Direction.UP, newer)), ("book", (Direction.UP, older))]
+
+    assert coalesce_live_events(events) == [("book", (Direction.UP, newer))]
+
+
 def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     engine = PaperEngine(AppConfig())
@@ -206,13 +216,13 @@ def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
 
     engine.set_book(
         Direction.UP,
-        OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now),
+        OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now, received_at=now),
     )
     engine.set_book(
         Direction.DOWN,
-        OrderBookSnapshot(token_id="down", market_id="m1", timestamp=now),
+        OrderBookSnapshot(token_id="down", market_id="m1", timestamp=now, received_at=now),
     )
     assert books_need_rest_refresh(engine, current_market, now) is False
 
-    engine.books[Direction.DOWN].timestamp = now - timedelta(seconds=2)
+    engine.books[Direction.DOWN].received_at = now - timedelta(seconds=2)
     assert books_need_rest_refresh(engine, current_market, now) is True

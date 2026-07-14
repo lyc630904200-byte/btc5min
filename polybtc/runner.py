@@ -16,7 +16,9 @@ from .models import Direction, MarketState, OrderBookSnapshot, PriceTick
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
-BOOK_REST_FALLBACK_AFTER = timedelta(seconds=2)
+# Keep a sub-second REST safety net when the CLOB WebSocket is quiet.  The
+# strategy freshness limit is one second, so a two-second fallback was too slow.
+BOOK_REST_FALLBACK_AFTER = timedelta(milliseconds=500)
 
 
 def run_dir(base: Path) -> Path:
@@ -350,7 +352,7 @@ def books_need_rest_refresh(engine: PaperEngine, market: MarketState, now: datet
         book = engine.books.get(direction)
         if not book or not book_matches_market(market, direction, book):
             return True
-        if now - book.timestamp >= BOOK_REST_FALLBACK_AFTER:
+        if now - book.received_at >= BOOK_REST_FALLBACK_AFTER:
             return True
     return False
 
@@ -479,7 +481,19 @@ def coalesce_live_events(events: list[tuple[str, Any]]) -> list[tuple[str, Any]]
         if event_type == "book" and isinstance(payload, tuple) and payload:
             direction = payload[0]
             direction_key = direction.value if isinstance(direction, Direction) else str(direction)
-            buffered[("book", direction_key)] = (index, event)
+            key = ("book", direction_key)
+            previous = buffered.get(key)
+            if previous:
+                previous_payload = previous[1][1]
+                previous_book = previous_payload[1] if isinstance(previous_payload, tuple) and len(previous_payload) > 1 else None
+                current_book = payload[1] if len(payload) > 1 else None
+                if (
+                    isinstance(previous_book, OrderBookSnapshot)
+                    and isinstance(current_book, OrderBookSnapshot)
+                    and current_book.timestamp <= previous_book.timestamp
+                ):
+                    continue
+            buffered[key] = (index, event)
             continue
         flush_buffered()
         result.append(event)

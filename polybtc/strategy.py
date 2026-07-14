@@ -80,9 +80,9 @@ def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskCo
         return "too_close_to_expiry"
     if age_ms(state.price_tick.received_at, state.now) > risk.max_data_age_ms:
         return "binance_data_stale"
-    if age_ms(state.up_book.timestamp, state.now) > risk.max_data_age_ms:
+    if age_ms(state.up_book.received_at, state.now) > risk.max_data_age_ms:
         return "up_book_stale"
-    if age_ms(state.down_book.timestamp, state.now) > risk.max_data_age_ms:
+    if age_ms(state.down_book.received_at, state.now) > risk.max_data_age_ms:
         return "down_book_stale"
     if state.market_exposure_usd + risk.max_order_usd > risk.max_market_usd:
         return "market_exposure_limit"

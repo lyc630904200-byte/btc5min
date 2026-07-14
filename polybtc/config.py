@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class SourceConfig(BaseModel):
-    proxy_url: str | None = "http://127.0.0.1:24697"
+    proxy_url: str | None = "http://127.0.0.1:23479"
     market_slug: str | None = None
     binance_symbol: str = "BTCUSDT"
     binance_rest_url: str = "https://api.binance.com"

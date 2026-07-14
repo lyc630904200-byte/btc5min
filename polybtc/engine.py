@@ -111,10 +111,12 @@ class PaperEngine:
             return
         existing = self.books.get(direction)
         if existing and book.timestamp <= existing.timestamp:
-            self.record_rejection("stale_book_timestamp")
+            # Duplicate and out-of-order CLOB frames are expected on a busy
+            # WebSocket.  They are not trading rejections, so drop them
+            # silently instead of adding logging and dashboard pressure.
             return
         self.books[direction] = book
-        self.evaluate(book.timestamp)
+        self.evaluate(book.received_at)
 
     def ready(self) -> bool:
         return self.market is not None and self.tick is not None and Direction.UP in self.books and Direction.DOWN in self.books
