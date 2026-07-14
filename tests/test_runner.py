@@ -88,6 +88,11 @@ class FakeOutcomePriceClient(FakePolymarketClient):
         return PolymarketOutcomePrice(slug=market_slug, open_price=64001.5, close_price=None)
 
 
+class FakeEventThresholdClient(FakePolymarketClient):
+    async def event_threshold(self, market_slug: str):
+        return 64002.25
+
+
 class FakePrefetchClient(FakeOutcomePriceClient):
     async def discover_markets(self):
         now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
@@ -123,6 +128,18 @@ def test_apply_polymarket_page_threshold_prefers_current_open_price() -> None:
     assert current.threshold_price == 64001.5
     assert current.threshold_source == "polymarket_page_open_price"
     assert current.threshold_observed_at == now
+
+
+def test_apply_polymarket_page_threshold_prefers_gamma_event_price_to_beat() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    current = market(now, threshold=None, end_delta=timedelta(minutes=5))
+    current.start_time = now
+
+    applied = __import__("asyncio").run(apply_polymarket_page_threshold(FakeEventThresholdClient(), current))
+
+    assert applied is True
+    assert current.threshold_price == 64002.25
+    assert current.threshold_source == "gamma_event_price_to_beat"
 
 
 def test_current_market_with_page_threshold_keeps_current_after_lag() -> None:

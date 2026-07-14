@@ -152,6 +152,17 @@ async def apply_polymarket_page_threshold(
         return False
     if market.threshold_price is not None and market.threshold_source not in {"binance_first_tick_after_start", "polymarket_page_previous_close"}:
         return False
+    event_threshold = getattr(client, "event_threshold", None)
+    if event_threshold is not None:
+        try:
+            threshold = await asyncio.wait_for(event_threshold(market.slug), timeout=timeout_seconds)
+        except Exception:
+            threshold = None
+        if threshold is not None:
+            market.threshold_price = threshold
+            market.threshold_source = "gamma_event_price_to_beat"
+            market.threshold_observed_at = market.start_time
+            return True
     page_data = getattr(client, "market_page_data", None)
     if page_data is not None:
         outcome_price, results = await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)

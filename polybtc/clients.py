@@ -540,6 +540,28 @@ class PolymarketClient:
         )
         return await self._discover_from_requests(fallback_requests, now=now, timeout=6)
 
+    async def event_threshold(self, market_slug: str) -> float | None:
+        """Read the event's price-to-beat from Gamma's compact JSON response."""
+        response, _, _, _ = await get_direct_first(
+            f"{self.config.gamma_url}/events",
+            timeout=self.config.threshold_page_timeout_seconds,
+            params={"slug": market_slug},
+            proxy_url=self.config.proxy_url,
+        )
+        payload = response.json()
+        events = payload if isinstance(payload, list) else [payload]
+        for event in events:
+            if not isinstance(event, dict) or event.get("slug") != market_slug:
+                continue
+            metadata = event.get("eventMetadata") or {}
+            try:
+                threshold = float(metadata.get("priceToBeat"))
+            except (TypeError, ValueError):
+                continue
+            if threshold >= 1000:
+                return threshold
+        return None
+
     async def current_market(self) -> MarketState | None:
         return choose_current_market(
             await self.discover_markets(),
