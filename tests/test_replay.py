@@ -25,12 +25,14 @@ def test_replay_recomputes_entry_and_exit(tmp_path) -> None:
     up_book = OrderBookSnapshot(
         token_id="up",
         timestamp=now,
+        received_at=now,
         bids=[BookLevel(price=0.72, size=100)],
         asks=[BookLevel(price=0.60, size=100)],
     )
     down_book = OrderBookSnapshot(
         token_id="down",
         timestamp=now,
+        received_at=now,
         bids=[BookLevel(price=0.30, size=100)],
         asks=[BookLevel(price=0.40, size=100)],
     )
