@@ -30,7 +30,8 @@ strategy:
   max_buy_price: 0.75
   take_profit_ticks: 0.10
   min_profit_after_slippage: 0.04
-  min_seconds_to_entry: 12
+  min_seconds_to_entry: 30
+  max_seconds_to_entry: 240
   force_exit_seconds: 5
 
 risk:

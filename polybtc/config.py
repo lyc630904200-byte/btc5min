@@ -39,7 +39,8 @@ class StrategyConfig(BaseModel):
     max_buy_price: float = 0.75
     take_profit_ticks: float = 0.10
     min_profit_after_slippage: float = 0.04
-    min_seconds_to_entry: float = 12.0
+    min_seconds_to_entry: float = 30.0
+    max_seconds_to_entry: float = 240.0
     force_exit_seconds: float = 5.0
 
     @field_validator("max_buy_price")
@@ -47,6 +48,13 @@ class StrategyConfig(BaseModel):
     def valid_probability(cls, value: float) -> float:
         if not 0 < value < 1:
             raise ValueError("max_buy_price must be between 0 and 1")
+        return value
+
+    @field_validator("min_seconds_to_entry", "max_seconds_to_entry")
+    @classmethod
+    def valid_entry_window(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("entry window values must be positive")
         return value
 
 

@@ -76,7 +76,10 @@ def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskCo
         return "market_not_accepting_orders"
     if market.start_time is not None and state.now < market.start_time:
         return "market_not_started"
-    if seconds_to_expiry(market, state.now) < strategy.min_seconds_to_entry:
+    remaining_seconds = seconds_to_expiry(market, state.now)
+    if remaining_seconds > strategy.max_seconds_to_entry:
+        return "too_early_to_entry"
+    if remaining_seconds < strategy.min_seconds_to_entry:
         return "too_close_to_expiry"
     if age_ms(state.price_tick.received_at, state.now) > risk.max_data_age_ms:
         return "binance_data_stale"

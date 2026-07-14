@@ -17,7 +17,7 @@ def market(now: datetime) -> MarketState:
         slug="bitcoin-up-or-down",
         question="Bitcoin Up or Down above 118000",
         threshold_price=118000,
-        end_time=now + timedelta(minutes=5),
+        end_time=now + timedelta(seconds=120),
         up_token_id="up",
         down_token_id="down",
         min_order_size=5,
@@ -138,6 +138,27 @@ def test_entry_rejects_market_before_start() -> None:
 
     assert decision.accepted is False
     assert decision.reason == "market_not_started"
+
+
+def test_entry_rejects_outside_configured_entry_window() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    strategy = raw_edge_strategy()
+
+    state.market.end_time = now + timedelta(seconds=241)
+    assert evaluate_entry(state, strategy, RiskConfig()).reason == "too_early_to_entry"
+
+    state.market.end_time = now + timedelta(seconds=29)
+    assert evaluate_entry(state, strategy, RiskConfig()).reason == "too_close_to_expiry"
+
+    state.market.end_time = now + timedelta(seconds=240)
+    assert evaluate_entry(state, strategy, RiskConfig()).accepted is True
 
 
 def test_exit_take_profit() -> None:
