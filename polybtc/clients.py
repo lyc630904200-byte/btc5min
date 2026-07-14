@@ -49,23 +49,27 @@ async def get_direct_first(
     follow_redirects: bool = False,
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
+    proxy_url: str | None = None,
 ) -> tuple[httpx.Response, datetime, datetime, bool]:
-    fallback_allowed = True
-    for trust_env in (False, True):
+    attempts = [(proxy_url, False)] if proxy_url else []
+    attempts.extend([(None, False), (None, True)])
+    for index, (proxy, trust_env) in enumerate(attempts):
         start = datetime.now(timezone.utc)
         try:
+            options: dict[str, Any] = {"proxy": proxy} if proxy else {}
             async with httpx.AsyncClient(
                 timeout=timeout,
                 follow_redirects=follow_redirects,
                 headers=headers,
                 trust_env=trust_env,
+                **options,
             ) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
             end = datetime.now(timezone.utc)
             return response, start, end, trust_env
         except Exception as exc:
-            if trust_env or not fallback_allowed or not should_retry_with_env_proxy(exc):
+            if index == len(attempts) - 1 or not should_retry_with_env_proxy(exc):
                 raise
     raise RuntimeError("unreachable direct-first HTTP retry state")
 
@@ -589,17 +593,18 @@ class PolymarketClient:
                     raise
                 continue
 
-    async def event_page_text(self, market_slug: str) -> str:
+    async def event_page_text(self, market_slug: str, timeout: float | None = None) -> str:
         response, _, _, _ = await get_direct_first(
             f"https://polymarket.com/event/{market_slug}",
-            timeout=12,
+            timeout=timeout or self.config.threshold_page_timeout_seconds,
             follow_redirects=True,
             headers={"user-agent": "Mozilla/5.0"},
+            proxy_url=self.config.proxy_url,
         )
         return response.text
 
     async def market_page_data(self, market_slug: str) -> tuple[PolymarketOutcomePrice | None, list[PolymarketPastResult]]:
-        text = await self.event_page_text(market_slug)
+        text = await self.event_page_text(market_slug, self.config.threshold_page_timeout_seconds)
         outcome_price = next((price for price in parse_polymarket_outcome_prices(text) if price.slug == market_slug), None)
         return outcome_price, parse_polymarket_past_results(text)
 

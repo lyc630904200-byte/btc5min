@@ -143,18 +143,22 @@ def should_retry_threshold(now: datetime, next_retry_at: datetime) -> bool:
     return now >= next_retry_at
 
 
-async def apply_polymarket_page_threshold(client: PolymarketClient, market: MarketState) -> bool:
+async def apply_polymarket_page_threshold(
+    client: PolymarketClient,
+    market: MarketState,
+    timeout_seconds: float = 4.0,
+) -> bool:
     if market.start_time is None:
         return False
     if market.threshold_price is not None and market.threshold_source not in {"binance_first_tick_after_start", "polymarket_page_previous_close"}:
         return False
     page_data = getattr(client, "market_page_data", None)
     if page_data is not None:
-        outcome_price, results = await page_data(market.slug)
+        outcome_price, results = await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)
     else:
         outcome_result, results_result = await asyncio.gather(
-            client.outcome_price(market.slug),
-            client.past_results(market.slug),
+            asyncio.wait_for(client.outcome_price(market.slug), timeout=timeout_seconds),
+            asyncio.wait_for(client.past_results(market.slug), timeout=timeout_seconds),
             return_exceptions=True,
         )
         if isinstance(outcome_result, Exception) and isinstance(results_result, Exception):
@@ -174,6 +178,26 @@ async def apply_polymarket_page_threshold(client: PolymarketClient, market: Mark
     market.threshold_source = "polymarket_page_previous_close"
     market.threshold_observed_at = latest.end_time
     return True
+
+
+async def prefetch_next_market_threshold(
+    client: PolymarketClient,
+    current_market: MarketState,
+    config: AppConfig,
+) -> MarketState | None:
+    """Fetch the next 5-minute market and its threshold before the current market expires."""
+    markets = await client.discover_markets()
+    candidates = [market for market in markets if market.end_time > current_market.end_time]
+    if not candidates:
+        return None
+    next_market = min(candidates, key=lambda market: market.end_time)
+    if next_market.threshold_price is None:
+        await apply_polymarket_page_threshold(
+            client,
+            next_market,
+            timeout_seconds=config.sources.threshold_page_timeout_seconds,
+        )
+    return next_market
 
 
 async def current_market_with_page_threshold(
@@ -208,7 +232,7 @@ async def initialize_current_market(
         )
         if market and market.threshold_price is None:
             try:
-                await apply_polymarket_page_threshold(client, market)
+                await apply_polymarket_page_threshold(client, market, engine.config.sources.threshold_page_timeout_seconds)
             except Exception as exc:
                 journal.latency_row("polymarket_page", "initial_threshold", False, None, str(exc))
     except Exception as exc:
@@ -223,30 +247,43 @@ async def initialize_current_market(
 
 async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, interval_seconds: float) -> None:
     last_market_id = engine.market.condition_id if engine.market else None
+    prefetched_market: MarketState | None = None
+    prefetched_for_market_id: str | None = None
+    next_prefetch_attempt = datetime.min.replace(tzinfo=timezone.utc)
     while True:
         try:
             now_utc = datetime.now(timezone.utc)
             if engine.market and engine.market.threshold_price is None and engine.market.end_time > now_utc:
                 try:
-                    if await apply_polymarket_page_threshold(client, engine.market):
+                    if await apply_polymarket_page_threshold(client, engine.market, engine.config.sources.threshold_page_timeout_seconds):
                         await queue.put(("market", engine.market))
                         await asyncio.sleep(interval_seconds)
                         continue
                 except Exception as exc:
                     await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
             if should_keep_current_market(engine, now=now_utc):
+                if prefetched_for_market_id != engine.market.condition_id and now_utc >= next_prefetch_attempt:
+                    try:
+                        prefetched_market = await prefetch_next_market_threshold(client, engine.market, engine.config)
+                        prefetched_for_market_id = engine.market.condition_id
+                    except Exception as exc:
+                        next_prefetch_attempt = now_utc + timedelta(seconds=5)
+                        await queue.put(("error", {"source": "polymarket_page_prefetch", "error": str(exc)}))
                 await asyncio.sleep(interval_seconds)
                 continue
-            markets = await client.discover_markets()
-            market = choose_current_market(
-                markets,
-                now=now_utc,
-                max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
-            )
+            market = prefetched_market if prefetched_market and prefetched_market.end_time >= now_utc else None
+            prefetched_market = None
+            if market is None:
+                markets = await client.discover_markets()
+                market = choose_current_market(
+                    markets,
+                    now=now_utc,
+                    max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
+                )
             if market and (market.condition_id != last_market_id or market.threshold_price is None):
                 last_market_id = market.condition_id
                 try:
-                    await apply_polymarket_page_threshold(client, market)
+                    await apply_polymarket_page_threshold(client, market, engine.config.sources.threshold_page_timeout_seconds)
                 except Exception as exc:
                     await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
                 await queue.put(("market", market))

@@ -3,6 +3,7 @@ data_retention_hours: 24
 data_cleanup_interval_seconds: 300
 
 sources:
+  proxy_url: http://127.0.0.1:24697
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
   binance_rest_url: https://api.binance.com
@@ -11,6 +12,7 @@ sources:
   clob_url: https://clob.polymarket.com
   clob_ws_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
   rtds_ws_url: wss://ws-live-data.polymarket.com
+  threshold_page_timeout_seconds: 4
   poly_book_poll_ms: 200
   market_refresh_seconds: 0.5
   max_start_price_lag_ms: 2000

@@ -382,8 +382,22 @@ def test_engine_ignores_older_book_for_same_market() -> None:
 def test_engine_caps_retained_rejections_but_keeps_total_count() -> None:
     engine = PaperEngine(AppConfig())
 
-    for _ in range(MAX_RECENT_REJECTIONS + 10):
-        engine.record_rejection("edge_too_small")
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    for index in range(MAX_RECENT_REJECTIONS + 10):
+        engine.record_rejection("edge_too_small", now + timedelta(seconds=index))
 
     assert len(engine.rejections) == MAX_RECENT_REJECTIONS
     assert engine.summary()["rejections"] == MAX_RECENT_REJECTIONS + 10
+
+
+def test_engine_rate_limits_duplicate_rejection_reasons() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+
+    engine.record_rejection("edge_too_small", now)
+    engine.record_rejection("edge_too_small", now + timedelta(milliseconds=500))
+    engine.record_rejection("ask_too_expensive", now + timedelta(milliseconds=500))
+    engine.record_rejection("edge_too_small", now + timedelta(seconds=1))
+
+    assert engine.summary()["rejections"] == 3
+    assert [item["reason"] for item in engine.rejections] == ["edge_too_small", "ask_too_expensive", "edge_too_small"]

@@ -8,6 +8,7 @@ from polybtc.runner import (
     books_need_rest_refresh,
     coalesce_live_events,
     current_market_with_page_threshold,
+    prefetch_next_market_threshold,
     should_keep_current_market,
     should_retry_threshold,
 )
@@ -87,6 +88,17 @@ class FakeOutcomePriceClient(FakePolymarketClient):
         return PolymarketOutcomePrice(slug=market_slug, open_price=64001.5, close_price=None)
 
 
+class FakePrefetchClient(FakeOutcomePriceClient):
+    async def discover_markets(self):
+        now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+        current = market(now, threshold=64000, end_delta=timedelta(minutes=5))
+        upcoming = market(now, threshold=None, end_delta=timedelta(minutes=10))
+        upcoming.condition_id = "m2"
+        upcoming.slug = "btc-updown-5m-next"
+        upcoming.start_time = now + timedelta(minutes=5)
+        return [current, upcoming]
+
+
 def test_apply_polymarket_page_threshold_uses_previous_close() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     current = market(now, threshold=None, end_delta=timedelta(minutes=5))
@@ -122,6 +134,17 @@ def test_current_market_with_page_threshold_keeps_current_after_lag() -> None:
     assert selected is not None
     assert selected.condition_id == "m1"
     assert selected.threshold_price == 64000.25
+
+
+def test_prefetch_next_market_threshold_fetches_upcoming_market() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    current = market(now, threshold=64000, end_delta=timedelta(minutes=5))
+
+    prefetched = __import__("asyncio").run(prefetch_next_market_threshold(FakePrefetchClient(), current, AppConfig()))
+
+    assert prefetched is not None
+    assert prefetched.condition_id == "m2"
+    assert prefetched.threshold_price == 64001.5
 
 
 def test_threshold_retry_is_throttled_by_refresh_interval() -> None:

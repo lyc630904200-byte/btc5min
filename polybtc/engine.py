@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .config import AppConfig
 from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Position, PriceTick
@@ -8,6 +8,7 @@ from .strategy import StrategyState, evaluate_entry, evaluate_exit, position_fro
 
 
 MAX_RECENT_REJECTIONS = 500
+REJECTION_RECORD_INTERVAL = timedelta(seconds=1)
 
 
 class PaperEngine:
@@ -24,11 +25,19 @@ class PaperEngine:
         self.exit_events = []
         self.rejections: list[dict[str, str]] = []
         self.rejection_count = 0
+        self.last_rejection_at_by_reason: dict[str, datetime] = {}
         self.market_exposure_usd = 0.0
 
     def record_rejection(self, reason: str, now: datetime | None = None) -> None:
+        recorded_at = now or datetime.now(timezone.utc)
+        previous = self.last_rejection_at_by_reason.get(reason)
+        if previous:
+            elapsed = recorded_at - previous
+            if timedelta(0) <= elapsed < REJECTION_RECORD_INTERVAL:
+                return
+        self.last_rejection_at_by_reason[reason] = recorded_at
         self.rejection_count += 1
-        self.rejections.append({"created_at": (now or datetime.now(timezone.utc)).isoformat(), "reason": reason})
+        self.rejections.append({"created_at": recorded_at.isoformat(), "reason": reason})
         if len(self.rejections) > MAX_RECENT_REJECTIONS:
             del self.rejections[:-MAX_RECENT_REJECTIONS]
 
