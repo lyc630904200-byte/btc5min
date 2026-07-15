@@ -8,7 +8,7 @@ from polybtc.strategy import StrategyState, evaluate_entry, evaluate_exit, posit
 
 
 def raw_edge_strategy() -> StrategyConfig:
-    return StrategyConfig(min_entry_edge_usd=10, edge_correction_usd=0)
+    return StrategyConfig(min_entry_edge_usd=10)
 
 
 def market(now: datetime) -> MarketState:
@@ -68,6 +68,22 @@ def test_entry_rejects_expensive_ask() -> None:
 
     assert decision.accepted is False
     assert decision.reason == "ask_too_expensive"
+
+
+def test_entry_rejects_ask_at_minimum_buy_price() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.09, 0.10, now),
+        down_book=book("down", 0.58, 0.60, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is False
+    assert decision.reason == "ask_too_cheap"
 
 
 def test_entry_uses_book_received_time_for_freshness() -> None:
@@ -154,7 +170,7 @@ def test_entry_rejects_outside_configured_entry_window() -> None:
     state.market.end_time = now + timedelta(seconds=241)
     assert evaluate_entry(state, strategy, RiskConfig()).reason == "too_early_to_entry"
 
-    state.market.end_time = now + timedelta(seconds=29)
+    state.market.end_time = now + timedelta(seconds=9)
     assert evaluate_entry(state, strategy, RiskConfig()).reason == "too_close_to_expiry"
 
     state.market.end_time = now + timedelta(seconds=240)
@@ -196,7 +212,7 @@ def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -
         market=market(now),
         price_tick=PriceTick(price=117980, received_at=now),
         up_book=book("up", 0.58, 0.60, now),
-        down_book=book("down", 0.38, 0.40, now),
+        down_book=book("down", 0.44, 0.46, now),
         now=now,
     )
     entry = evaluate_entry(entry_state, strategy, RiskConfig())
@@ -222,7 +238,7 @@ def test_down_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
         market=market(now),
         price_tick=PriceTick(price=117980, received_at=now),
         up_book=book("up", 0.58, 0.60, now),
-        down_book=book("down", 0.38, 0.40, now),
+        down_book=book("down", 0.44, 0.46, now),
         now=now,
     )
     entry = evaluate_entry(entry_state, strategy, RiskConfig())
@@ -271,7 +287,7 @@ def test_up_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
     assert decision.reason.value == "edge_faded"
 
 
-def test_entry_uses_default_edge_correction() -> None:
+def test_entry_uses_binance_minus_threshold() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     state = StrategyState(
         market=market(now),
@@ -285,10 +301,10 @@ def test_entry_uses_default_edge_correction() -> None:
 
     assert decision.accepted is True
     assert decision.signal is not None
-    assert decision.signal.edge_usd == 22.25
+    assert decision.signal.edge_usd == 70
 
 
-def test_entry_records_corrected_edge() -> None:
+def test_entry_records_binance_minus_threshold_edge() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     state = StrategyState(
         market=market(now),
@@ -303,10 +319,10 @@ def test_entry_records_corrected_edge() -> None:
     assert decision.accepted is True
     assert decision.signal is not None
     assert decision.signal.direction == Direction.UP
-    assert decision.signal.edge_usd == 52.25
+    assert decision.signal.edge_usd == 100
 
 
-def test_entry_can_use_dynamic_edge_correction() -> None:
+def test_entry_subtracts_dynamic_edge_correction() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     state = StrategyState(
         market=market(now),
@@ -314,29 +330,28 @@ def test_entry_can_use_dynamic_edge_correction() -> None:
         up_book=book("up", 0.58, 0.60, now),
         down_book=book("down", 0.38, 0.40, now),
         now=now,
-        edge_correction_usd=-30,
+        edge_correction_usd=20,
     )
 
     decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
 
     assert decision.accepted is True
     assert decision.signal is not None
-    assert decision.signal.edge_usd == 40
+    assert decision.signal.edge_usd == 50
 
 
-def test_engine_uses_polymarket_minus_binance_as_edge_correction() -> None:
+def test_engine_uses_binance_minus_polymarket_as_dynamic_correction() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     engine = PaperEngine(AppConfig())
     engine.set_market(market(now))
     engine.set_tick(PriceTick(price=118070, received_at=now))
     engine.set_polymarket_tick(PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now))
 
-    assert engine.edge_correction_usd() == -30
-    assert engine.edge_correction_source() == "polymarket_minus_binance"
-
     engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
     engine.set_book(Direction.DOWN, book("down", 0.38, 0.40, now))
 
+    assert engine.edge_correction_usd() == 30
+    assert engine.edge_correction_source() == "binance_minus_polymarket"
     assert engine.signals[-1].edge_usd == 40
 
 
@@ -419,6 +434,58 @@ def test_engine_ignores_older_book_for_same_market() -> None:
     assert engine.books[Direction.UP].best_bid == 0.60
     assert engine.books[Direction.UP].best_ask == 0.61
     assert engine.rejections == []
+
+
+def test_engine_uses_fresh_rest_fallback_when_websocket_book_is_stale() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    websocket_book = book("up", 0.60, 0.61, now + timedelta(seconds=2))
+    rest_book = book("up", 0.40, 0.41, now + timedelta(seconds=1))
+    rest_book.received_at = now + timedelta(seconds=3)
+    rest_book.raw = {"_transport": "rest", "_request_started_at": (now + timedelta(seconds=2, milliseconds=500)).isoformat()}
+
+    engine.set_book(Direction.UP, websocket_book)
+    engine.set_book(Direction.UP, rest_book)
+
+    active = engine.books[Direction.UP]
+    assert active.best_bid == 0.40
+    assert active.best_ask == 0.41
+    assert active.timestamp == websocket_book.timestamp
+    assert active.received_at == now + timedelta(seconds=3)
+
+
+def test_engine_drops_rest_snapshot_when_websocket_advanced_during_request() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    websocket_book = book("up", 0.60, 0.61, now + timedelta(seconds=2))
+    websocket_book.received_at = now + timedelta(seconds=2)
+    rest_book = book("up", 0.40, 0.41, now + timedelta(seconds=1))
+    rest_book.received_at = now + timedelta(seconds=3)
+    rest_book.raw = {"_transport": "rest", "_request_started_at": (now + timedelta(seconds=1)).isoformat()}
+
+    engine.set_book(Direction.UP, websocket_book)
+    engine.set_book(Direction.UP, rest_book)
+
+    active = engine.books[Direction.UP]
+    assert active.best_bid == 0.60
+    assert active.best_ask == 0.61
+
+
+def test_engine_uses_later_snapshot_with_equal_source_timestamp() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    partial = book("up", 0.40, 0.45, now)
+    final = book("up", 0.42, 0.43, now)
+    final.received_at = now + timedelta(microseconds=1)
+
+    engine.set_book(Direction.UP, partial)
+    engine.set_book(Direction.UP, final)
+
+    assert engine.books[Direction.UP].best_bid == 0.42
+    assert engine.books[Direction.UP].best_ask == 0.43
 
 
 def test_engine_caps_retained_rejections_but_keeps_total_count() -> None:

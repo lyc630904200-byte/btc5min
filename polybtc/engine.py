@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from .config import AppConfig
-from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Position, PriceTick
+from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Position, PriceTick, rest_request_started_at
 from .strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry, settle_position
 
 
@@ -69,15 +69,13 @@ class PaperEngine:
         self.polymarket_tick = tick
         self.evaluate(tick.received_at)
 
-    def edge_correction_usd(self) -> float:
+    def edge_correction_usd(self) -> float | None:
         if self.tick and self.polymarket_tick:
-            return self.polymarket_tick.price - self.tick.price
-        return self.config.strategy.edge_correction_usd
+            return self.tick.price - self.polymarket_tick.price
+        return None
 
     def edge_correction_source(self) -> str:
-        if self.tick and self.polymarket_tick:
-            return "polymarket_minus_binance"
-        return "configured_fallback"
+        return "binance_minus_polymarket" if self.edge_correction_usd() is not None else "unavailable_zero"
 
     def capture_dynamic_threshold(self, tick: PriceTick) -> bool:
         if not self.market or self.market.threshold_price is not None:
@@ -110,10 +108,34 @@ class PaperEngine:
             self.record_rejection("stale_book_market")
             return
         existing = self.books.get(direction)
-        if existing and book.timestamp <= existing.timestamp:
-            # Duplicate and out-of-order CLOB frames are expected on a busy
-            # WebSocket.  They are not trading rejections, so drop them
-            # silently instead of adding logging and dashboard pressure.
+        request_started_at = rest_request_started_at(book)
+        if (
+            existing
+            and request_started_at is not None
+            and book.timestamp <= existing.timestamp
+            and existing.received_at > request_started_at
+        ):
+            # The WebSocket advanced while this REST request was in flight.
+            # Its late response is no longer a safe reconciliation snapshot.
+            return
+        if existing and book.timestamp < existing.timestamp:
+            # A REST fallback is only requested after the locally received
+            # WebSocket book is stale.  CLOB REST timestamps can lag a silent
+            # WebSocket frame, so accept that fresh local snapshot while
+            # retaining the WebSocket timestamp as the sequence watermark.
+            is_fresh_rest_fallback = (
+                isinstance(book.raw, dict)
+                and book.raw.get("_transport") == "rest"
+                and book.received_at > existing.received_at
+            )
+            if is_fresh_rest_fallback:
+                book.timestamp = existing.timestamp
+            else:
+                # Duplicate and out-of-order CLOB frames are expected on a busy
+                # WebSocket.  They are not trading rejections, so drop them
+                # silently instead of adding logging and dashboard pressure.
+                return
+        elif existing and book.timestamp == existing.timestamp and book.received_at < existing.received_at:
             return
         self.books[direction] = book
         self.evaluate(book.received_at)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import json
 import socket
 from datetime import datetime, timedelta, timezone
@@ -36,6 +35,7 @@ class DashboardHub:
             "summary": {},
             "events": [],
             "strategy": self.config_json()["strategy"],
+            "risk": self.config_json()["risk"],
             "ws_url": self.ws_url,
         }
         self.events: list[dict[str, Any]] = []
@@ -145,6 +145,7 @@ class DashboardHub:
             "token_id": book.get("token_id"),
             "market_id": book.get("market_id"),
             "timestamp": book.get("timestamp"),
+            "received_at": book.get("received_at"),
             "best_bid": best_bid,
             "best_ask": best_ask,
             "min_order_size": book.get("min_order_size"),
@@ -156,16 +157,57 @@ class DashboardHub:
         payload["market"] = self.compact_market(payload.get("market"))
         payload["books"] = {direction: self.compact_book(book) for direction, book in (payload.get("books") or {}).items()}
         payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
+        payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}
         return payload
 
     def config_json(self) -> dict[str, Any]:
-        return {"strategy": {"edge_correction_usd": self.config.strategy.edge_correction_usd}}
+        strategy = self.config.strategy
+        risk = self.config.risk
+        return {
+            "strategy": {
+                "min_entry_edge_usd": strategy.min_entry_edge_usd,
+                "stop_edge_usd": strategy.stop_edge_usd,
+                "min_buy_price": strategy.min_buy_price,
+                "max_buy_price": strategy.max_buy_price,
+                "take_profit_ticks": strategy.take_profit_ticks,
+                "min_seconds_to_entry": strategy.min_seconds_to_entry,
+                "max_seconds_to_entry": strategy.max_seconds_to_entry,
+            },
+            "risk": {"max_order_usd": risk.max_order_usd},
+        }
 
-    def set_edge_correction(self, value: Any) -> dict[str, Any]:
-        correction = float(value)
-        if not math.isfinite(correction):
-            raise ValueError("edge_correction_usd must be finite")
-        self.config.strategy.edge_correction_usd = correction
+    def set_runtime_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        strategy_update = payload.get("strategy")
+        risk_update = payload.get("risk")
+        if strategy_update is not None and not isinstance(strategy_update, dict):
+            raise ValueError("strategy must be an object")
+        if risk_update is not None and not isinstance(risk_update, dict):
+            raise ValueError("risk must be an object")
+        if not strategy_update and not risk_update:
+            raise ValueError("strategy or risk settings are required")
+
+        strategy_fields = {
+            "min_entry_edge_usd",
+            "stop_edge_usd",
+            "min_buy_price",
+            "max_buy_price",
+            "take_profit_ticks",
+            "min_seconds_to_entry",
+            "max_seconds_to_entry",
+        }
+        risk_fields = {"max_order_usd"}
+        unexpected_strategy = set(strategy_update or {}) - strategy_fields
+        unexpected_risk = set(risk_update or {}) - risk_fields
+        if unexpected_strategy or unexpected_risk:
+            names = sorted(unexpected_strategy | unexpected_risk)
+            raise ValueError(f"unsupported runtime settings: {', '.join(names)}")
+
+        strategy_payload = self.config.strategy.model_dump()
+        strategy_payload.update(strategy_update or {})
+        risk_payload = self.config.risk.model_dump()
+        risk_payload.update(risk_update or {})
+        self.config.strategy = type(self.config.strategy).model_validate(strategy_payload)
+        self.config.risk = type(self.config.risk).model_validate(risk_payload)
         return self.config_json()
 
     async def publish(self, snapshot: dict[str, Any]) -> None:
@@ -209,6 +251,7 @@ class DashboardHub:
         payload["events"] = list(self.events)
         payload["ws_url"] = self.ws_url
         payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
+        payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
@@ -253,9 +296,9 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            strategy = payload.get("strategy") if isinstance(payload, dict) else None
-            value = strategy.get("edge_correction_usd") if isinstance(strategy, dict) else payload.get("edge_correction_usd")
-            self.send_json(200, self.hub.set_edge_correction(value))
+            if not isinstance(payload, dict):
+                raise ValueError("config payload must be an object")
+            self.send_json(200, self.hub.set_runtime_config(payload))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
 

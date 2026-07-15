@@ -19,6 +19,7 @@ from .models import BookLevel, MarketState, OrderBookSnapshot, PriceTick
 CLOB_SUBSCRIPTION_TYPE = "market"
 POLYMARKET_RTDS_CRYPTO_TOPIC = "crypto_prices_chainlink"
 PROXY_ATTEMPT_TIMEOUT_SECONDS = 1.5
+CLOB_HEARTBEAT_SECONDS = 10
 
 
 def btc_updown_5m_slugs(now: datetime, *, before: int = 3, after: int = 12) -> list[str]:
@@ -195,7 +196,11 @@ def parse_clob_market_messages(raw: object) -> list[dict[str, Any]]:
     if isinstance(raw, (bytes, bytearray)):
         raw = raw.decode("utf-8")
     if isinstance(raw, str):
-        raw = json.loads(raw)
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            # Market-channel heartbeats are plain-text PING/PONG frames.
+            return []
 
     items = list(raw) if isinstance(raw, list) else [raw]
     events: list[dict[str, Any]] = []
@@ -217,7 +222,11 @@ def update_books_from_market_message(
     raw: object,
     books: dict[str, OrderBookSnapshot],
 ) -> list[tuple[str, OrderBookSnapshot]]:
-    updates: list[tuple[str, OrderBookSnapshot]] = []
+    # A single price_change message can contain hundreds of depth deltas for
+    # the same token.  Apply all of them locally, but publish only the final
+    # snapshot for each token.  Publishing every intermediate snapshot floods
+    # the runner, journal, and dashboard and makes the visible top of book lag.
+    updates: dict[str, OrderBookSnapshot] = {}
     for event in parse_clob_market_messages(raw):
         event_type = str(event.get("type") or "")
         payload = event.get("payload") or {}
@@ -227,13 +236,12 @@ def update_books_from_market_message(
         if event_type == "book":
             book = parse_clob_book(payload)
             existing = books.get(book.token_id)
-            if book.token_id and (existing is None or book.timestamp > existing.timestamp):
+            if book.token_id and (existing is None or book.timestamp >= existing.timestamp):
                 books[book.token_id] = book
-                updates.append((book.token_id, book))
+                updates[book.token_id] = book
             continue
 
         if event_type == "price_change":
-            prior_timestamps: dict[str, datetime] = {}
             for change in clob_price_changes(payload):
                 token_id = str(change.get("asset_id") or change.get("token_id") or payload.get("asset_id") or payload.get("token_id") or "")
                 if not token_id:
@@ -241,12 +249,19 @@ def update_books_from_market_message(
                 book = books.get(token_id)
                 if book is None:
                     continue
-                prior_timestamp = prior_timestamps.setdefault(token_id, book.timestamp)
                 updated = apply_clob_price_change(book, payload, change)
-                if updated.timestamp <= prior_timestamp:
+                # Multiple messages and multiple deltas in one message often
+                # share a millisecond timestamp.  Equal timestamps are valid;
+                # only a strictly older update is out of order.
+                if updated.timestamp < book.timestamp:
                     continue
+                if change.get("best_bid") is not None or change.get("best_ask") is not None:
+                    # price_change carries the authoritative top of book.  Use
+                    # it to repair a locally incomplete depth cache immediately
+                    # instead of waiting for a later best_bid_ask event.
+                    updated = apply_clob_best_bid_ask(updated, {**payload, **change})
                 books[token_id] = updated
-                updates.append((token_id, updated))
+                updates[token_id] = updated
             continue
 
         if event_type == "best_bid_ask":
@@ -258,12 +273,12 @@ def update_books_from_market_message(
                 updated = parse_clob_best_bid_ask(payload)
             else:
                 updated = apply_clob_best_bid_ask(book, payload)
-            if updated.timestamp <= (book.timestamp if book else datetime.min.replace(tzinfo=timezone.utc)):
+            if updated.timestamp < (book.timestamp if book else datetime.min.replace(tzinfo=timezone.utc)):
                 continue
             books[token_id] = updated
-            updates.append((token_id, updated))
+            updates[token_id] = updated
             continue
-    return updates
+    return list(updates.items())
 
 
 def parse_rtds_crypto_price_message(
@@ -581,7 +596,7 @@ class PolymarketClient:
         )
 
     async def book(self, token_id: str) -> OrderBookSnapshot:
-        response, _, end, _ = await get_direct_first(
+        response, start, end, _ = await get_direct_first(
             f"{self.config.clob_url}/book",
             timeout=8,
             params={"token_id": token_id},
@@ -592,6 +607,11 @@ class PolymarketClient:
         # Using the request end time here made every following WebSocket update
         # look older and caused it to be discarded.
         book.received_at = end
+        book.raw = {
+            **(book.raw or {}),
+            "_transport": "rest",
+            "_request_started_at": start.isoformat(),
+        }
         return book
 
     async def price_probe(self, token_id: str) -> dict[str, Any]:
@@ -686,16 +706,27 @@ class PolymarketClient:
                     ) as websocket:
                         connected = True
                         await websocket.send(json.dumps(subscription, separators=(",", ":"), ensure_ascii=False))
-                        async for message in websocket:
-                            for token_id, book in update_books_from_market_message(message, books):
-                                if token_id in ids:
-                                    yield token_id, book
+                        heartbeat = asyncio.create_task(send_clob_heartbeats(websocket))
+                        try:
+                            async for message in websocket:
+                                for token_id, book in update_books_from_market_message(message, books):
+                                    if token_id in ids:
+                                        yield token_id, book
+                        finally:
+                            heartbeat.cancel()
+                            await asyncio.gather(heartbeat, return_exceptions=True)
                 except Exception:
                     if connected or options == options_list[-1]:
                         raise
                     continue
         except websockets.ConnectionClosed as exc:
             raise ConnectionError("polymarket websocket disconnected") from exc
+
+
+async def send_clob_heartbeats(websocket: Any) -> None:
+    while True:
+        await asyncio.sleep(CLOB_HEARTBEAT_SECONDS)
+        await websocket.send("PING")
 
 
 def expand_market_slugs(slug: str) -> list[str]:

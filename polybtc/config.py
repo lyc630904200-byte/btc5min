@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SourceConfig(BaseModel):
@@ -18,13 +18,14 @@ class SourceConfig(BaseModel):
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     threshold_page_timeout_seconds: float = 4.0
+    threshold_page_retry_seconds: float = 2.0
     poly_book_poll_ms: int = 200
     market_refresh_seconds: float = 0.5
     max_start_price_lag_ms: int = 2000
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])
     observe_only_on_unverified_settlement: bool = True
 
-    @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms", "threshold_page_timeout_seconds")
+    @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms", "threshold_page_timeout_seconds", "threshold_page_retry_seconds")
     @classmethod
     def positive_interval(cls, value: float) -> float:
         if value <= 0:
@@ -35,20 +36,28 @@ class SourceConfig(BaseModel):
 class StrategyConfig(BaseModel):
     min_entry_edge_usd: float = 15.0
     stop_edge_usd: float = 15.0
-    edge_correction_usd: float = -47.75
+    min_buy_price: float = 0.10
     max_buy_price: float = 0.75
     take_profit_ticks: float = 0.10
     min_profit_after_slippage: float = 0.04
-    min_seconds_to_entry: float = 30.0
+    min_seconds_to_entry: float = 10.0
     max_seconds_to_entry: float = 240.0
     force_exit_seconds: float = 5.0
 
-    @field_validator("max_buy_price")
+    @field_validator("min_buy_price", "max_buy_price")
     @classmethod
     def valid_probability(cls, value: float) -> float:
         if not 0 < value < 1:
-            raise ValueError("max_buy_price must be between 0 and 1")
+            raise ValueError("buy prices must be between 0 and 1")
         return value
+
+    @model_validator(mode="after")
+    def valid_buy_price_range(self) -> "StrategyConfig":
+        if self.min_buy_price >= self.max_buy_price:
+            raise ValueError("min_buy_price must be lower than max_buy_price")
+        if self.min_seconds_to_entry > self.max_seconds_to_entry:
+            raise ValueError("min_seconds_to_entry must not exceed max_seconds_to_entry")
+        return self
 
     @field_validator("min_seconds_to_entry", "max_seconds_to_entry")
     @classmethod
@@ -62,7 +71,7 @@ class RiskConfig(BaseModel):
     max_order_usd: float = 10.0
     max_market_usd: float = 30.0
     max_data_age_ms: int = 1000
-    max_hold_seconds: float = 90.0
+    max_hold_seconds: float = 120.0
 
     @field_validator("max_order_usd", "max_market_usd", "max_data_age_ms", "max_hold_seconds")
     @classmethod

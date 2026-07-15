@@ -54,14 +54,12 @@ def edge_usd(market: MarketState, tick: PriceTick) -> float | None:
 def corrected_edge_usd(
     market: MarketState,
     tick: PriceTick,
-    strategy: StrategyConfig,
     edge_correction_usd: float | None = None,
 ) -> float | None:
     edge = edge_usd(market, tick)
     if edge is None:
         return None
-    correction = strategy.edge_correction_usd if edge_correction_usd is None else edge_correction_usd
-    return edge + correction
+    return edge - (edge_correction_usd or 0.0)
 
 
 def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskConfig) -> str | None:
@@ -104,7 +102,7 @@ def evaluate_entry(
     if has_open_position:
         return EntryDecision(False, "open_position_exists")
 
-    edge = corrected_edge_usd(state.market, state.price_tick, strategy, state.edge_correction_usd)
+    edge = corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd)
     if edge is None:
         return EntryDecision(False, "threshold_unavailable")
 
@@ -122,6 +120,8 @@ def evaluate_entry(
     ask = book.best_ask
     if ask is None:
         return EntryDecision(False, "ask_unavailable")
+    if ask <= strategy.min_buy_price:
+        return EntryDecision(False, "ask_too_cheap")
     if ask >= strategy.max_buy_price:
         return EntryDecision(False, "ask_too_expensive")
 
@@ -183,7 +183,7 @@ def choose_exit_reason(
     strategy: StrategyConfig,
     risk: RiskConfig,
 ) -> ExitReason | None:
-    edge = corrected_edge_usd(state.market, state.price_tick, strategy, state.edge_correction_usd)
+    edge = corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd)
     if edge is None:
         return None
     held_seconds = (state.now - position.opened_at).total_seconds()
@@ -243,7 +243,7 @@ def evaluate_exit(
         market_id=position.market_id,
         direction=position.direction,
         reason=reason,
-        edge_usd=corrected_edge_usd(state.market, state.price_tick, strategy, state.edge_correction_usd),
+        edge_usd=corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd),
         price=execution.avg_price,
         quantity=execution.quantity,
         pnl=pnl,

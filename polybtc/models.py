@@ -61,6 +61,20 @@ class OrderBookSnapshot(BaseModel):
         return min((level.price for level in self.asks), default=None)
 
 
+def rest_request_started_at(book: OrderBookSnapshot) -> datetime | None:
+    if not isinstance(book.raw, dict) or book.raw.get("_transport") != "rest":
+        return None
+    value = book.raw.get("_request_started_at")
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 class MarketState(BaseModel):
     condition_id: str
     slug: str

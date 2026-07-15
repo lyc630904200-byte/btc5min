@@ -11,7 +11,7 @@ from .config import AppConfig
 from .engine import PaperEngine
 from .journal import RunJournal
 from .market import choose_current_market
-from .models import Direction, MarketState, OrderBookSnapshot, PriceTick
+from .models import Direction, MarketState, OrderBookSnapshot, PriceTick, rest_request_started_at
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -19,6 +19,9 @@ BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
 # Keep a sub-second REST safety net when the CLOB WebSocket is quiet.  The
 # strategy freshness limit is one second, so a two-second fallback was too slow.
 BOOK_REST_FALLBACK_AFTER = timedelta(milliseconds=500)
+LIVE_EVENT_COALESCE_SECONDS = 0.02
+BOOK_PUBLISH_HEARTBEAT = timedelta(milliseconds=250)
+PROVISIONAL_THRESHOLD_SOURCES = {"binance_first_tick_after_start", "polymarket_page_previous_close"}
 
 
 def run_dir(base: Path) -> Path:
@@ -152,8 +155,10 @@ async def apply_polymarket_page_threshold(
 ) -> bool:
     if market.start_time is None:
         return False
-    if market.threshold_price is not None and market.threshold_source not in {"binance_first_tick_after_start", "polymarket_page_previous_close"}:
+    if market.threshold_price is not None and market.threshold_source not in PROVISIONAL_THRESHOLD_SOURCES:
         return False
+    previous_value = market.threshold_price
+    previous_source = market.threshold_source
     event_threshold = getattr(client, "event_threshold", None)
     if event_threshold is not None:
         try:
@@ -164,7 +169,7 @@ async def apply_polymarket_page_threshold(
             market.threshold_price = threshold
             market.threshold_source = "gamma_event_price_to_beat"
             market.threshold_observed_at = market.start_time
-            return True
+            return market.threshold_price != previous_value or market.threshold_source != previous_source
     page_data = getattr(client, "market_page_data", None)
     if page_data is not None:
         outcome_price, results = await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)
@@ -182,7 +187,7 @@ async def apply_polymarket_page_threshold(
         market.threshold_price = outcome_price.open_price
         market.threshold_source = "polymarket_page_open_price"
         market.threshold_observed_at = market.start_time
-        return True
+        return market.threshold_price != previous_value or market.threshold_source != previous_source
     previous = [result for result in results if result.end_time == market.start_time]
     if not previous:
         return False
@@ -190,7 +195,7 @@ async def apply_polymarket_page_threshold(
     market.threshold_price = latest.close_price
     market.threshold_source = "polymarket_page_previous_close"
     market.threshold_observed_at = latest.end_time
-    return True
+    return market.threshold_price != previous_value or market.threshold_source != previous_source
 
 
 async def prefetch_next_market_threshold(
@@ -263,13 +268,21 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
     prefetched_market: MarketState | None = None
     prefetched_for_market_id: str | None = None
     next_prefetch_attempt = datetime.min.replace(tzinfo=timezone.utc)
+    next_threshold_retry = datetime.min.replace(tzinfo=timezone.utc)
     while True:
         try:
             now_utc = datetime.now(timezone.utc)
-            if engine.market and engine.market.threshold_price is None and engine.market.end_time > now_utc:
+            current_market = engine.market
+            needs_page_threshold = bool(
+                current_market
+                and current_market.end_time > now_utc
+                and (current_market.threshold_price is None or current_market.threshold_source in PROVISIONAL_THRESHOLD_SOURCES)
+            )
+            if needs_page_threshold and should_retry_threshold(now_utc, next_threshold_retry):
+                next_threshold_retry = now_utc + timedelta(seconds=engine.config.sources.threshold_page_retry_seconds)
                 try:
-                    if await apply_polymarket_page_threshold(client, engine.market, engine.config.sources.threshold_page_timeout_seconds):
-                        await queue.put(("market", engine.market))
+                    if await apply_polymarket_page_threshold(client, current_market, engine.config.sources.threshold_page_timeout_seconds):
+                        await queue.put(("market", current_market))
                         await asyncio.sleep(interval_seconds)
                         continue
                 except Exception as exc:
@@ -299,6 +312,7 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
                     await apply_polymarket_page_threshold(client, market, engine.config.sources.threshold_page_timeout_seconds)
                 except Exception as exc:
                     await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
+                next_threshold_retry = now_utc + timedelta(seconds=engine.config.sources.threshold_page_retry_seconds)
                 await queue.put(("market", market))
         except Exception as exc:
             await queue.put(("error", {"source": "gamma", "error": str(exc)}))
@@ -347,7 +361,17 @@ async def emit_rest_books(client: PolymarketClient, market: MarketState, queue: 
         await queue.put(("book", (Direction.DOWN, down_book)))
 
 
-def books_need_rest_refresh(engine: PaperEngine, market: MarketState, now: datetime) -> bool:
+def books_need_rest_refresh(
+    engine: PaperEngine,
+    market: MarketState,
+    now: datetime,
+    last_rest_refresh_at: datetime | None = None,
+) -> bool:
+    # Delayed WebSocket frames can keep received_at fresh while carrying an
+    # older price.  Periodically reconcile against a complete REST snapshot
+    # even while the WebSocket appears active.
+    if last_rest_refresh_at is not None and now - last_rest_refresh_at >= BOOK_REST_FALLBACK_AFTER:
+        return True
     for direction in (Direction.UP, Direction.DOWN):
         book = engine.books.get(direction)
         if not book or not book_matches_market(market, direction, book):
@@ -359,6 +383,7 @@ def books_need_rest_refresh(engine: PaperEngine, market: MarketState, now: datet
 
 async def book_rest_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
     check_interval_seconds = max(poll_ms / 1000, 0.1)
+    last_rest_refresh_at = datetime.min.replace(tzinfo=timezone.utc)
     while True:
         started_at = datetime.now(timezone.utc)
         market = engine.market
@@ -368,11 +393,16 @@ async def book_rest_loop(client: PolymarketClient, engine: PaperEngine, queue: a
         if market.end_time <= started_at:
             await asyncio.sleep(0.05)
             continue
-        if books_need_rest_refresh(engine, market, started_at):
+        if books_need_rest_refresh(engine, market, started_at, last_rest_refresh_at):
             try:
                 await emit_rest_books(client, market, queue)
             except Exception as exc:
                 await queue.put(("error", {"source": "clob_rest", "error": str(exc)}))
+            finally:
+                # Schedule from the request start, not its completion.  The
+                # proxy round trip can take ~500 ms; completion-based timing
+                # added another full fallback interval between snapshots.
+                last_rest_refresh_at = started_at
         elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
         await asyncio.sleep(max(0.02, check_interval_seconds - elapsed))
 
@@ -490,15 +520,51 @@ def coalesce_live_events(events: list[tuple[str, Any]]) -> list[tuple[str, Any]]
                 if (
                     isinstance(previous_book, OrderBookSnapshot)
                     and isinstance(current_book, OrderBookSnapshot)
-                    and current_book.timestamp <= previous_book.timestamp
                 ):
-                    continue
+                    request_started_at = rest_request_started_at(current_book)
+                    if (
+                        request_started_at is not None
+                        and current_book.timestamp <= previous_book.timestamp
+                        and previous_book.received_at > request_started_at
+                    ):
+                        continue
+                    if current_book.timestamp < previous_book.timestamp:
+                        is_fresh_rest_fallback = (
+                            isinstance(current_book.raw, dict)
+                            and current_book.raw.get("_transport") == "rest"
+                            and current_book.received_at > previous_book.received_at
+                        )
+                        if not is_fresh_rest_fallback:
+                            continue
+                        current_book.timestamp = previous_book.timestamp
+                    elif (
+                        current_book.timestamp == previous_book.timestamp
+                        and current_book.received_at < previous_book.received_at
+                    ):
+                        continue
             buffered[key] = (index, event)
             continue
         flush_buffered()
         result.append(event)
     flush_buffered()
     return result
+
+
+def should_publish_book_update(
+    previous: OrderBookSnapshot | None,
+    current: OrderBookSnapshot,
+    last_published_at: datetime | None,
+) -> bool:
+    if previous is None:
+        return True
+    if (
+        previous.token_id != current.token_id
+        or previous.market_id != current.market_id
+        or previous.best_bid != current.best_bid
+        or previous.best_ask != current.best_ask
+    ):
+        return True
+    return last_published_at is None or current.received_at - last_published_at >= BOOK_PUBLISH_HEARTBEAT
 
 
 async def run_live(config: AppConfig, max_seconds: int | None = None, on_update: UpdateCallback | None = None) -> Path:
@@ -509,6 +575,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
     poly = PolymarketClient(config.sources)
     binance = BinanceClient(config.sources)
     counters = {"signals": 0, "fills": 0, "exits": 0}
+    last_published_book_at: dict[Direction, datetime] = {}
 
     await initialize_current_market(poly, engine, journal, output_dir, on_update)
 
@@ -529,9 +596,14 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 pending_events = [await asyncio.wait_for(queue.get(), timeout=1)]
             except asyncio.TimeoutError:
                 continue
+            # Give simultaneous market frames a tiny window to accumulate so
+            # hundreds of depth-only deltas collapse to the newest complete
+            # UP/DOWN snapshots.  This bounds added latency at 20 ms.
+            await asyncio.sleep(LIVE_EVENT_COALESCE_SECONDS)
             while not queue.empty() and len(pending_events) < 500:
                 pending_events.append(queue.get_nowait())
             for event_type, payload in coalesce_live_events(pending_events):
+                publish_update = True
                 if event_type == "market":
                     market: MarketState = payload
                     engine.set_market(market)
@@ -548,14 +620,24 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 elif event_type == "book":
                     direction, book = payload
                     assert isinstance(book, OrderBookSnapshot)
+                    previous_book = engine.books.get(direction)
                     engine.set_book(direction, book)
-                    journal.book(direction.value, book)
+                    active_book = engine.books.get(direction)
+                    publish_update = active_book is book and should_publish_book_update(
+                        previous_book,
+                        book,
+                        last_published_book_at.get(direction),
+                    )
+                    if publish_update:
+                        journal.book(direction.value, book)
+                        last_published_book_at[direction] = book.received_at
                 elif event_type == "error":
                     journal.latency_row(payload.get("source", "unknown"), "stream", False, None, payload.get("error", ""))
                 live_events = flush_engine_updates(engine, journal, counters)
                 for live_event_type, live_payload in live_events:
                     await emit_update(on_update, live_snapshot(engine, output_dir, live_event_type, live_payload))
-                await emit_update(on_update, live_snapshot(engine, output_dir, event_type, payload))
+                if publish_update:
+                    await emit_update(on_update, live_snapshot(engine, output_dir, event_type, payload))
     finally:
         for task in tasks:
             task.cancel()

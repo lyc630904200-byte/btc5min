@@ -52,7 +52,6 @@ def test_replay_recomputes_entry_and_exit(tmp_path) -> None:
     )
 
     config = AppConfig()
-    config.strategy.edge_correction_usd = 0
     engine = replay_events(path, config)
     engine2 = replay_events(path, config)
 

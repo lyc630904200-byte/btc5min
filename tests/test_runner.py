@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from polybtc.config import AppConfig
 from polybtc.engine import PaperEngine
-from polybtc.models import Direction, MarketState, OrderBookSnapshot
+from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot
 from polybtc.runner import (
     apply_polymarket_page_threshold,
     books_need_rest_refresh,
@@ -11,6 +11,7 @@ from polybtc.runner import (
     prefetch_next_market_threshold,
     should_keep_current_market,
     should_retry_threshold,
+    should_publish_book_update,
 )
 
 
@@ -130,6 +131,18 @@ def test_apply_polymarket_page_threshold_prefers_current_open_price() -> None:
     assert current.threshold_observed_at == now
 
 
+def test_apply_polymarket_page_threshold_replaces_provisional_binance_tick() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    current = market(now, threshold=64099.0, end_delta=timedelta(minutes=5))
+    current.start_time = now
+
+    applied = __import__("asyncio").run(apply_polymarket_page_threshold(FakeOutcomePriceClient(), current))
+
+    assert applied is True
+    assert current.threshold_price == 64001.5
+    assert current.threshold_source == "polymarket_page_open_price"
+
+
 def test_apply_polymarket_page_threshold_prefers_gamma_event_price_to_beat() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     current = market(now, threshold=None, end_delta=timedelta(minutes=5))
@@ -206,6 +219,91 @@ def test_coalesce_live_events_keeps_newest_book_timestamp() -> None:
     assert coalesce_live_events(events) == [("book", (Direction.UP, newer))]
 
 
+def test_coalesce_live_events_keeps_last_snapshot_for_equal_timestamp() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    partial = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now,
+        bids=[{"price": 0.40, "size": 10}],
+        asks=[{"price": 0.45, "size": 10}],
+    )
+    final = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now + timedelta(microseconds=1),
+        bids=[{"price": 0.42, "size": 10}],
+        asks=[{"price": 0.43, "size": 10}],
+    )
+
+    events = [("book", (Direction.UP, partial)), ("book", (Direction.UP, final))]
+
+    assert coalesce_live_events(events) == [("book", (Direction.UP, final))]
+
+
+def test_coalesce_live_events_keeps_fresh_rest_snapshot_with_older_source_time() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    websocket_book = OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now, received_at=now)
+    rest_book = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now - timedelta(seconds=1),
+        received_at=now + timedelta(milliseconds=1),
+        raw={"_transport": "rest", "_request_started_at": (now + timedelta(microseconds=1)).isoformat()},
+    )
+
+    events = [("book", (Direction.UP, websocket_book)), ("book", (Direction.UP, rest_book))]
+
+    assert coalesce_live_events(events) == [("book", (Direction.UP, rest_book))]
+    assert rest_book.timestamp == websocket_book.timestamp
+
+
+def test_coalesce_live_events_drops_rest_snapshot_superseded_during_request() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    websocket_book = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now + timedelta(milliseconds=10),
+    )
+    rest_book = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now - timedelta(seconds=1),
+        received_at=now + timedelta(milliseconds=20),
+        raw={"_transport": "rest", "_request_started_at": now.isoformat()},
+    )
+
+    events = [("book", (Direction.UP, websocket_book)), ("book", (Direction.UP, rest_book))]
+
+    assert coalesce_live_events(events) == [("book", (Direction.UP, websocket_book))]
+
+
+def test_book_publication_is_immediate_on_top_change_and_rate_limited_otherwise() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    previous = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        received_at=now,
+        bids=[{"price": 0.40, "size": 10}],
+        asks=[{"price": 0.41, "size": 10}],
+    )
+    depth_only = previous.model_copy(deep=True)
+    depth_only.received_at = now + timedelta(milliseconds=20)
+    depth_only.bids.append(BookLevel(price=0.39, size=5))
+    changed_top = depth_only.model_copy(deep=True)
+    changed_top.bids.append(BookLevel(price=0.42, size=5))
+    heartbeat = depth_only.model_copy(deep=True)
+    heartbeat.received_at = now + timedelta(milliseconds=250)
+
+    assert should_publish_book_update(None, previous, None) is True
+    assert should_publish_book_update(previous, depth_only, now) is False
+    assert should_publish_book_update(previous, changed_top, now) is True
+    assert should_publish_book_update(previous, heartbeat, now) is True
+
+
 def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     engine = PaperEngine(AppConfig())
@@ -226,3 +324,31 @@ def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
 
     engine.books[Direction.DOWN].received_at = now - timedelta(seconds=2)
     assert books_need_rest_refresh(engine, current_market, now) is True
+
+
+def test_rest_book_reconciliation_runs_even_when_websocket_arrivals_are_fresh() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    current_market = market(now, threshold=64000, end_delta=timedelta(minutes=3))
+    engine.set_market(current_market)
+    engine.set_book(
+        Direction.UP,
+        OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now, received_at=now),
+    )
+    engine.set_book(
+        Direction.DOWN,
+        OrderBookSnapshot(token_id="down", market_id="m1", timestamp=now, received_at=now),
+    )
+
+    assert books_need_rest_refresh(engine, current_market, now, last_rest_refresh_at=now) is False
+
+    websocket_arrival = now + timedelta(milliseconds=400)
+    engine.books[Direction.UP].received_at = websocket_arrival
+    engine.books[Direction.DOWN].received_at = websocket_arrival
+
+    assert books_need_rest_refresh(
+        engine,
+        current_market,
+        now + timedelta(milliseconds=500),
+        last_rest_refresh_at=now,
+    ) is True
