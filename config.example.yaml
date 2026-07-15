@@ -3,7 +3,7 @@ data_retention_hours: 24
 data_cleanup_interval_seconds: 300
 
 sources:
-  proxy_url: http://127.0.0.1:23479
+  proxy_url: http://127.0.0.1:10808
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
   binance_rest_url: https://api.binance.com

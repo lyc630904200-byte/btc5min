@@ -18,6 +18,7 @@ from .models import BookLevel, MarketState, OrderBookSnapshot, PriceTick
 
 CLOB_SUBSCRIPTION_TYPE = "market"
 POLYMARKET_RTDS_CRYPTO_TOPIC = "crypto_prices_chainlink"
+PROXY_ATTEMPT_TIMEOUT_SECONDS = 1.5
 
 
 def btc_updown_5m_slugs(now: datetime, *, before: int = 3, after: int = 12) -> list[str]:
@@ -59,8 +60,11 @@ async def get_direct_first(
         start = datetime.now(timezone.utc)
         try:
             options: dict[str, Any] = {"proxy": proxy} if proxy else {}
+            # A stale local proxy can otherwise consume the complete threshold
+            # lookup budget before the direct fallback gets a chance to run.
+            attempt_timeout = min(timeout, PROXY_ATTEMPT_TIMEOUT_SECONDS) if proxy else timeout
             async with httpx.AsyncClient(
-                timeout=timeout,
+                timeout=attempt_timeout,
                 follow_redirects=follow_redirects,
                 headers=headers,
                 trust_env=trust_env,
