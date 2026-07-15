@@ -1,14 +1,20 @@
 data_dir: data
+data_retention_hours: 24
+data_cleanup_interval_seconds: 300
 
 sources:
+  proxy_url: http://127.0.0.1:10808
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
   binance_rest_url: https://api.binance.com
   binance_ws_url: wss://stream.binance.com:9443/ws/btcusdt@trade
   gamma_url: https://gamma-api.polymarket.com
   clob_url: https://clob.polymarket.com
-  poly_book_poll_ms: 500
-  market_refresh_seconds: 5
+  clob_ws_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  rtds_ws_url: wss://ws-live-data.polymarket.com
+  threshold_page_timeout_seconds: 4
+  poly_book_poll_ms: 200
+  market_refresh_seconds: 0.5
   max_start_price_lag_ms: 2000
   market_slug_patterns:
     - bitcoin
@@ -18,12 +24,14 @@ sources:
   observe_only_on_unverified_settlement: true
 
 strategy:
-  min_entry_edge_usd: 50
+  min_entry_edge_usd: 15
   stop_edge_usd: 15
+  edge_correction_usd: -47.75
   max_buy_price: 0.75
   take_profit_ticks: 0.10
   min_profit_after_slippage: 0.04
-  min_seconds_to_entry: 12
+  min_seconds_to_entry: 30
+  max_seconds_to_entry: 240
   force_exit_seconds: 5
 
 risk:

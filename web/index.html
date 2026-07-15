@@ -99,6 +99,8 @@
     .metric { min-height: 74px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: grid; align-content: space-between; gap: 8px; }
     .metric-name { color: var(--muted); font-size: 12px; }
     .metric-value { color: var(--ink); font-size: 23px; line-height: 1; font-weight: 780; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .metric-input { width: 100%; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); padding: 0 8px; text-align: right; font: inherit; font-size: 20px; font-weight: 760; font-variant-numeric: tabular-nums; }
+    .metric-input:focus { outline: 2px solid var(--blue-soft); border-color: var(--blue); }
 
     .tag { display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 0 8px; border-radius: 5px; font-size: 12px; font-weight: 740; white-space: nowrap; }
     .tag.green { color: var(--green); background: var(--green-soft); }
@@ -112,15 +114,23 @@
     .book-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .book-side { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
     .book-title { height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 760; }
-    .levels { display: grid; }
-    .level { position: relative; display: grid; grid-template-columns: 58px 1fr 72px; gap: 8px; align-items: center; height: 28px; padding: 0 9px; border-bottom: 1px solid #edf1ef; font-size: 12px; font-variant-numeric: tabular-nums; }
-    .level:last-child { border-bottom: 0; }
-    .level span { position: relative; z-index: 1; }
-    .level span:last-child { text-align: right; }
-    .bar { position: absolute; right: 0; top: 4px; bottom: 4px; border-radius: 4px 0 0 4px; opacity: .75; }
-    .bar.ask { background: var(--red-soft); }
-    .bar.bid { background: var(--green-soft); }
-
+    .levels { display: grid; gap: 8px; padding: 10px; }
+    .quote-row { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; font-variant-numeric: tabular-nums; }
+    .quote-row span { color: var(--muted); font-size: 12px; }
+    .quote-row strong { color: var(--ink); font-size: 24px; line-height: 1; }
+    .quote-row.buy strong { color: var(--green); }
+    .quote-row.sell strong { color: var(--red); }
+    .trade-book { padding: 0; }
+    .trade-tabs { height: 45px; display: flex; align-items: stretch; gap: 18px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+    .trade-tab { appearance: none; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 1px; color: #7a8580; font: inherit; font-size: 14px; font-weight: 760; cursor: pointer; }
+    .trade-tab.active { color: var(--ink); border-bottom-color: var(--ink); }
+    .trade-mode { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 720; }
+    .trade-caret { color: #8d9792; font-size: 15px; transform: translateY(-1px); }
+    .trade-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 17px 14px 12px; }
+    .trade-option { min-height: 44px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: #f1f3f2; color: #7a8580; font: inherit; font-size: 14px; font-weight: 760; font-variant-numeric: tabular-nums; }
+    .trade-option.up { background: #31a65c; color: #fff; }
+    .trade-option.down { background: #f1f3f2; color: #7a8580; }
+    .trade-note { min-height: 31px; padding: 0 14px 12px; color: var(--muted); font-size: 12px; }
     .signal { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 12px; align-items: stretch; }
     .signal-box { border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-height: 116px; display: grid; align-content: space-between; }
     .signal-box.up { border-color: #addfca; background: var(--green-soft); }
@@ -184,7 +194,9 @@
           <div class="panel-head"><div class="panel-title">行情</div><div class="tag" id="edgeTag">--</div></div>
           <div class="panel-body metrics">
             <div class="metric"><div class="metric-name">Binance BTC</div><div class="metric-value" id="btcPrice">--</div></div>
+            <div class="metric"><div class="metric-name">Polymarket BTC</div><div class="metric-value" id="polymarketPrice">--</div></div>
             <div class="metric"><div class="metric-name">价格偏离</div><div class="metric-value" id="edgeValue">--</div></div>
+            <div class="metric"><div class="metric-name">偏离修正</div><div class="metric-value" id="edgeCorrection">--</div></div>
             <div class="metric"><div class="metric-name">UP 卖一</div><div class="metric-value" id="upAsk">--</div></div>
             <div class="metric"><div class="metric-name">DOWN 卖一</div><div class="metric-value" id="downAsk">--</div></div>
           </div>
@@ -209,15 +221,17 @@
 
         <div class="panel">
           <div class="panel-head"><div class="panel-title">盘口</div><div class="tag blue" id="bookAge">--</div></div>
-          <div class="panel-body book-grid">
-            <div class="book-side">
-              <div class="book-title"><span>UP / YES</span><span id="upTop">--</span></div>
-              <div class="levels" id="upLevels"></div>
+          <div class="panel-body trade-book">
+            <div class="trade-tabs" role="tablist" aria-label="盘口方向">
+              <button class="trade-tab active" id="bookBuyTab" type="button" role="tab" aria-selected="true">买入</button>
+              <button class="trade-tab" id="bookSellTab" type="button" role="tab" aria-selected="false">卖出</button>
+              <div class="trade-mode">盘口 <span class="trade-caret">⌄</span></div>
             </div>
-            <div class="book-side">
-              <div class="book-title"><span>DOWN / NO</span><span id="downTop">--</span></div>
-              <div class="levels" id="downLevels"></div>
+            <div class="trade-options">
+              <div class="trade-option up" id="upTradeQuote">Up --</div>
+              <div class="trade-option down" id="downTradeQuote">Down --</div>
             </div>
+            <div class="trade-note" id="tradeBookNote">买入按卖一价格展示</div>
           </div>
         </div>
 
@@ -258,6 +272,19 @@
     const history = [];
     let latest = null;
     let reconnectTimer = null;
+    let renderScheduled = false;
+    let bookSide = 'BUY';
+    const EDGE_CORRECTION_DEFAULT = -47.75;
+
+    function scheduleRender(snapshot) {
+      latest = snapshot;
+      if (renderScheduled) return;
+      renderScheduled = true;
+      requestAnimationFrame(() => {
+        renderScheduled = false;
+        if (latest) render(latest);
+      });
+    }
 
     function fmtNumber(value, digits = 2) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
@@ -266,6 +293,13 @@
 
     function fmtPrice(value) { return fmtNumber(value, 2); }
     function fmtProb(value) { return value === null || value === undefined ? '--' : Number(value).toFixed(2); }
+    function fmtCents(value) { return value === null || value === undefined ? '--' : `${Math.round(Number(value) * 100)}¢`; }
+    function fmtSigned(value, digits = 2) { return value === null ? '--' : `${value > 0 ? '+' : ''}${fmtNumber(value, digits)}`; }
+    function effectiveCorrection(state, polymarketDiff) {
+      if (Number.isFinite(polymarketDiff)) return polymarketDiff;
+      const configured = Number(state?.strategy?.edge_correction_usd);
+      return Number.isFinite(configured) ? configured : EDGE_CORRECTION_DEFAULT;
+    }
     function fmtTime(value) {
       if (!value) return '--';
       const d = new Date(value);
@@ -278,11 +312,13 @@
     }
 
     function bestAsk(book) {
+      if (book?.best_ask !== null && book?.best_ask !== undefined) return Number(book.best_ask);
       const asks = book?.asks || [];
       return asks.length ? Math.min(...asks.map((x) => Number(x.price))) : null;
     }
 
     function bestBid(book) {
+      if (book?.best_bid !== null && book?.best_bid !== undefined) return Number(book.best_bid);
       const bids = book?.bids || [];
       return bids.length ? Math.max(...bids.map((x) => Number(x.price))) : null;
     }
@@ -298,10 +334,10 @@
       $('connText').textContent = status === 'live' ? '实时' : status === 'off' ? '断线' : '连接中';
     }
 
-    function updateHistory(tick, market) {
+    function updateHistory(tick, market, correction) {
       if (!tick?.price) return;
       const threshold = market?.threshold_price;
-      const edge = threshold ? Number(tick.price) - Number(threshold) : null;
+      const edge = threshold ? Number(tick.price) - Number(threshold) + correction : null;
       const last = history[history.length - 1];
       if (last && last.time === tick.received_at) return;
       history.push({ time: tick.received_at, price: Number(tick.price), threshold: threshold ? Number(threshold) : null, edge });
@@ -353,41 +389,48 @@
     function renderLevels(id, book) {
       const target = $(id);
       if (!book) {
-        target.innerHTML = '<div class="level"><span>--</span><span></span><span>--</span></div>';
+        target.innerHTML = '<div class="quote-row buy"><span>买入价</span><strong>--</strong></div><div class="quote-row sell"><span>卖出价</span><strong>--</strong></div>';
         return;
       }
-      const asks = [...(book.asks || [])].sort((a, b) => Number(b.price) - Number(a.price)).slice(-8).map((x) => ['ask', Number(x.price), Number(x.size)]);
-      const bids = [...(book.bids || [])].sort((a, b) => Number(b.price) - Number(a.price)).slice(0, 8).map((x) => ['bid', Number(x.price), Number(x.size)]);
-      const levels = asks.concat(bids);
-      const maxSize = Math.max(1, ...levels.map(([, , size]) => size));
-      target.innerHTML = levels.map(([kind, price, size]) => {
-        const pct = Math.max(6, Math.min(100, size / maxSize * 100));
-        return `<div class="level"><div class="bar ${kind}" style="width:${pct}%"></div><span>${price.toFixed(2)}</span><span></span><span>${size.toFixed(2)}</span></div>`;
-      }).join('');
+      target.innerHTML = `
+        <div class="quote-row buy"><span>买入价</span><strong>${fmtProb(bestBid(book))}</strong></div>
+        <div class="quote-row sell"><span>卖出价</span><strong>${fmtProb(bestAsk(book))}</strong></div>
+      `;
+    }
+
+    function renderTradeBook(upBook, downBook) {
+      const buying = bookSide === 'BUY';
+      const upPrice = buying ? bestAsk(upBook) : bestBid(upBook);
+      const downPrice = buying ? bestAsk(downBook) : bestBid(downBook);
+      $('upTradeQuote').textContent = `Up ${fmtCents(upPrice)}`;
+      $('downTradeQuote').textContent = `Down ${fmtCents(downPrice)}`;
+      $('bookBuyTab').classList.toggle('active', buying);
+      $('bookSellTab').classList.toggle('active', !buying);
+      $('bookBuyTab').setAttribute('aria-selected', String(buying));
+      $('bookSellTab').setAttribute('aria-selected', String(!buying));
+      $('tradeBookNote').textContent = buying ? '买入按卖一价格展示' : '卖出按买一价格展示';
     }
 
     function describeEvent(event) {
       const type = event?.type || 'event';
       const p = event?.payload || {};
-      if (type === 'market') return ['市场', p.slug || '--', 'blue'];
-      if (type === 'tick') return ['行情', `BTC ${fmtPrice(p.price)}`, 'blue'];
-      if (type === 'book') return ['盘口', `${p.direction || ''} bid ${fmtProb(p.best_bid ?? bestBid(p))} ask ${fmtProb(p.best_ask ?? bestAsk(p))}`, 'amber'];
-      if (type === 'signal') return ['信号', `${p.direction || ''} edge ${fmtNumber(p.edge_usd, 0)}`, 'green'];
-      if (type === 'fill') return ['成交', `${p.side || ''} ${p.direction || ''} ${fmtProb(p.avg_price)}`, 'green'];
-      if (type === 'exit') return ['退出', `${p.reason || ''} ${fmtNumber(p.pnl, 2)}`, 'red'];
-      if (type === 'error') return ['错误', p.error || '--', 'red'];
-      return [type, JSON.stringify(p).slice(0, 80), 'amber'];
+      if (type === 'fill') {
+        const side = p.side === 'BUY' ? '买入' : p.side === 'SELL' ? '卖出' : p.side || '成交';
+        const color = p.side === 'BUY' ? 'green' : 'red';
+        return [side, `${p.direction || ''} ${fmtProb(p.avg_price)} / ${fmtNumber(p.quantity, 2)}`, color];
+      }
+      return ['成交', '--', 'amber'];
     }
 
     function render(snapshot) {
       latest = snapshot;
       const market = snapshot.market;
       const tick = snapshot.tick;
+      const polymarketTick = snapshot.polymarket_tick;
       const upBook = snapshot.books?.UP;
       const downBook = snapshot.books?.DOWN;
       const summary = snapshot.summary || {};
       const position = snapshot.open_position;
-      updateHistory(tick, market);
 
       $('runPath').textContent = snapshot.output_dir || '等待运行数据';
       $('updatedAt').textContent = fmtTime(snapshot.created_at);
@@ -402,15 +445,21 @@
 
       const threshold = market?.threshold_price ? Number(market.threshold_price) : null;
       const price = tick?.price ? Number(tick.price) : null;
-      const edge = threshold !== null && price !== null ? price - threshold : null;
+      const polymarketPrice = polymarketTick?.price ? Number(polymarketTick.price) : null;
+      const polymarketDiff = polymarketPrice !== null && price !== null ? polymarketPrice - price : null;
+      const correction = effectiveCorrection(snapshot, polymarketDiff);
+      const rawEdge = threshold !== null && price !== null ? price - threshold : null;
+      const edge = rawEdge !== null ? rawEdge + correction : null;
+      updateHistory(tick, market, correction);
       $('btcPrice').textContent = fmtPrice(price);
-      $('edgeValue').textContent = edge === null ? '--' : `${edge > 0 ? '+' : ''}${fmtNumber(edge, 2)}`;
-      $('edgeTag').textContent = edge === null ? '--' : `${edge > 0 ? '+' : ''}${fmtNumber(edge, 0)} USD`;
+      $('polymarketPrice').textContent = fmtPrice(polymarketPrice);
+      $('edgeCorrection').textContent = fmtSigned(correction, 2);
+      $('edgeCorrection').style.color = correction >= 0 ? 'var(--green)' : 'var(--red)';
+      $('edgeValue').textContent = fmtSigned(edge, 2);
+      $('edgeTag').textContent = edge === null ? '--' : `${fmtSigned(edge, 0)} USD`;
       $('edgeTag').className = 'tag ' + classForEdge(edge);
       $('upAsk').textContent = fmtProb(bestAsk(upBook));
       $('downAsk').textContent = fmtProb(bestAsk(downBook));
-      $('upTop').textContent = `bid ${fmtProb(bestBid(upBook))} / ask ${fmtProb(bestAsk(upBook))}`;
-      $('downTop').textContent = `bid ${fmtProb(bestBid(downBook))} / ask ${fmtProb(bestAsk(downBook))}`;
       $('tickAge').textContent = tick?.received_at ? fmtTime(tick.received_at) : '--';
       $('bookAge').textContent = upBook?.timestamp ? fmtTime(upBook.timestamp) : '--';
 
@@ -441,9 +490,11 @@
       $('decisionTag').className = 'tag ' + (position ? 'green' : lastRejection ? 'amber' : 'blue');
       const reasons = [
         ['阈值', market?.threshold_price ? fmtPrice(market.threshold_price) : '等待开盘'],
-        ['偏离', edge === null ? '--' : `${edge > 0 ? '+' : ''}${fmtNumber(edge, 2)}`],
-        ['UP 盘口', $('upTop').textContent],
-        ['DOWN 盘口', $('downTop').textContent],
+        ['偏离', fmtSigned(edge, 2)],
+        ['修正', fmtSigned(correction, 2)],
+        ['Polymarket BTC', fmtPrice(polymarketPrice)],
+        ['UP 盘口', `买 ${fmtProb(bestBid(upBook))} / 卖 ${fmtProb(bestAsk(upBook))}`],
+        ['DOWN 盘口', `买 ${fmtProb(bestBid(downBook))} / 卖 ${fmtProb(bestAsk(downBook))}`],
         ['最近拒绝', lastRejection || '--']
       ];
       $('reasonList').innerHTML = reasons.map(([k, v]) => `<div class="reason"><strong>${k}</strong><span class="mono">${v}</span></div>`).join('');
@@ -458,8 +509,7 @@
       $('posUnrealized').textContent = unrealized === null ? '--' : fmtNumber(unrealized, 2);
       $('posUnrealized').style.color = unrealized === null || unrealized >= 0 ? 'var(--green)' : 'var(--red)';
 
-      renderLevels('upLevels', upBook);
-      renderLevels('downLevels', downBook);
+      renderTradeBook(upBook, downBook);
       drawChart();
 
       const events = (snapshot.events || []).slice(-45).reverse();
@@ -467,14 +517,14 @@
       $('timeline').innerHTML = events.map((event) => {
         const [type, text, color] = describeEvent(event);
         return `<div class="event-row"><span class="tag ${color}">${type}</span><span>${text}</span></div>`;
-      }).join('') || '<div class="event-row"><span class="tag amber">等待</span><span>--</span></div>';
+      }).join('') || '<div class="event-row"><span class="tag amber">暂无</span><span>还没有买入/卖出</span></div>';
     }
 
     async function loadInitial() {
       try {
         const response = await fetch('/api/state', { cache: 'no-store' });
         const state = await response.json();
-        render(state);
+        scheduleRender(state);
         connectWebSocket(state.ws_url);
       } catch (error) {
         setConnection('off');
@@ -501,12 +551,18 @@
       $('wsText').textContent = url;
       const ws = new WebSocket(url);
       ws.onopen = () => setConnection('live');
-      ws.onmessage = (event) => render(JSON.parse(event.data));
+      ws.onmessage = (event) => {
+        const state = JSON.parse(event.data);
+        scheduleRender(state);
+      };
       ws.onclose = () => { setConnection('off'); scheduleReconnect(); };
       ws.onerror = () => { setConnection('off'); ws.close(); };
     }
 
-    setInterval(() => { if (latest) render(latest); }, 1000);
+    const UI_REFRESH_MS = 100;
+    $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) renderTradeBook(latest.books?.UP, latest.books?.DOWN); });
+    $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) renderTradeBook(latest.books?.UP, latest.books?.DOWN); });
+    setInterval(() => { if (latest) scheduleRender(latest); }, UI_REFRESH_MS);
     loadInitial();
   </script>
 </body>

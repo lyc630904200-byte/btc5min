@@ -8,33 +8,39 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class SourceConfig(BaseModel):
+    proxy_url: str | None = "http://127.0.0.1:10808"
     market_slug: str | None = None
     binance_symbol: str = "BTCUSDT"
     binance_rest_url: str = "https://api.binance.com"
     binance_ws_url: str = "wss://stream.binance.com:9443/ws/btcusdt@trade"
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
-    poly_book_poll_ms: int = 500
-    market_refresh_seconds: int = 20
+    clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
+    threshold_page_timeout_seconds: float = 4.0
+    poly_book_poll_ms: int = 200
+    market_refresh_seconds: float = 0.5
     max_start_price_lag_ms: int = 2000
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])
     observe_only_on_unverified_settlement: bool = True
 
-    @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms")
+    @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms", "threshold_page_timeout_seconds")
     @classmethod
-    def positive_interval(cls, value: int) -> int:
+    def positive_interval(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("interval values must be positive")
         return value
 
 
 class StrategyConfig(BaseModel):
-    min_entry_edge_usd: float = 50.0
+    min_entry_edge_usd: float = 15.0
     stop_edge_usd: float = 15.0
+    edge_correction_usd: float = -47.75
     max_buy_price: float = 0.75
     take_profit_ticks: float = 0.10
     min_profit_after_slippage: float = 0.04
-    min_seconds_to_entry: float = 12.0
+    min_seconds_to_entry: float = 30.0
+    max_seconds_to_entry: float = 240.0
     force_exit_seconds: float = 5.0
 
     @field_validator("max_buy_price")
@@ -42,6 +48,13 @@ class StrategyConfig(BaseModel):
     def valid_probability(cls, value: float) -> float:
         if not 0 < value < 1:
             raise ValueError("max_buy_price must be between 0 and 1")
+        return value
+
+    @field_validator("min_seconds_to_entry", "max_seconds_to_entry")
+    @classmethod
+    def valid_entry_window(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("entry window values must be positive")
         return value
 
 
@@ -61,9 +74,18 @@ class RiskConfig(BaseModel):
 
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
+    data_retention_hours: float = 24.0
+    data_cleanup_interval_seconds: float = 300.0
     sources: SourceConfig = Field(default_factory=SourceConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+
+    @field_validator("data_retention_hours", "data_cleanup_interval_seconds")
+    @classmethod
+    def positive_data_cleanup_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("data cleanup values must be positive")
+        return value
 
 
 def load_config(path: str | Path | None) -> AppConfig:

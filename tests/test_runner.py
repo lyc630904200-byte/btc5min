@@ -2,8 +2,16 @@ from datetime import datetime, timedelta, timezone
 
 from polybtc.config import AppConfig
 from polybtc.engine import PaperEngine
-from polybtc.models import MarketState
-from polybtc.runner import apply_polymarket_page_threshold, current_market_with_page_threshold, should_retry_threshold, should_keep_current_market
+from polybtc.models import Direction, MarketState, OrderBookSnapshot
+from polybtc.runner import (
+    apply_polymarket_page_threshold,
+    books_need_rest_refresh,
+    coalesce_live_events,
+    current_market_with_page_threshold,
+    prefetch_next_market_threshold,
+    should_keep_current_market,
+    should_retry_threshold,
+)
 
 
 def market(now: datetime, threshold: float | None, end_delta: timedelta) -> MarketState:
@@ -80,6 +88,22 @@ class FakeOutcomePriceClient(FakePolymarketClient):
         return PolymarketOutcomePrice(slug=market_slug, open_price=64001.5, close_price=None)
 
 
+class FakeEventThresholdClient(FakePolymarketClient):
+    async def event_threshold(self, market_slug: str):
+        return 64002.25
+
+
+class FakePrefetchClient(FakeOutcomePriceClient):
+    async def discover_markets(self):
+        now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+        current = market(now, threshold=64000, end_delta=timedelta(minutes=5))
+        upcoming = market(now, threshold=None, end_delta=timedelta(minutes=10))
+        upcoming.condition_id = "m2"
+        upcoming.slug = "btc-updown-5m-next"
+        upcoming.start_time = now + timedelta(minutes=5)
+        return [current, upcoming]
+
+
 def test_apply_polymarket_page_threshold_uses_previous_close() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     current = market(now, threshold=None, end_delta=timedelta(minutes=5))
@@ -106,6 +130,18 @@ def test_apply_polymarket_page_threshold_prefers_current_open_price() -> None:
     assert current.threshold_observed_at == now
 
 
+def test_apply_polymarket_page_threshold_prefers_gamma_event_price_to_beat() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    current = market(now, threshold=None, end_delta=timedelta(minutes=5))
+    current.start_time = now
+
+    applied = __import__("asyncio").run(apply_polymarket_page_threshold(FakeEventThresholdClient(), current))
+
+    assert applied is True
+    assert current.threshold_price == 64002.25
+    assert current.threshold_source == "gamma_event_price_to_beat"
+
+
 def test_current_market_with_page_threshold_keeps_current_after_lag() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     selected = __import__("asyncio").run(
@@ -117,6 +153,17 @@ def test_current_market_with_page_threshold_keeps_current_after_lag() -> None:
     assert selected.threshold_price == 64000.25
 
 
+def test_prefetch_next_market_threshold_fetches_upcoming_market() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    current = market(now, threshold=64000, end_delta=timedelta(minutes=5))
+
+    prefetched = __import__("asyncio").run(prefetch_next_market_threshold(FakePrefetchClient(), current, AppConfig()))
+
+    assert prefetched is not None
+    assert prefetched.condition_id == "m2"
+    assert prefetched.threshold_price == 64001.5
+
+
 def test_threshold_retry_is_throttled_by_refresh_interval() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     next_retry = now
@@ -125,3 +172,57 @@ def test_threshold_retry_is_throttled_by_refresh_interval() -> None:
     next_retry = now + timedelta(seconds=5)
     assert should_retry_threshold(now + timedelta(seconds=1), next_retry) is False
     assert should_retry_threshold(now + timedelta(seconds=5), next_retry) is True
+
+
+def test_coalesce_live_events_keeps_latest_tick_and_books() -> None:
+    events = [
+        ("tick", {"price": 1}),
+        ("book", (Direction.UP, "old-up")),
+        ("book", (Direction.DOWN, "old-down")),
+        ("tick", {"price": 2}),
+        ("book", (Direction.UP, "new-up")),
+        ("market", {"slug": "m1"}),
+        ("tick", {"price": 3}),
+        ("book", (Direction.DOWN, "new-down")),
+    ]
+
+    assert coalesce_live_events(events) == [
+        ("book", (Direction.DOWN, "old-down")),
+        ("tick", {"price": 2}),
+        ("book", (Direction.UP, "new-up")),
+        ("market", {"slug": "m1"}),
+        ("tick", {"price": 3}),
+        ("book", (Direction.DOWN, "new-down")),
+    ]
+
+
+def test_coalesce_live_events_keeps_newest_book_timestamp() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    newer = OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now + timedelta(milliseconds=2))
+    older = OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now + timedelta(milliseconds=1))
+
+    events = [("book", (Direction.UP, newer)), ("book", (Direction.UP, older))]
+
+    assert coalesce_live_events(events) == [("book", (Direction.UP, newer))]
+
+
+def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    current_market = market(now, threshold=64000, end_delta=timedelta(minutes=3))
+    engine.set_market(current_market)
+
+    assert books_need_rest_refresh(engine, current_market, now) is True
+
+    engine.set_book(
+        Direction.UP,
+        OrderBookSnapshot(token_id="up", market_id="m1", timestamp=now, received_at=now),
+    )
+    engine.set_book(
+        Direction.DOWN,
+        OrderBookSnapshot(token_id="down", market_id="m1", timestamp=now, received_at=now),
+    )
+    assert books_need_rest_refresh(engine, current_market, now) is False
+
+    engine.books[Direction.DOWN].received_at = now - timedelta(seconds=2)
+    assert books_need_rest_refresh(engine, current_market, now) is True

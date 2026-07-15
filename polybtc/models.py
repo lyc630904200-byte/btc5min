@@ -41,7 +41,11 @@ class BookLevel(BaseModel):
 class OrderBookSnapshot(BaseModel):
     token_id: str
     market_id: str | None = None
+    # Exchange sequence time, used to reject an out-of-order order-book update.
     timestamp: datetime = Field(default_factory=utc_now)
+    # Local arrival time, used for the trading freshness guard.  The CLOB's
+    # timestamp can lag the local clock even when the WebSocket is healthy.
+    received_at: datetime = Field(default_factory=utc_now)
     bids: list[BookLevel] = Field(default_factory=list)
     asks: list[BookLevel] = Field(default_factory=list)
     min_order_size: float = 5.0

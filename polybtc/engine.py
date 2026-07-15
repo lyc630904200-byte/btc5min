@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .config import AppConfig
 from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Position, PriceTick
 from .strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry, settle_position
+
+
+MAX_RECENT_REJECTIONS = 500
+REJECTION_RECORD_INTERVAL = timedelta(seconds=1)
 
 
 class PaperEngine:
@@ -12,6 +16,7 @@ class PaperEngine:
         self.config = config
         self.market: MarketState | None = None
         self.tick: PriceTick | None = None
+        self.polymarket_tick: PriceTick | None = None
         self.books: dict[Direction, OrderBookSnapshot] = {}
         self.open_position: Position | None = None
         self.positions: list[Position] = []
@@ -19,7 +24,22 @@ class PaperEngine:
         self.fills = []
         self.exit_events = []
         self.rejections: list[dict[str, str]] = []
+        self.rejection_count = 0
+        self.last_rejection_at_by_reason: dict[str, datetime] = {}
         self.market_exposure_usd = 0.0
+
+    def record_rejection(self, reason: str, now: datetime | None = None) -> None:
+        recorded_at = now or datetime.now(timezone.utc)
+        previous = self.last_rejection_at_by_reason.get(reason)
+        if previous:
+            elapsed = recorded_at - previous
+            if timedelta(0) <= elapsed < REJECTION_RECORD_INTERVAL:
+                return
+        self.last_rejection_at_by_reason[reason] = recorded_at
+        self.rejection_count += 1
+        self.rejections.append({"created_at": recorded_at.isoformat(), "reason": reason})
+        if len(self.rejections) > MAX_RECENT_REJECTIONS:
+            del self.rejections[:-MAX_RECENT_REJECTIONS]
 
     def set_market(self, market: MarketState) -> None:
         is_new_market = self.market is None or self.market.condition_id != market.condition_id
@@ -30,10 +50,34 @@ class PaperEngine:
             self.books = {}
         self.market_exposure_usd = sum(pos.entry_quote for pos in self.positions if pos.market_id == market.condition_id)
 
+    def book_matches_current_market(self, direction: Direction, book: OrderBookSnapshot) -> bool:
+        if not self.market:
+            return False
+        expected_token = self.market.up_token_id if direction == Direction.UP else self.market.down_token_id
+        if book.token_id != expected_token:
+            return False
+        if book.market_id and book.market_id != self.market.condition_id:
+            return False
+        return True
+
     def set_tick(self, tick: PriceTick) -> None:
         self.tick = tick
         self.capture_dynamic_threshold(tick)
         self.evaluate(tick.received_at)
+
+    def set_polymarket_tick(self, tick: PriceTick) -> None:
+        self.polymarket_tick = tick
+        self.evaluate(tick.received_at)
+
+    def edge_correction_usd(self) -> float:
+        if self.tick and self.polymarket_tick:
+            return self.polymarket_tick.price - self.tick.price
+        return self.config.strategy.edge_correction_usd
+
+    def edge_correction_source(self) -> str:
+        if self.tick and self.polymarket_tick:
+            return "polymarket_minus_binance"
+        return "configured_fallback"
 
     def capture_dynamic_threshold(self, tick: PriceTick) -> bool:
         if not self.market or self.market.threshold_price is not None:
@@ -62,8 +106,17 @@ class PaperEngine:
         return True
 
     def set_book(self, direction: Direction, book: OrderBookSnapshot) -> None:
+        if not self.book_matches_current_market(direction, book):
+            self.record_rejection("stale_book_market")
+            return
+        existing = self.books.get(direction)
+        if existing and book.timestamp <= existing.timestamp:
+            # Duplicate and out-of-order CLOB frames are expected on a busy
+            # WebSocket.  They are not trading rejections, so drop them
+            # silently instead of adding logging and dashboard pressure.
+            return
         self.books[direction] = book
-        self.evaluate(book.timestamp)
+        self.evaluate(book.received_at)
 
     def ready(self) -> bool:
         return self.market is not None and self.tick is not None and Direction.UP in self.books and Direction.DOWN in self.books
@@ -80,6 +133,7 @@ class PaperEngine:
             down_book=self.books[Direction.DOWN],
             now=now,
             market_exposure_usd=self.market_exposure_usd,
+            edge_correction_usd=self.edge_correction_usd(),
         )
         if self.open_position:
             exit_decision = evaluate_exit(self.open_position, state, self.config.strategy, self.config.risk)
@@ -100,7 +154,7 @@ class PaperEngine:
             self.positions.append(self.open_position)
             self.market_exposure_usd += entry.fill.quote
         else:
-            self.rejections.append({"created_at": now.isoformat(), "reason": entry.reason})
+            self.record_rejection(entry.reason, now)
 
     def _apply_exit(self, reason: ExitReason, price: float, quote: float, pnl: float, now: datetime) -> None:
         if not self.open_position:
@@ -144,7 +198,7 @@ class PaperEngine:
             "open_positions": len([pos for pos in self.positions if pos.status == "OPEN"]),
             "fills": len(self.fills),
             "signals": len(self.signals),
-            "rejections": len(self.rejections),
+            "rejections": self.rejection_count,
             "realized_pnl": realized,
             "take_profit_pnl": take_profit,
             "risk_exit_pnl": risk_exit,

@@ -17,6 +17,7 @@ class StrategyState:
     down_book: OrderBookSnapshot
     now: datetime
     market_exposure_usd: float = 0.0
+    edge_correction_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,19 @@ def edge_usd(market: MarketState, tick: PriceTick) -> float | None:
     return tick.price - market.threshold_price
 
 
+def corrected_edge_usd(
+    market: MarketState,
+    tick: PriceTick,
+    strategy: StrategyConfig,
+    edge_correction_usd: float | None = None,
+) -> float | None:
+    edge = edge_usd(market, tick)
+    if edge is None:
+        return None
+    correction = strategy.edge_correction_usd if edge_correction_usd is None else edge_correction_usd
+    return edge + correction
+
+
 def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskConfig) -> str | None:
     market = state.market
     if market.observe_only:
@@ -62,13 +76,16 @@ def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskCo
         return "market_not_accepting_orders"
     if market.start_time is not None and state.now < market.start_time:
         return "market_not_started"
-    if seconds_to_expiry(market, state.now) < strategy.min_seconds_to_entry:
+    remaining_seconds = seconds_to_expiry(market, state.now)
+    if remaining_seconds > strategy.max_seconds_to_entry:
+        return "too_early_to_entry"
+    if remaining_seconds < strategy.min_seconds_to_entry:
         return "too_close_to_expiry"
     if age_ms(state.price_tick.received_at, state.now) > risk.max_data_age_ms:
         return "binance_data_stale"
-    if age_ms(state.up_book.timestamp, state.now) > risk.max_data_age_ms:
+    if age_ms(state.up_book.received_at, state.now) > risk.max_data_age_ms:
         return "up_book_stale"
-    if age_ms(state.down_book.timestamp, state.now) > risk.max_data_age_ms:
+    if age_ms(state.down_book.received_at, state.now) > risk.max_data_age_ms:
         return "down_book_stale"
     if state.market_exposure_usd + risk.max_order_usd > risk.max_market_usd:
         return "market_exposure_limit"
@@ -87,15 +104,15 @@ def evaluate_entry(
     if has_open_position:
         return EntryDecision(False, "open_position_exists")
 
-    edge = edge_usd(state.market, state.price_tick)
+    edge = corrected_edge_usd(state.market, state.price_tick, strategy, state.edge_correction_usd)
     if edge is None:
         return EntryDecision(False, "threshold_unavailable")
 
-    if edge >= strategy.min_entry_edge_usd:
+    if edge > strategy.min_entry_edge_usd:
         direction = Direction.UP
         book = state.up_book
         token_id = state.market.up_token_id
-    elif edge <= -strategy.min_entry_edge_usd:
+    elif edge < -strategy.min_entry_edge_usd:
         direction = Direction.DOWN
         book = state.down_book
         token_id = state.market.down_token_id
@@ -105,7 +122,7 @@ def evaluate_entry(
     ask = book.best_ask
     if ask is None:
         return EntryDecision(False, "ask_unavailable")
-    if ask > strategy.max_buy_price:
+    if ask >= strategy.max_buy_price:
         return EntryDecision(False, "ask_too_expensive")
 
     execution = simulate_buy(book, risk.max_order_usd)
@@ -166,7 +183,7 @@ def choose_exit_reason(
     strategy: StrategyConfig,
     risk: RiskConfig,
 ) -> ExitReason | None:
-    edge = edge_usd(state.market, state.price_tick)
+    edge = corrected_edge_usd(state.market, state.price_tick, strategy, state.edge_correction_usd)
     if edge is None:
         return None
     held_seconds = (state.now - position.opened_at).total_seconds()
@@ -178,9 +195,9 @@ def choose_exit_reason(
         return ExitReason.REVERSE_BREAK
     if position.direction == Direction.DOWN and edge >= strategy.stop_edge_usd:
         return ExitReason.REVERSE_BREAK
-    if position.direction == Direction.UP and 0 <= edge <= strategy.stop_edge_usd:
+    if position.direction == Direction.UP and edge <= strategy.min_entry_edge_usd:
         return ExitReason.EDGE_FADED
-    if position.direction == Direction.DOWN and -strategy.stop_edge_usd <= edge <= 0:
+    if position.direction == Direction.DOWN and edge >= -strategy.min_entry_edge_usd:
         return ExitReason.EDGE_FADED
     if best_bid is not None and best_bid >= position.entry_price + strategy.take_profit_ticks:
         return ExitReason.TAKE_PROFIT
@@ -226,7 +243,7 @@ def evaluate_exit(
         market_id=position.market_id,
         direction=position.direction,
         reason=reason,
-        edge_usd=edge_usd(state.market, state.price_tick),
+        edge_usd=corrected_edge_usd(state.market, state.price_tick, strategy, state.edge_correction_usd),
         price=execution.avg_price,
         quantity=execution.quantity,
         pnl=pnl,
