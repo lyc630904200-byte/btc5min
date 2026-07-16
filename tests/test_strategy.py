@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from polybtc.config import RiskConfig, StrategyConfig
 from polybtc.engine import MAX_RECENT_REJECTIONS, PaperEngine
 from polybtc.config import AppConfig
-from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceTick
+from polybtc.models import BookLevel, Direction, ExitReason, MarketState, OrderBookSnapshot, PriceTick
 from polybtc.strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry
 
 
@@ -54,6 +54,22 @@ def test_entry_accepts_up_edge_with_depth() -> None:
     assert decision.fill.avg_price == 0.60
 
 
+def test_entry_rejects_when_orderbook_direction_conflicts_with_price_edge() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.38, 0.40, now),
+        down_book=book("down", 0.58, 0.60, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is False
+    assert decision.reason == "book_direction_conflicts_with_edge"
+
+
 def test_entry_rejects_expensive_ask() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     state = StrategyState(
@@ -70,13 +86,28 @@ def test_entry_rejects_expensive_ask() -> None:
     assert decision.reason == "ask_too_expensive"
 
 
-def test_entry_rejects_ask_at_minimum_buy_price() -> None:
+def test_entry_accepts_ask_at_minimum_buy_price() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     state = StrategyState(
         market=market(now),
         price_tick=PriceTick(price=118070, received_at=now),
         up_book=book("up", 0.09, 0.10, now),
-        down_book=book("down", 0.58, 0.60, now),
+        down_book=book("down", 0.03, 0.04, now),
+        now=now,
+    )
+
+    decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
+
+    assert decision.accepted is True
+
+
+def test_entry_rejects_ask_below_minimum_buy_price() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.08, 0.09, now),
+        down_book=book("down", 0.03, 0.04, now),
         now=now,
     )
 
@@ -122,7 +153,7 @@ def test_entry_rejects_edge_equal_to_threshold() -> None:
     assert decision.reason == "edge_too_small"
 
 
-def test_entry_rejects_ask_equal_to_max_buy_price() -> None:
+def test_entry_accepts_ask_equal_to_max_buy_price() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     state = StrategyState(
         market=market(now),
@@ -134,8 +165,7 @@ def test_entry_rejects_ask_equal_to_max_buy_price() -> None:
 
     decision = evaluate_entry(state, raw_edge_strategy(), RiskConfig())
 
-    assert decision.accepted is False
-    assert decision.reason == "ask_too_expensive"
+    assert decision.accepted is True
 
 
 def test_entry_rejects_market_before_start() -> None:
@@ -203,6 +233,50 @@ def test_exit_take_profit() -> None:
     assert decision.should_exit is True
     assert decision.reason is not None
     assert decision.reason.value == "take_profit"
+    assert entry.fill is not None
+    assert round(entry.fill.fee_usd, 6) == 0.28
+    assert decision.fill is not None
+    assert round(decision.fill.fee_usd, 6) == 0.2352
+    assert decision.event is not None
+    assert round(decision.event.pnl, 6) == 1.4848
+
+
+def test_position_waits_ten_seconds_before_orderbook_conflict_exit() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = raw_edge_strategy()
+    entry_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
+    assert entry.fill is not None
+    position = position_from_entry(entry.fill, edge=70, opened_at=now)
+    early_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now + timedelta(seconds=1)),
+        up_book=book("up", 0.38, 0.40, now + timedelta(seconds=1)),
+        down_book=book("down", 0.58, 0.60, now + timedelta(seconds=1)),
+        now=now + timedelta(seconds=1),
+    )
+    delayed_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now + timedelta(seconds=10)),
+        up_book=book("up", 0.38, 0.40, now + timedelta(seconds=10)),
+        down_book=book("down", 0.58, 0.60, now + timedelta(seconds=10)),
+        now=now + timedelta(seconds=10),
+    )
+
+    early_decision = evaluate_exit(position, early_state, strategy, RiskConfig())
+    delayed_decision = evaluate_exit(position, delayed_state, strategy, RiskConfig())
+
+    assert early_decision.should_exit is False
+    assert delayed_decision.should_exit is True
+    assert delayed_decision.reason == ExitReason.BOOK_DIRECTION_CONFLICT
+    assert delayed_decision.fill is not None
+    assert delayed_decision.fill.side.value == "SELL"
 
 
 def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -> None:
@@ -211,7 +285,7 @@ def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -
     entry_state = StrategyState(
         market=market(now),
         price_tick=PriceTick(price=117980, received_at=now),
-        up_book=book("up", 0.58, 0.60, now),
+        up_book=book("up", 0.38, 0.40, now),
         down_book=book("down", 0.44, 0.46, now),
         now=now,
     )
@@ -221,8 +295,8 @@ def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -
     exit_state = StrategyState(
         market=market(now),
         price_tick=PriceTick(price=117988, received_at=now + timedelta(seconds=1)),
-        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=1)),
-        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=1)),
+        up_book=book("up", 0.48, 0.50, now + timedelta(seconds=1)),
+        down_book=book("down", 0.50, 0.52, now + timedelta(seconds=1)),
         now=now + timedelta(seconds=1),
     )
 
@@ -237,7 +311,7 @@ def test_down_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
     entry_state = StrategyState(
         market=market(now),
         price_tick=PriceTick(price=117980, received_at=now),
-        up_book=book("up", 0.58, 0.60, now),
+        up_book=book("up", 0.38, 0.40, now),
         down_book=book("down", 0.44, 0.46, now),
         now=now,
     )
@@ -247,8 +321,8 @@ def test_down_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
     exit_state = StrategyState(
         market=market(now),
         price_tick=PriceTick(price=117990, received_at=now + timedelta(seconds=1)),
-        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=1)),
-        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=1)),
+        up_book=book("up", 0.48, 0.50, now + timedelta(seconds=1)),
+        down_book=book("down", 0.50, 0.52, now + timedelta(seconds=1)),
         now=now + timedelta(seconds=1),
     )
 
@@ -352,7 +426,64 @@ def test_engine_uses_binance_minus_polymarket_as_dynamic_correction() -> None:
 
     assert engine.edge_correction_usd() == 30
     assert engine.edge_correction_source() == "binance_minus_polymarket"
+    assert engine.signals == []
+
+    engine.set_polymarket_tick(
+        PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now + timedelta(milliseconds=500))
+    )
+    assert engine.signals == []
+    engine.set_polymarket_tick(
+        PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now + timedelta(seconds=1))
+    )
+
     assert engine.signals[-1].edge_usd == 40
+
+
+def test_engine_does_not_count_duplicate_book_events_as_entry_confirmations() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(market(now))
+    engine.set_tick(PriceTick(price=118070, received_at=now))
+    engine.set_polymarket_tick(PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now))
+    engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
+    engine.set_book(Direction.DOWN, book("down", 0.38, 0.40, now))
+
+    for offset in (100, 200, 300):
+        engine.set_book(Direction.UP, book("up", 0.58, 0.60, now + timedelta(milliseconds=offset)))
+
+    assert engine.entry_confirmation_updates == 1
+    assert engine.signals == []
+
+
+def test_engine_resets_entry_confirmation_when_signal_breaks() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig(risk={"max_data_age_ms": 10000}))
+    engine.set_market(market(now))
+    engine.set_tick(PriceTick(price=118070, received_at=now))
+    engine.set_polymarket_tick(PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now))
+    engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
+    engine.set_book(Direction.DOWN, book("down", 0.38, 0.40, now))
+    engine.set_polymarket_tick(
+        PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118040, received_at=now + timedelta(milliseconds=500))
+    )
+    assert engine.entry_confirmation_updates == 2
+
+    engine.set_polymarket_tick(
+        PriceTick(source="polymarket_rtds", symbol="BTC/USD", price=118000, received_at=now + timedelta(milliseconds=750))
+    )
+    assert engine.entry_confirmation_updates == 0
+
+    for milliseconds in (1000, 1500, 2000):
+        engine.set_polymarket_tick(
+            PriceTick(
+                source="polymarket_rtds",
+                symbol="BTC/USD",
+                price=118040,
+                received_at=now + timedelta(milliseconds=milliseconds),
+            )
+        )
+
+    assert len(engine.signals) == 1
 
 
 def test_engine_captures_dynamic_threshold_only_near_start() -> None:

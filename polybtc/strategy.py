@@ -62,6 +62,27 @@ def corrected_edge_usd(
     return edge - (edge_correction_usd or 0.0)
 
 
+def orderbook_direction(up_book: OrderBookSnapshot, down_book: OrderBookSnapshot) -> Direction | None:
+    """Return the outcome favored by the two-sided order book, if decisive."""
+    up_bid, up_ask = up_book.best_bid, up_book.best_ask
+    down_bid, down_ask = down_book.best_bid, down_book.best_ask
+    if None in {up_bid, up_ask, down_bid, down_ask}:
+        return None
+    up_mid = (up_bid + up_ask) / 2
+    down_mid = (down_bid + down_ask) / 2
+    if up_mid > down_mid:
+        return Direction.UP
+    if down_mid > up_mid:
+        return Direction.DOWN
+    return None
+
+
+def edge_direction(edge: float | None) -> Direction | None:
+    if edge is None or edge == 0:
+        return None
+    return Direction.UP if edge > 0 else Direction.DOWN
+
+
 def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskConfig) -> str | None:
     market = state.market
     if market.observe_only:
@@ -120,17 +141,22 @@ def evaluate_entry(
     ask = book.best_ask
     if ask is None:
         return EntryDecision(False, "ask_unavailable")
-    if ask <= strategy.min_buy_price:
+    if ask < strategy.min_buy_price:
         return EntryDecision(False, "ask_too_cheap")
-    if ask >= strategy.max_buy_price:
+    if ask > strategy.max_buy_price:
         return EntryDecision(False, "ask_too_expensive")
 
-    execution = simulate_buy(book, risk.max_order_usd)
+    book_direction = orderbook_direction(state.up_book, state.down_book)
+    if book_direction is not None and book_direction != direction:
+        return EntryDecision(False, "book_direction_conflicts_with_edge")
+
+    execution = simulate_buy(book, risk.max_order_usd, strategy.taker_fee_rate)
     if not execution.complete:
         return EntryDecision(False, "depth_insufficient", execution=execution)
     if execution.quantity < state.market.min_order_size:
         return EntryDecision(False, "below_min_order_size", execution=execution)
-    if 1.0 - execution.avg_price < strategy.min_profit_after_slippage:
+    fee_per_share = execution.fee_usd / execution.quantity if execution.quantity else 0.0
+    if 1.0 - execution.avg_price - fee_per_share < strategy.min_profit_after_slippage:
         return EntryDecision(False, "profit_after_slippage_too_low", execution=execution)
 
     signal_id = str(uuid4())
@@ -157,13 +183,19 @@ def evaluate_entry(
         quantity=execution.quantity,
         quote=execution.quote,
         slippage=execution.slippage,
+        fee_usd=execution.fee_usd,
         created_at=state.now,
         reason="entry_edge",
     )
     return EntryDecision(True, "accepted", signal=signal, fill=fill, execution=execution)
 
 
-def position_from_entry(fill: Fill, edge: float, opened_at: datetime | None = None) -> Position:
+def position_from_entry(
+    fill: Fill,
+    edge: float,
+    opened_at: datetime | None = None,
+    taker_fee_rate: float = 0.0,
+) -> Position:
     return Position(
         position_id=fill.position_id or str(uuid4()),
         market_id=fill.market_id,
@@ -171,7 +203,9 @@ def position_from_entry(fill: Fill, edge: float, opened_at: datetime | None = No
         direction=fill.direction,
         entry_price=fill.avg_price,
         quantity=fill.quantity,
-        entry_quote=fill.quote,
+        entry_quote=fill.quote + fill.fee_usd,
+        entry_fee_usd=fill.fee_usd,
+        taker_fee_rate=taker_fee_rate,
         opened_at=opened_at or fill.created_at,
         entry_edge_usd=edge,
     )
@@ -187,6 +221,13 @@ def choose_exit_reason(
     if edge is None:
         return None
     held_seconds = (state.now - position.opened_at).total_seconds()
+    book_direction = orderbook_direction(state.up_book, state.down_book)
+    if (
+        held_seconds >= strategy.book_direction_exit_delay_seconds
+        and book_direction is not None
+        and book_direction != edge_direction(edge)
+    ):
+        return ExitReason.BOOK_DIRECTION_CONFLICT
     book = state.up_book if position.direction == Direction.UP else state.down_book
     best_bid = book.best_bid
     expiry_seconds = seconds_to_expiry(state.market, state.now)
@@ -219,11 +260,11 @@ def evaluate_exit(
         return ExitDecision(False)
 
     book = state.up_book if position.direction == Direction.UP else state.down_book
-    execution = simulate_sell(book, position.quantity)
-    if execution.quantity <= 0:
+    execution = simulate_sell(book, position.quantity, strategy.taker_fee_rate)
+    if not execution.complete:
         return ExitDecision(False, reason=reason)
 
-    pnl = execution.quantity * (execution.avg_price - position.entry_price)
+    pnl = execution.quote - execution.fee_usd - position.entry_quote
     fill = Fill(
         fill_id=str(uuid4()),
         position_id=position.position_id,
@@ -235,6 +276,7 @@ def evaluate_exit(
         quantity=execution.quantity,
         quote=execution.quote,
         slippage=execution.slippage,
+        fee_usd=execution.fee_usd,
         created_at=state.now,
         reason=reason.value,
     )
@@ -247,6 +289,7 @@ def evaluate_exit(
         price=execution.avg_price,
         quantity=execution.quantity,
         pnl=pnl,
+        fee_usd=execution.fee_usd,
         created_at=state.now,
     )
     return ExitDecision(True, reason=reason, fill=fill, event=event)
@@ -259,7 +302,7 @@ def settle_position(position: Position, market: MarketState, settlement_price: f
         payout = 1.0 if settlement_price > market.threshold_price else 0.0
     else:
         payout = 1.0 if settlement_price <= market.threshold_price else 0.0
-    pnl = position.quantity * (payout - position.entry_price)
+    pnl = position.quantity * payout - position.entry_quote
     reason = ExitReason.SETTLEMENT_WIN if payout == 1.0 else ExitReason.SETTLEMENT_LOSS
     return ExitEvent(
         position_id=position.position_id,

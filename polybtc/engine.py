@@ -27,6 +27,37 @@ class PaperEngine:
         self.rejection_count = 0
         self.last_rejection_at_by_reason: dict[str, datetime] = {}
         self.market_exposure_usd = 0.0
+        self.entry_confirmation_direction: Direction | None = None
+        self.entry_confirmation_started_at: datetime | None = None
+        self.entry_confirmation_last_at: datetime | None = None
+        self.entry_confirmation_updates = 0
+
+    def reset_entry_confirmation(self) -> None:
+        self.entry_confirmation_direction = None
+        self.entry_confirmation_started_at = None
+        self.entry_confirmation_last_at = None
+        self.entry_confirmation_updates = 0
+
+    def entry_is_confirmed(self, direction: Direction, now: datetime, observed_at: datetime) -> bool:
+        strategy = self.config.strategy
+        max_gap_seconds = max(strategy.entry_confirmation_seconds, self.config.risk.max_data_age_ms / 1000)
+        gap_too_large = (
+            self.entry_confirmation_last_at is not None
+            and (observed_at - self.entry_confirmation_last_at).total_seconds() > max_gap_seconds
+        )
+        if self.entry_confirmation_direction != direction or gap_too_large:
+            self.entry_confirmation_direction = direction
+            self.entry_confirmation_started_at = now
+            self.entry_confirmation_last_at = observed_at
+            self.entry_confirmation_updates = 1
+            return False
+        if self.entry_confirmation_last_at is not None and observed_at <= self.entry_confirmation_last_at:
+            return False
+        self.entry_confirmation_updates += 1
+        self.entry_confirmation_last_at = observed_at
+        started_at = self.entry_confirmation_started_at or now
+        elapsed = max(0.0, (now - started_at).total_seconds())
+        return elapsed >= strategy.entry_confirmation_seconds and self.entry_confirmation_updates >= strategy.entry_confirmation_updates
 
     def record_rejection(self, reason: str, now: datetime | None = None) -> None:
         recorded_at = now or datetime.now(timezone.utc)
@@ -48,6 +79,7 @@ class PaperEngine:
         self.market = market
         if is_new_market:
             self.books = {}
+            self.reset_entry_confirmation()
         self.market_exposure_usd = sum(pos.entry_quote for pos in self.positions if pos.market_id == market.condition_id)
 
     def book_matches_current_market(self, direction: Direction, book: OrderBookSnapshot) -> bool:
@@ -158,37 +190,65 @@ class PaperEngine:
             edge_correction_usd=self.edge_correction_usd(),
         )
         if self.open_position:
+            self.reset_entry_confirmation()
             exit_decision = evaluate_exit(self.open_position, state, self.config.strategy, self.config.risk)
             if exit_decision.should_exit and exit_decision.fill and exit_decision.event:
                 self.fills.append(exit_decision.fill)
                 self.exit_events.append(exit_decision.event)
-                self._apply_exit(exit_decision.event.reason, exit_decision.fill.avg_price, exit_decision.fill.quote, exit_decision.event.pnl, now)
+                self._apply_exit(
+                    exit_decision.event.reason,
+                    exit_decision.fill.avg_price,
+                    exit_decision.fill.quote - exit_decision.fill.fee_usd,
+                    exit_decision.event.pnl,
+                    now,
+                    fee_usd=exit_decision.fill.fee_usd,
+                )
             else:
                 self._settle_if_expired(now)
             return
 
         entry = evaluate_entry(state, self.config.strategy, self.config.risk)
         if entry.accepted and entry.signal and entry.fill:
+            observed_at = self.polymarket_tick.received_at if self.polymarket_tick else self.tick.received_at
+            if not self.entry_is_confirmed(entry.signal.direction, now, observed_at):
+                return
+            self.reset_entry_confirmation()
             self.signals.append(entry.signal)
             self.fills.append(entry.fill)
             edge = entry.signal.edge_usd
-            self.open_position = position_from_entry(entry.fill, edge=edge, opened_at=now)
+            self.open_position = position_from_entry(
+                entry.fill,
+                edge=edge,
+                opened_at=now,
+                taker_fee_rate=self.config.strategy.taker_fee_rate,
+            )
             self.positions.append(self.open_position)
-            self.market_exposure_usd += entry.fill.quote
+            self.market_exposure_usd += self.open_position.entry_quote
         else:
+            self.reset_entry_confirmation()
             self.record_rejection(entry.reason, now)
 
-    def _apply_exit(self, reason: ExitReason, price: float, quote: float, pnl: float, now: datetime) -> None:
+    def _apply_exit(
+        self,
+        reason: ExitReason,
+        price: float,
+        quote: float,
+        pnl: float,
+        now: datetime,
+        fee_usd: float = 0.0,
+    ) -> None:
         if not self.open_position:
             return
         position = self.open_position
         position.exit_price = price
         position.exit_quote += quote
+        position.exit_fee_usd += fee_usd
         position.realized_pnl += pnl
         position.exit_reason = reason
         position.closed_at = now
         position.status = "CLOSED"
         self.open_position = None
+        self.reset_entry_confirmation()
 
     def _settle_if_expired(self, now: datetime, force: bool = False) -> None:
         if not self.open_position or not self.market or not self.tick:
@@ -207,7 +267,13 @@ class PaperEngine:
         risk_exit = sum(
             position.realized_pnl
             for position in self.positions
-            if position.exit_reason in {ExitReason.EDGE_FADED, ExitReason.REVERSE_BREAK, ExitReason.MAX_HOLD_SECONDS, ExitReason.FORCE_EXIT}
+            if position.exit_reason in {
+                ExitReason.BOOK_DIRECTION_CONFLICT,
+                ExitReason.EDGE_FADED,
+                ExitReason.REVERSE_BREAK,
+                ExitReason.MAX_HOLD_SECONDS,
+                ExitReason.FORCE_EXIT,
+            }
         )
         settlement = sum(
             position.realized_pnl
@@ -226,4 +292,6 @@ class PaperEngine:
             "risk_exit_pnl": risk_exit,
             "settlement_pnl": settlement,
             "total_quote": sum(pos.entry_quote for pos in self.positions),
+            "entry_confirmation_updates": self.entry_confirmation_updates,
+            "fees_paid_usd": sum(fill.fee_usd for fill in self.fills),
         }

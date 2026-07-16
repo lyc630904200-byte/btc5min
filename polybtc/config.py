@@ -34,8 +34,8 @@ class SourceConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    min_entry_edge_usd: float = 15.0
-    stop_edge_usd: float = 15.0
+    min_entry_edge_usd: float = 10.0
+    stop_edge_usd: float = 10.0
     min_buy_price: float = 0.10
     max_buy_price: float = 0.75
     take_profit_ticks: float = 0.10
@@ -43,6 +43,10 @@ class StrategyConfig(BaseModel):
     min_seconds_to_entry: float = 10.0
     max_seconds_to_entry: float = 240.0
     force_exit_seconds: float = 5.0
+    book_direction_exit_delay_seconds: float = 10.0
+    entry_confirmation_seconds: float = 1.0
+    entry_confirmation_updates: int = 3
+    taker_fee_rate: float = 0.07
 
     @field_validator("min_buy_price", "max_buy_price")
     @classmethod
@@ -64,6 +68,27 @@ class StrategyConfig(BaseModel):
     def valid_entry_window(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("entry window values must be positive")
+        return value
+
+    @field_validator("book_direction_exit_delay_seconds", "entry_confirmation_seconds")
+    @classmethod
+    def positive_book_direction_exit_delay(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("confirmation and exit delay values must be positive")
+        return value
+
+    @field_validator("entry_confirmation_updates")
+    @classmethod
+    def positive_entry_confirmation_updates(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("entry confirmation updates must be at least one")
+        return value
+
+    @field_validator("taker_fee_rate")
+    @classmethod
+    def valid_taker_fee_rate(cls, value: float) -> float:
+        if not 0 <= value < 1:
+            raise ValueError("taker fee rate must be between zero and one")
         return value
 
 

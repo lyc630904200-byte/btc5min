@@ -67,6 +67,7 @@ def test_recent_events_keep_only_fills() -> None:
                         "avg_price": 0.53,
                         "quantity": 9.43,
                         "quote": 5.0,
+                        "fee_usd": None,
                         "reason": "entry",
                         "created_at": "2026-07-12T15:00:01Z",
                     },
@@ -86,6 +87,7 @@ def test_recent_events_keep_only_fills() -> None:
                 "avg_price": 0.53,
                 "quantity": 9.43,
                 "quote": 5.0,
+                "fee_usd": None,
                 "reason": "entry",
                 "created_at": "2026-07-12T15:00:01Z",
             },
@@ -93,8 +95,10 @@ def test_recent_events_keep_only_fills() -> None:
     ]
 
 
-def test_runtime_config_updates_strategy_and_risk() -> None:
-    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+def test_runtime_config_saves_for_next_market_and_persists_active_values(tmp_path) -> None:
+    config = AppConfig(data_dir=tmp_path)
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+    hub.latest["market"] = {"condition_id": "m1"}
 
     config = hub.set_runtime_config(
         {
@@ -111,13 +115,15 @@ def test_runtime_config_updates_strategy_and_risk() -> None:
         }
     )
 
-    assert config["strategy"] == {
-        "min_entry_edge_usd": 18.0,
-        "stop_edge_usd": 20.0,
-        "min_buy_price": 0.42,
-        "max_buy_price": 0.72,
-        "take_profit_ticks": 0.12,
-        "min_seconds_to_entry": 45.0,
-        "max_seconds_to_entry": 180.0,
-    }
-    assert config["risk"] == {"max_order_usd": 12.0}
+    assert config["config_status"] == "pending_next_market"
+    assert config["strategy"]["min_entry_edge_usd"] == 10.0
+    assert config["pending_strategy"]["min_entry_edge_usd"] == 18.0
+    assert config["pending_risk"]["max_order_usd"] == 12.0
+    assert hub.apply_pending_config_for_market("m1") is False
+    assert hub.apply_pending_config_for_market("m2") is True
+    assert hub.config_json()["strategy"]["min_entry_edge_usd"] == 18.0
+    assert hub.config_json()["risk"] == {"max_order_usd": 12.0}
+
+    reloaded = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path))
+    assert reloaded.config_json()["strategy"]["min_entry_edge_usd"] == 18.0
+    assert reloaded.config_json()["risk"] == {"max_order_usd": 12.0}

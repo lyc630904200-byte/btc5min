@@ -23,6 +23,10 @@ class DashboardHub:
         self.ws_host = ws_host
         self.ws_port = ws_port
         self.config = config
+        self.runtime_settings_path = self.config.data_dir / "dashboard-settings.json"
+        self.pending_config: dict[str, dict[str, Any]] | None = None
+        self.pending_after_market_id: str | None = None
+        self._load_runtime_settings()
         self.latest: dict[str, Any] = {
             "type": "snapshot",
             "created_at": None,
@@ -36,6 +40,7 @@ class DashboardHub:
             "events": [],
             "strategy": self.config_json()["strategy"],
             "risk": self.config_json()["risk"],
+            **self.config_status_json(),
             "ws_url": self.ws_url,
         }
         self.events: list[dict[str, Any]] = []
@@ -60,6 +65,7 @@ class DashboardHub:
                     "avg_price": payload.get("avg_price"),
                     "quantity": payload.get("quantity"),
                     "quote": payload.get("quote"),
+                    "fee_usd": payload.get("fee_usd"),
                     "reason": payload.get("reason"),
                     "created_at": payload.get("created_at"),
                 },
@@ -172,9 +178,79 @@ class DashboardHub:
                 "take_profit_ticks": strategy.take_profit_ticks,
                 "min_seconds_to_entry": strategy.min_seconds_to_entry,
                 "max_seconds_to_entry": strategy.max_seconds_to_entry,
+                "entry_confirmation_seconds": strategy.entry_confirmation_seconds,
+                "entry_confirmation_updates": strategy.entry_confirmation_updates,
+                "taker_fee_rate": strategy.taker_fee_rate,
             },
             "risk": {"max_order_usd": risk.max_order_usd},
         }
+
+    def config_status_json(self) -> dict[str, Any]:
+        pending = self.pending_config or {}
+        return {
+            "config_status": "pending_next_market" if self.pending_config else "active",
+            "pending_strategy": pending.get("strategy"),
+            "pending_risk": pending.get("risk"),
+        }
+
+    def _load_runtime_settings(self) -> None:
+        try:
+            payload = json.loads(self.runtime_settings_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+
+        active = payload.get("active")
+        if isinstance(active, dict):
+            try:
+                strategy = type(self.config.strategy).model_validate(active.get("strategy") or {})
+                risk = type(self.config.risk).model_validate(active.get("risk") or {})
+            except (TypeError, ValueError):
+                pass
+            else:
+                self.config.strategy = strategy
+                self.config.risk = risk
+
+        pending = payload.get("pending")
+        if isinstance(pending, dict):
+            try:
+                strategy = type(self.config.strategy).model_validate(pending.get("strategy") or {})
+                risk = type(self.config.risk).model_validate(pending.get("risk") or {})
+            except (TypeError, ValueError):
+                return
+            self.pending_config = {"strategy": strategy.model_dump(), "risk": risk.model_dump()}
+            after_market = payload.get("apply_after_market_id")
+            self.pending_after_market_id = str(after_market) if after_market else None
+
+    def _save_runtime_settings(self) -> None:
+        payload = {
+            "active": {
+                "strategy": self.config.strategy.model_dump(),
+                "risk": self.config.risk.model_dump(),
+            },
+            "pending": self.pending_config,
+            "apply_after_market_id": self.pending_after_market_id,
+        }
+        self.runtime_settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self.runtime_settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def current_market_id(self) -> str | None:
+        market = self.latest.get("market") or {}
+        if not isinstance(market, dict):
+            return None
+        market_id = market.get("condition_id")
+        return str(market_id) if market_id else None
+
+    def apply_pending_config_for_market(self, market_id: str | None) -> bool:
+        if not self.pending_config or not market_id or market_id == self.pending_after_market_id:
+            return False
+        self.config.strategy = type(self.config.strategy).model_validate(self.pending_config["strategy"])
+        self.config.risk = type(self.config.risk).model_validate(self.pending_config["risk"])
+        self.pending_config = None
+        self.pending_after_market_id = None
+        self._save_runtime_settings()
+        return True
 
     def set_runtime_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         strategy_update = payload.get("strategy")
@@ -194,6 +270,9 @@ class DashboardHub:
             "take_profit_ticks",
             "min_seconds_to_entry",
             "max_seconds_to_entry",
+            "entry_confirmation_seconds",
+            "entry_confirmation_updates",
+            "taker_fee_rate",
         }
         risk_fields = {"max_order_usd"}
         unexpected_strategy = set(strategy_update or {}) - strategy_fields
@@ -202,16 +281,25 @@ class DashboardHub:
             names = sorted(unexpected_strategy | unexpected_risk)
             raise ValueError(f"unsupported runtime settings: {', '.join(names)}")
 
-        strategy_payload = self.config.strategy.model_dump()
+        pending = self.pending_config or {}
+        strategy_payload = dict(pending.get("strategy") or self.config.strategy.model_dump())
         strategy_payload.update(strategy_update or {})
-        risk_payload = self.config.risk.model_dump()
+        risk_payload = dict(pending.get("risk") or self.config.risk.model_dump())
         risk_payload.update(risk_update or {})
-        self.config.strategy = type(self.config.strategy).model_validate(strategy_payload)
-        self.config.risk = type(self.config.risk).model_validate(risk_payload)
-        return self.config_json()
+        strategy = type(self.config.strategy).model_validate(strategy_payload)
+        risk = type(self.config.risk).model_validate(risk_payload)
+        self.pending_config = {"strategy": strategy.model_dump(), "risk": risk.model_dump()}
+        self.pending_after_market_id = self.current_market_id()
+        self._save_runtime_settings()
+        return {**self.config_json(), **self.config_status_json()}
 
     async def publish(self, snapshot: dict[str, Any]) -> None:
         message: str
+        event = snapshot.get("event")
+        market = snapshot.get("market") or {}
+        if isinstance(event, dict) and event.get("type") == "market" and isinstance(market, dict):
+            market_id = market.get("condition_id")
+            self.apply_pending_config_for_market(str(market_id) if market_id else None)
         snapshot = self.compact_snapshot(snapshot)
         async with self.lock:
             event = snapshot.get("event")
@@ -221,6 +309,7 @@ class DashboardHub:
                 self.events = self.events[-250:]
             snapshot["event"] = compacted_event
             snapshot["status"] = "running"
+            snapshot.update(self.config_status_json())
             snapshot["events"] = list(self.events)
             snapshot["ws_url"] = self.ws_url
             self.latest = snapshot
@@ -252,6 +341,7 @@ class DashboardHub:
         payload["ws_url"] = self.ws_url
         payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
         payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}
+        payload.update(self.config_status_json())
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 

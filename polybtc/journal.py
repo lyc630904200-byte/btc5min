@@ -62,7 +62,21 @@ class RunJournal:
         self.signals = JsonlWriter(run_dir / "signals.jsonl")
         self.fills = CsvTable(
             run_dir / "fills.csv",
-            ["fill_id", "position_id", "market_id", "token_id", "direction", "side", "avg_price", "quantity", "quote", "slippage", "created_at", "reason"],
+            [
+                "fill_id",
+                "position_id",
+                "market_id",
+                "token_id",
+                "direction",
+                "side",
+                "avg_price",
+                "quantity",
+                "quote",
+                "slippage",
+                "fee_usd",
+                "created_at",
+                "reason",
+            ],
         )
         self.positions = CsvTable(
             run_dir / "positions.csv",
@@ -74,6 +88,9 @@ class RunJournal:
                 "entry_price",
                 "quantity",
                 "entry_quote",
+                "entry_fee_usd",
+                "exit_fee_usd",
+                "taker_fee_rate",
                 "opened_at",
                 "entry_edge_usd",
                 "status",

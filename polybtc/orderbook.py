@@ -14,6 +14,13 @@ class ExecutionResult(BaseModel):
     best_price: float | None
     available_depth_quote: float
     levels_used: int
+    fee_usd: float = 0.0
+
+
+def taker_fee_usd(quantity: float, price: float, fee_rate: float) -> float:
+    if quantity <= 0 or not 0 < price < 1 or fee_rate <= 0:
+        return 0.0
+    return quantity * fee_rate * price * (1.0 - price)
 
 
 def normalize_book(book: OrderBookSnapshot) -> OrderBookSnapshot:
@@ -22,7 +29,7 @@ def normalize_book(book: OrderBookSnapshot) -> OrderBookSnapshot:
     return book
 
 
-def simulate_buy(book: OrderBookSnapshot, quote_usd: float) -> ExecutionResult:
+def simulate_buy(book: OrderBookSnapshot, quote_usd: float, fee_rate: float = 0.0) -> ExecutionResult:
     book = normalize_book(book)
     best = book.best_ask
     if best is None or quote_usd <= 0:
@@ -41,6 +48,7 @@ def simulate_buy(book: OrderBookSnapshot, quote_usd: float) -> ExecutionResult:
     quantity = 0.0
     quote = 0.0
     levels_used = 0
+    fee_usd = 0.0
     available_depth_quote = sum(level.price * level.size for level in book.asks)
 
     for level in book.asks:
@@ -51,6 +59,7 @@ def simulate_buy(book: OrderBookSnapshot, quote_usd: float) -> ExecutionResult:
         take_qty = take_quote / level.price
         quantity += take_qty
         quote += take_quote
+        fee_usd += taker_fee_usd(take_qty, level.price, fee_rate)
         remaining_quote -= take_quote
         levels_used += 1
 
@@ -64,10 +73,11 @@ def simulate_buy(book: OrderBookSnapshot, quote_usd: float) -> ExecutionResult:
         best_price=best,
         available_depth_quote=available_depth_quote,
         levels_used=levels_used,
+        fee_usd=fee_usd,
     )
 
 
-def simulate_sell(book: OrderBookSnapshot, quantity: float) -> ExecutionResult:
+def simulate_sell(book: OrderBookSnapshot, quantity: float, fee_rate: float = 0.0) -> ExecutionResult:
     book = normalize_book(book)
     best = book.best_bid
     if best is None or quantity <= 0:
@@ -86,6 +96,7 @@ def simulate_sell(book: OrderBookSnapshot, quantity: float) -> ExecutionResult:
     filled_qty = 0.0
     quote = 0.0
     levels_used = 0
+    fee_usd = 0.0
     available_depth_quote = sum(level.price * level.size for level in book.bids)
 
     for level in book.bids:
@@ -94,6 +105,7 @@ def simulate_sell(book: OrderBookSnapshot, quantity: float) -> ExecutionResult:
         take_qty = min(remaining_qty, level.size)
         filled_qty += take_qty
         quote += take_qty * level.price
+        fee_usd += taker_fee_usd(take_qty, level.price, fee_rate)
         remaining_qty -= take_qty
         levels_used += 1
 
@@ -107,4 +119,5 @@ def simulate_sell(book: OrderBookSnapshot, quantity: float) -> ExecutionResult:
         best_price=best,
         available_depth_quote=available_depth_quote,
         levels_used=levels_used,
+        fee_usd=fee_usd,
     )

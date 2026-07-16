@@ -135,6 +135,8 @@ def summarize_fills(run_dir: Path) -> dict[str, Any]:
 
     buy_quotes: list[float] = []
     sell_quotes: list[float] = []
+    buy_fees: list[float] = []
+    sell_fees: list[float] = []
     buy_prices: list[float] = []
     sell_prices: list[float] = []
     round_trip_pnls: list[float] = []
@@ -146,14 +148,18 @@ def summarize_fills(run_dir: Path) -> dict[str, Any]:
         sells = [row for row in rows if row.get("side") == "SELL"]
         buy_quote = sum(as_float(row.get("quote")) or 0.0 for row in buys)
         sell_quote = sum(as_float(row.get("quote")) or 0.0 for row in sells)
+        buy_fee = sum(as_float(row.get("fee_usd")) or 0.0 for row in buys)
+        sell_fee = sum(as_float(row.get("fee_usd")) or 0.0 for row in sells)
         buy_qty = sum(as_float(row.get("quantity")) or 0.0 for row in buys)
         sell_qty = sum(as_float(row.get("quantity")) or 0.0 for row in sells)
         buy_quotes.extend(as_float(row.get("quote")) or 0.0 for row in buys)
         sell_quotes.extend(as_float(row.get("quote")) or 0.0 for row in sells)
+        buy_fees.extend(as_float(row.get("fee_usd")) or 0.0 for row in buys)
+        sell_fees.extend(as_float(row.get("fee_usd")) or 0.0 for row in sells)
         buy_prices.extend(as_float(row.get("avg_price")) or 0.0 for row in buys)
         sell_prices.extend(as_float(row.get("avg_price")) or 0.0 for row in sells)
         if buys and sells and sell_qty >= buy_qty - 1e-9:
-            round_trip_pnls.append(sell_quote - buy_quote)
+            round_trip_pnls.append(sell_quote - sell_fee - buy_quote - buy_fee)
             opened = parse_datetime(buys[0].get("created_at"))
             closed = parse_datetime(sells[-1].get("created_at"))
             if opened and closed:
@@ -174,6 +180,9 @@ def summarize_fills(run_dir: Path) -> dict[str, Any]:
         "open_positions_from_fills": open_positions,
         "buy_quote": sum(buy_quotes),
         "sell_quote": sum(sell_quotes),
+        "buy_fee": sum(buy_fees),
+        "sell_fee": sum(sell_fees),
+        "total_fee": sum(buy_fees) + sum(sell_fees),
         "realized_pnl_from_fills": sum(round_trip_pnls),
         "win_rate_from_fills": winners / closed_positions if closed_positions else None,
         "winners_from_fills": winners,

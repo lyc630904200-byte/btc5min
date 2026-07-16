@@ -217,7 +217,7 @@
             <div class="metric"><div class="metric-name">信号</div><div class="metric-value" id="signals">0</div></div>
             <div class="metric"><div class="metric-name">成交</div><div class="metric-value" id="fills">0</div></div>
             <div class="metric"><div class="metric-name">拒绝</div><div class="metric-value" id="rejections">0</div></div>
-            <div class="metric"><div class="metric-name">PnL</div><div class="metric-value" id="pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">已实现盈亏</div><div class="metric-value" id="pnl">0.00</div></div>
           </div>
         </div>
       </section>
@@ -269,7 +269,7 @@
         </div>
 
         <div class="panel">
-          <div class="panel-head"><div class="panel-title">策略参数</div><div class="tag blue" id="configStatus">默认值</div></div>
+          <div class="panel-head"><div class="panel-title">策略参数</div><div class="tag blue" id="configStatus">保存后下把生效</div></div>
           <form class="panel-body" id="strategyForm">
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">入场偏离（USD）</span><input class="setting-input" id="minEntryEdge" type="number" min="0.01" step="0.01" required></label>
@@ -281,7 +281,7 @@
               <label class="setting"><span class="setting-label">入场最早（距到期秒）</span><input class="setting-input" id="minEntrySeconds" type="number" min="1" step="1" required></label>
               <label class="setting"><span class="setting-label">入场最晚（距到期秒）</span><input class="setting-input" id="maxEntrySeconds" type="number" min="1" step="1" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">仅当前运行有效；保存后下一次策略判断立即联动。</span><button class="settings-save" id="saveStrategy" type="submit">保存参数</button></div>
+            <div class="settings-actions"><span class="settings-note">以保存值为准；当前市场保持原参数，下一把自动生效。入场需持续1秒且连续3次确认；模拟成交计入taker手续费。</span><button class="settings-save" id="saveStrategy" type="submit">保存参数</button></div>
           </form>
         </div>
 
@@ -300,6 +300,9 @@
     let reconnectTimer = null;
     let renderScheduled = false;
     let bookSide = 'BUY';
+    let configFormInitialized = false;
+    let configFormDirty = false;
+    let renderedConfigKey = '';
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -342,15 +345,36 @@
 
     function setRuntimeInput(id, value) {
       const input = $(id);
-      if (!input || document.activeElement === input || !Number.isFinite(Number(value))) return;
+      if (!input || !Number.isFinite(Number(value))) return;
       input.value = String(value);
     }
 
-    function renderRuntimeConfig(snapshot) {
-      const strategy = snapshot.strategy || {};
-      const risk = snapshot.risk || {};
-      Object.entries(configInputs).forEach(([field, id]) => setRuntimeInput(id, strategy[field]));
-      setRuntimeInput('maxOrderUsd', risk.max_order_usd);
+    function renderRuntimeConfig(snapshot, force = false) {
+      const strategy = snapshot.pending_strategy || snapshot.strategy || {};
+      const risk = snapshot.pending_risk || snapshot.risk || {};
+      const configKey = JSON.stringify({
+        strategy: Object.fromEntries(Object.keys(configInputs).map((field) => [field, strategy[field]])),
+        max_order_usd: risk.max_order_usd,
+      });
+      if (force || !configFormInitialized || (!configFormDirty && configKey !== renderedConfigKey)) {
+        Object.entries(configInputs).forEach(([field, id]) => setRuntimeInput(id, strategy[field]));
+        setRuntimeInput('maxOrderUsd', risk.max_order_usd);
+        renderedConfigKey = configKey;
+        configFormInitialized = true;
+      }
+      const status = $('configStatus');
+      if (configFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+        return;
+      }
+      if (snapshot.config_status === 'pending_next_market') {
+        status.textContent = '已保存，下把生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
     }
 
     function runtimeNumber(id) {
@@ -470,7 +494,7 @@
       if (type === 'fill') {
         const side = p.side === 'BUY' ? '买入' : p.side === 'SELL' ? '卖出' : p.side || '成交';
         const color = p.side === 'BUY' ? 'green' : 'red';
-        return [side, `${p.direction || ''} ${fmtProb(p.avg_price)} / ${fmtNumber(p.quantity, 2)}`, color];
+        return [side, `${p.direction || ''} ${fmtProb(p.avg_price)} / ${fmtNumber(p.quantity, 2)} · 费 ${fmtNumber(p.fee_usd || 0, 3)}`, color];
       }
       return ['成交', '--', 'amber'];
     }
@@ -558,7 +582,12 @@
       $('posEntry').textContent = fmtProb(position?.entry_price);
       $('posQty').textContent = position?.quantity ? fmtNumber(position.quantity, 2) : '--';
       const bid = position?.direction === 'UP' ? bestBid(upBook) : position?.direction === 'DOWN' ? bestBid(downBook) : null;
-      const unrealized = position && bid !== null ? Number(position.quantity) * (Number(bid) - Number(position.entry_price)) : null;
+      const estimatedExitFee = position && bid !== null
+        ? Number(position.quantity) * Number(position.taker_fee_rate || 0) * Number(bid) * (1 - Number(bid))
+        : 0;
+      const unrealized = position && bid !== null
+        ? Number(position.quantity) * Number(bid) - estimatedExitFee - Number(position.entry_quote)
+        : null;
       $('posUnrealized').textContent = unrealized === null ? '--' : fmtNumber(unrealized, 2);
       $('posUnrealized').style.color = unrealized === null || unrealized >= 0 ? 'var(--green)' : 'var(--red)';
 
@@ -615,6 +644,12 @@
     const UI_REFRESH_MS = 100;
     $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) renderTradeBook(latest.books?.UP, latest.books?.DOWN); });
     $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) renderTradeBook(latest.books?.UP, latest.books?.DOWN); });
+    $('strategyForm').addEventListener('input', () => {
+      configFormDirty = true;
+      const status = $('configStatus');
+      status.textContent = '有修改，尚未保存';
+      status.className = 'tag amber';
+    });
     $('strategyForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const button = $('saveStrategy');
@@ -642,10 +677,16 @@
         });
         const config = await response.json();
         if (!response.ok) throw new Error(config.error || '保存失败');
-        latest = { ...(latest || {}), strategy: { ...(latest?.strategy || {}), ...config.strategy }, risk: { ...(latest?.risk || {}), ...config.risk } };
-        renderRuntimeConfig(latest);
-        status.textContent = '已保存';
-        status.className = 'tag green';
+        latest = {
+          ...(latest || {}),
+          strategy: { ...(latest?.strategy || {}), ...config.strategy },
+          risk: { ...(latest?.risk || {}), ...config.risk },
+          pending_strategy: config.pending_strategy,
+          pending_risk: config.pending_risk,
+          config_status: config.config_status,
+        };
+        configFormDirty = false;
+        renderRuntimeConfig(latest, true);
       } catch (error) {
         status.textContent = String(error.message || error).slice(0, 28);
         status.className = 'tag red';

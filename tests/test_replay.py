@@ -36,7 +36,9 @@ def test_replay_recomputes_entry_and_exit(tmp_path) -> None:
         bids=[BookLevel(price=0.30, size=100)],
         asks=[BookLevel(price=0.40, size=100)],
     )
+    tick_mid = PriceTick(price=118075, received_at=now + timedelta(milliseconds=500))
     tick2 = PriceTick(price=118080, received_at=now + timedelta(seconds=1))
+    tick3 = PriceTick(price=118080, received_at=now + timedelta(seconds=2))
     path = tmp_path / "events.jsonl"
     path.write_text(
         "\n".join(
@@ -45,7 +47,9 @@ def test_replay_recomputes_entry_and_exit(tmp_path) -> None:
                 event("tick", tick.model_dump(mode="json")),
                 event("book", {"direction": Direction.UP.value, **up_book.model_dump(mode="json")}),
                 event("book", {"direction": Direction.DOWN.value, **down_book.model_dump(mode="json")}),
+                event("tick", tick_mid.model_dump(mode="json")),
                 event("tick", tick2.model_dump(mode="json")),
+                event("tick", tick3.model_dump(mode="json")),
             ]
         ),
         encoding="utf-8",

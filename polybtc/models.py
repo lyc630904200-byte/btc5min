@@ -22,6 +22,7 @@ class OrderSide(StrEnum):
 
 
 class ExitReason(StrEnum):
+    BOOK_DIRECTION_CONFLICT = "book_direction_conflict"
     REVERSE_BREAK = "reverse_break"
     EDGE_FADED = "edge_faded"
     TAKE_PROFIT = "take_profit"
@@ -113,6 +114,7 @@ class Fill(BaseModel):
     quantity: float
     quote: float
     slippage: float
+    fee_usd: float = 0.0
     created_at: datetime = Field(default_factory=utc_now)
     reason: str
 
@@ -125,6 +127,9 @@ class Position(BaseModel):
     entry_price: float
     quantity: float
     entry_quote: float
+    entry_fee_usd: float = 0.0
+    exit_fee_usd: float = 0.0
+    taker_fee_rate: float = 0.0
     opened_at: datetime
     entry_edge_usd: float
     status: str = "OPEN"
@@ -137,7 +142,8 @@ class Position(BaseModel):
     def unrealized_pnl(self, current_bid: float | None) -> float:
         if current_bid is None or self.status != "OPEN":
             return 0.0
-        return self.quantity * (current_bid - self.entry_price)
+        exit_fee = self.quantity * self.taker_fee_rate * current_bid * (1.0 - current_bid)
+        return self.quantity * current_bid - exit_fee - self.entry_quote
 
 
 class Signal(BaseModel):
@@ -161,6 +167,7 @@ class ExitEvent(BaseModel):
     price: float | None = None
     quantity: float
     pnl: float
+    fee_usd: float = 0.0
     created_at: datetime = Field(default_factory=utc_now)
 
 

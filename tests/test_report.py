@@ -137,3 +137,67 @@ def test_build_report_treats_partial_sell_as_open(tmp_path) -> None:
 
     assert report["fills"]["closed_positions_from_fills"] == 0
     assert report["fills"]["open_positions_from_fills"] == 1
+
+
+def test_build_report_subtracts_fill_fees_from_realized_pnl(tmp_path) -> None:
+    run_dir = tmp_path / "20260711T040000Z"
+    run_dir.mkdir()
+    now = datetime(2026, 7, 11, 4, 0, tzinfo=timezone.utc)
+    path = run_dir / "fills.csv"
+    fieldnames = [
+        "fill_id",
+        "position_id",
+        "market_id",
+        "token_id",
+        "direction",
+        "side",
+        "avg_price",
+        "quantity",
+        "quote",
+        "slippage",
+        "fee_usd",
+        "created_at",
+        "reason",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "fill_id": "buy",
+                "position_id": "p1",
+                "market_id": "m1",
+                "token_id": "up",
+                "direction": "UP",
+                "side": "BUY",
+                "avg_price": 0.60,
+                "quantity": 10 / 0.60,
+                "quote": 10,
+                "slippage": 0,
+                "fee_usd": 0.28,
+                "created_at": now.isoformat(),
+                "reason": "entry_edge",
+            }
+        )
+        writer.writerow(
+            {
+                "fill_id": "sell",
+                "position_id": "p1",
+                "market_id": "m1",
+                "token_id": "up",
+                "direction": "UP",
+                "side": "SELL",
+                "avg_price": 0.70,
+                "quantity": 10 / 0.60,
+                "quote": (10 / 0.60) * 0.70,
+                "slippage": 0,
+                "fee_usd": 0.245,
+                "created_at": (now + timedelta(seconds=10)).isoformat(),
+                "reason": "take_profit",
+            }
+        )
+
+    report = build_report(run_dir)
+
+    assert round(report["fills"]["total_fee"], 6) == 0.525
+    assert round(report["fills"]["realized_pnl_from_fills"], 6) == round((10 / 0.60) * 0.70 - 10 - 0.525, 6)

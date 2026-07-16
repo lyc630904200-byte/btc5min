@@ -32,3 +32,34 @@ def test_simulate_sell_reports_partial_depth() -> None:
     assert result.quantity == 5
     assert result.quote == 3 * 0.70 + 2 * 0.65
     assert result.best_price == 0.70
+
+
+def test_simulated_buy_and_sell_calculate_crypto_taker_fee_per_level() -> None:
+    buy_book = OrderBookSnapshot(
+        token_id="yes",
+        timestamp=datetime.now(timezone.utc),
+        asks=[BookLevel(price=0.60, size=100)],
+    )
+    buy = simulate_buy(buy_book, 10, fee_rate=0.07)
+    sell_book = OrderBookSnapshot(
+        token_id="yes",
+        timestamp=datetime.now(timezone.utc),
+        bids=[BookLevel(price=0.70, size=100)],
+    )
+    sell = simulate_sell(sell_book, buy.quantity, fee_rate=0.07)
+
+    assert round(buy.quantity, 8) == round(10 / 0.60, 8)
+    assert round(buy.fee_usd, 6) == 0.28
+    assert round(sell.fee_usd, 6) == 0.245
+
+
+def test_simulated_buy_accumulates_fee_at_each_depth_level() -> None:
+    book = OrderBookSnapshot(
+        token_id="yes",
+        timestamp=datetime.now(timezone.utc),
+        asks=[BookLevel(price=0.50, size=10), BookLevel(price=0.60, size=10)],
+    )
+
+    result = simulate_buy(book, 8, fee_rate=0.07)
+
+    assert round(result.fee_usd, 6) == 0.259
