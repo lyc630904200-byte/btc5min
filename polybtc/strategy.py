@@ -232,13 +232,12 @@ def choose_exit_reason(
     best_bid = book.best_bid
     expiry_seconds = seconds_to_expiry(state.market, state.now)
 
-    if position.direction == Direction.UP and edge <= -strategy.stop_edge_usd:
-        return ExitReason.REVERSE_BREAK
-    if position.direction == Direction.DOWN and edge >= strategy.stop_edge_usd:
-        return ExitReason.REVERSE_BREAK
-    if position.direction == Direction.UP and edge <= strategy.min_entry_edge_usd:
+    # The configured stop edge is also the "edge faded" threshold.  Entry
+    # still uses min_entry_edge_usd, leaving a buffer between opening a
+    # position and closing it when the directional advantage weakens.
+    if position.direction == Direction.UP and edge <= strategy.stop_edge_usd:
         return ExitReason.EDGE_FADED
-    if position.direction == Direction.DOWN and edge >= -strategy.min_entry_edge_usd:
+    if position.direction == Direction.DOWN and edge >= -strategy.stop_edge_usd:
         return ExitReason.EDGE_FADED
     if best_bid is not None and best_bid >= position.entry_price + strategy.take_profit_ticks:
         return ExitReason.TAKE_PROFIT

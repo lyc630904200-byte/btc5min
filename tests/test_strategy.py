@@ -279,7 +279,7 @@ def test_position_waits_ten_seconds_before_orderbook_conflict_exit() -> None:
     assert delayed_decision.fill.side.value == "SELL"
 
 
-def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -> None:
+def test_down_position_does_not_exit_while_edge_still_beyond_stop_threshold() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     strategy = raw_edge_strategy()
     entry_state = StrategyState(
@@ -305,7 +305,7 @@ def test_down_position_does_not_exit_while_edge_still_beyond_entry_threshold() -
     assert decision.should_exit is False
 
 
-def test_down_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
+def test_down_position_exits_when_edge_reaches_stop_threshold() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     strategy = raw_edge_strategy()
     entry_state = StrategyState(
@@ -333,7 +333,7 @@ def test_down_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
     assert decision.reason.value == "edge_faded"
 
 
-def test_up_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
+def test_up_position_exits_when_edge_reaches_stop_threshold() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     strategy = raw_edge_strategy()
     entry_state = StrategyState(
@@ -359,6 +359,41 @@ def test_up_position_exits_when_edge_fades_back_to_entry_threshold() -> None:
     assert decision.should_exit is True
     assert decision.reason is not None
     assert decision.reason.value == "edge_faded"
+
+
+def test_up_position_uses_stop_edge_instead_of_entry_edge_for_exit() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = StrategyConfig(min_entry_edge_usd=20, stop_edge_usd=15)
+    entry_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118030, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
+    assert entry.fill is not None
+    position = position_from_entry(entry.fill, edge=30, opened_at=now)
+
+    above_stop = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118017, received_at=now + timedelta(seconds=1)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=1)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=1)),
+        now=now + timedelta(seconds=1),
+    )
+    at_stop = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118015, received_at=now + timedelta(seconds=2)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=2)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=2)),
+        now=now + timedelta(seconds=2),
+    )
+
+    assert evaluate_exit(position, above_stop, strategy, RiskConfig()).should_exit is False
+    decision = evaluate_exit(position, at_stop, strategy, RiskConfig())
+    assert decision.should_exit is True
+    assert decision.reason == ExitReason.EDGE_FADED
 
 
 def test_entry_uses_binance_minus_threshold() -> None:
