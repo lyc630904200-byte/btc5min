@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,8 +10,15 @@ from typing import Any, Awaitable, Callable
 from .clients import BinanceClient, PolymarketClient
 from .config import AppConfig
 from .engine import PaperEngine
+from .entry_registry import SqliteMarketEntryRegistry, historical_market_entry_counts
 from .journal import RunJournal
-from .market import choose_current_market
+from .market import (
+    choose_current_market,
+    market_interval_from_slug,
+    market_is_active,
+    markets_are_adjacent,
+    threshold_is_tradable,
+)
 from .models import Direction, MarketState, OrderBookSnapshot, PriceTick, rest_request_started_at
 
 
@@ -21,7 +29,8 @@ BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
 BOOK_REST_FALLBACK_AFTER = timedelta(milliseconds=500)
 LIVE_EVENT_COALESCE_SECONDS = 0.02
 BOOK_PUBLISH_HEARTBEAT = timedelta(milliseconds=250)
-PROVISIONAL_THRESHOLD_SOURCES = {"binance_first_tick_after_start", "polymarket_page_previous_close"}
+THRESHOLD_MATCH_TOLERANCE_USD = 0.01
+THRESHOLD_FINALIZATION_DELAY = timedelta(seconds=1)
 
 
 def run_dir(base: Path) -> Path:
@@ -57,6 +66,8 @@ def cleanup_expired_runs(
 
 
 async def data_cleanup_loop(config: AppConfig, active_run: Path, journal: RunJournal) -> None:
+    if not config.data_cleanup_enabled:
+        return
     retention = timedelta(hours=config.data_retention_hours)
     while True:
         try:
@@ -94,8 +105,8 @@ def live_snapshot(engine: PaperEngine, output_dir: Path, event_type: str, payloa
         "open_position": engine.open_position.model_dump(mode="json") if engine.open_position else None,
         "summary": engine.summary(),
         "strategy": {
-            "edge_correction_usd": engine.edge_correction_usd(),
-            "edge_correction_source": engine.edge_correction_source(),
+            "edge_correction_usd": engine.edge_correction_usd(datetime.now(timezone.utc)),
+            "edge_correction_source": engine.edge_correction_source(datetime.now(timezone.utc)),
         },
         "last_rejection": engine.rejections[-1] if engine.rejections else None,
     }
@@ -141,7 +152,7 @@ async def check_connectivity(config: AppConfig) -> dict[str, Any]:
 def should_keep_current_market(engine: PaperEngine, now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     market = engine.market
-    return bool(market and market.threshold_price is not None and market.end_time > now)
+    return bool(market and market_is_active(market, now))
 
 
 def should_retry_threshold(now: datetime, next_retry_at: datetime) -> bool:
@@ -152,50 +163,157 @@ async def apply_polymarket_page_threshold(
     client: PolymarketClient,
     market: MarketState,
     timeout_seconds: float = 4.0,
+    now: datetime | None = None,
 ) -> bool:
+    previous_state = (market.threshold_price, market.threshold_source, market.threshold_verified)
+
+    def state_changed() -> bool:
+        return previous_state != (market.threshold_price, market.threshold_source, market.threshold_verified)
+
     if market.start_time is None:
         return False
-    if market.threshold_price is not None and market.threshold_source not in PROVISIONAL_THRESHOLD_SOURCES:
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at < market.start_time:
+        market.threshold_price = None
+        market.threshold_source = "dynamic_start_price"
+        market.threshold_observed_at = None
+        market.threshold_verified = False
+        market.threshold_fetched_at = None
+        return state_changed()
+    if checked_at < market.start_time + THRESHOLD_FINALIZATION_DELAY:
+        market.threshold_price = None
+        market.threshold_source = "threshold_verification_pending"
+        market.threshold_observed_at = None
+        market.threshold_verified = False
+        market.threshold_fetched_at = None
+        return state_changed()
+    if checked_at >= market.end_time:
+        market.threshold_price = None
+        market.threshold_source = "threshold_verification_expired"
+        market.threshold_observed_at = None
+        market.threshold_verified = False
+        market.threshold_fetched_at = checked_at
+        return state_changed()
+    if threshold_is_tradable(market):
         return False
-    previous_value = market.threshold_price
-    previous_source = market.threshold_source
+
+    # Clear every unverified/provisional value before network I/O.  If any
+    # source fails or disagrees, the strategy sees no tradable threshold.
+    market.threshold_price = None
+    market.threshold_source = "threshold_verification_pending"
+    market.threshold_observed_at = None
+    market.threshold_verified = False
+    market.threshold_fetched_at = None
+
     event_threshold = getattr(client, "event_threshold", None)
+    gamma_threshold: float | None = None
     if event_threshold is not None:
         try:
-            threshold = await asyncio.wait_for(event_threshold(market.slug), timeout=timeout_seconds)
+            gamma_threshold = await asyncio.wait_for(event_threshold(market.slug), timeout=timeout_seconds)
         except Exception:
-            threshold = None
-        if threshold is not None:
-            market.threshold_price = threshold
-            market.threshold_source = "gamma_event_price_to_beat"
-            market.threshold_observed_at = market.start_time
-            return market.threshold_price != previous_value or market.threshold_source != previous_source
+            gamma_threshold = None
     page_data = getattr(client, "market_page_data", None)
-    if page_data is not None:
-        outcome_price, results = await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)
-    else:
-        outcome_result, results_result = await asyncio.gather(
-            asyncio.wait_for(client.outcome_price(market.slug), timeout=timeout_seconds),
-            asyncio.wait_for(client.past_results(market.slug), timeout=timeout_seconds),
-            return_exceptions=True,
+    try:
+        if page_data is not None:
+            outcome_price, results = await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)
+        else:
+            outcome_result, results_result = await asyncio.gather(
+                asyncio.wait_for(client.outcome_price(market.slug), timeout=timeout_seconds),
+                asyncio.wait_for(client.past_results(market.slug), timeout=timeout_seconds),
+                return_exceptions=True,
+            )
+            if isinstance(outcome_result, Exception) and isinstance(results_result, Exception):
+                raise outcome_result
+            outcome_price = None if isinstance(outcome_result, Exception) else outcome_result
+            results = [] if isinstance(results_result, Exception) else results_result
+    except Exception:
+        outcome_price, results = None, []
+
+    completed_at = now or datetime.now(timezone.utc)
+    market.threshold_fetched_at = completed_at
+    interval = market_interval_from_slug(market.slug)
+    exact_previous = [
+        result
+        for result in results
+        if result.start_time == market.start_time - timedelta(minutes=5)
+        and result.end_time == market.start_time
+        and result.end_time - result.start_time == timedelta(minutes=5)
+    ]
+    valid_outcome = bool(
+        outcome_price is not None
+        and outcome_price.slug == market.slug
+        and outcome_price.start_time == market.start_time
+        and outcome_price.end_time == market.end_time
+    )
+    previous_closes = [result.close_price for result in exact_previous]
+    previous_is_consistent = bool(
+        previous_closes
+        and max(previous_closes) - min(previous_closes) <= THRESHOLD_MATCH_TOLERANCE_USD
+    )
+    interval_is_exact = bool(interval and interval == (market.start_time, market.end_time))
+    market_still_active = market_is_active(market, completed_at)
+
+    if not (valid_outcome and interval_is_exact and market_still_active):
+        market.threshold_source = "threshold_verification_failed"
+        return state_changed()
+
+    assert outcome_price is not None
+    candidate_fields_present = any(
+        value is not None
+        for value in (
+            market.threshold_candidate_price,
+            market.threshold_candidate_source,
+            market.threshold_candidate_observed_at,
+            market.threshold_candidate_received_at,
         )
-        if isinstance(outcome_result, Exception) and isinstance(results_result, Exception):
-            raise outcome_result
-        outcome_price = None if isinstance(outcome_result, Exception) else outcome_result
-        results = [] if isinstance(results_result, Exception) else results_result
-    if outcome_price is not None:
-        market.threshold_price = outcome_price.open_price
-        market.threshold_source = "polymarket_page_open_price"
-        market.threshold_observed_at = market.start_time
-        return market.threshold_price != previous_value or market.threshold_source != previous_source
-    previous = [result for result in results if result.end_time == market.start_time]
-    if not previous:
-        return False
-    latest = previous[-1]
-    market.threshold_price = latest.close_price
-    market.threshold_source = "polymarket_page_previous_close"
-    market.threshold_observed_at = latest.end_time
-    return market.threshold_price != previous_value or market.threshold_source != previous_source
+    )
+    candidate_is_exact = bool(
+        not market.threshold_candidate_conflicted
+        and market.threshold_candidate_price is not None
+        and math.isfinite(market.threshold_candidate_price)
+        and market.threshold_candidate_source == "polymarket_rtds_start_tick"
+        and market.threshold_candidate_observed_at == market.start_time
+        and market.threshold_candidate_received_at is not None
+        and market.start_time - timedelta(seconds=1)
+        <= market.threshold_candidate_received_at
+        <= market.start_time + timedelta(seconds=2)
+    )
+    if market.threshold_candidate_conflicted or (candidate_fields_present and not candidate_is_exact):
+        market.threshold_source = "threshold_verification_failed"
+        return state_changed()
+    candidate_matches = bool(
+        candidate_is_exact
+        and abs((market.threshold_candidate_price or 0.0) - outcome_price.open_price)
+        <= THRESHOLD_MATCH_TOLERANCE_USD
+    )
+    if candidate_is_exact and not candidate_matches:
+        market.threshold_source = "threshold_verification_failed"
+        return state_changed()
+
+    previous_matches = bool(
+        previous_is_consistent
+        and abs(previous_closes[-1] - outcome_price.open_price) <= THRESHOLD_MATCH_TOLERANCE_USD
+    )
+    if previous_is_consistent and not previous_matches:
+        market.threshold_source = "threshold_verification_failed"
+        return state_changed()
+    if not (candidate_matches or previous_matches):
+        market.threshold_source = "threshold_verification_failed"
+        return state_changed()
+    if gamma_threshold is not None and abs(gamma_threshold - outcome_price.open_price) > THRESHOLD_MATCH_TOLERANCE_USD:
+        market.threshold_source = "threshold_verification_failed"
+        return state_changed()
+
+    market.threshold_price = outcome_price.open_price
+    if candidate_matches:
+        market.threshold_source = "polymarket_page_rtds_verified_open_price"
+    elif gamma_threshold is not None:
+        market.threshold_source = "gamma_page_verified_price_to_beat"
+    else:
+        market.threshold_source = "polymarket_page_verified_open_price"
+    market.threshold_observed_at = market.start_time
+    market.threshold_verified = True
+    return state_changed()
 
 
 async def prefetch_next_market_threshold(
@@ -203,18 +321,18 @@ async def prefetch_next_market_threshold(
     current_market: MarketState,
     config: AppConfig,
 ) -> MarketState | None:
-    """Fetch the next 5-minute market and its threshold before the current market expires."""
+    """Fetch only the next adjacent market's metadata before it starts."""
+    _ = config
     markets = await client.discover_markets()
-    candidates = [market for market in markets if market.end_time > current_market.end_time]
+    candidates = [market for market in markets if markets_are_adjacent(current_market, market)]
     if not candidates:
         return None
     next_market = min(candidates, key=lambda market: market.end_time)
-    if next_market.threshold_price is None:
-        await apply_polymarket_page_threshold(
-            client,
-            next_market,
-            timeout_seconds=config.sources.threshold_page_timeout_seconds,
-        )
+    next_market.threshold_price = None
+    next_market.threshold_source = "dynamic_start_price"
+    next_market.threshold_observed_at = None
+    next_market.threshold_verified = False
+    next_market.threshold_fetched_at = None
     return next_market
 
 
@@ -224,12 +342,15 @@ async def current_market_with_page_threshold(
     now: datetime | None = None,
 ) -> MarketState | None:
     markets = await client.discover_markets()
-    market = choose_current_market(markets, now=now, max_start_price_lag_ms=max_start_price_lag_ms)
-    if market and market.threshold_price is None:
+    selection_now = now or datetime.now(timezone.utc)
+    market = choose_current_market(markets, now=selection_now, max_start_price_lag_ms=max_start_price_lag_ms)
+    if market and not threshold_is_tradable(market):
         try:
-            await apply_polymarket_page_threshold(client, market)
+            await apply_polymarket_page_threshold(client, market, now=now)
         except Exception:
             pass
+    if market and not market_is_active(market, now or datetime.now(timezone.utc)):
+        return None
     return market
 
 
@@ -241,14 +362,14 @@ async def initialize_current_market(
     on_update: UpdateCallback | None,
 ) -> None:
     try:
-        now = datetime.now(timezone.utc)
         markets = await asyncio.wait_for(client.discover_markets(), timeout=5)
+        now = datetime.now(timezone.utc)
         market = choose_current_market(
             markets,
             now=now,
             max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
         )
-        if market and market.threshold_price is None:
+        if market and not threshold_is_tradable(market):
             try:
                 await apply_polymarket_page_threshold(client, market, engine.config.sources.threshold_page_timeout_seconds)
             except Exception as exc:
@@ -256,7 +377,7 @@ async def initialize_current_market(
     except Exception as exc:
         journal.latency_row("gamma", "initial_market", False, None, str(exc))
         return
-    if market is None:
+    if market is None or not market_is_active(market, datetime.now(timezone.utc)):
         return
     engine.set_market(market)
     journal.market(market)
@@ -275,13 +396,22 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
             current_market = engine.market
             needs_page_threshold = bool(
                 current_market
-                and current_market.end_time > now_utc
-                and (current_market.threshold_price is None or current_market.threshold_source in PROVISIONAL_THRESHOLD_SOURCES)
+                and market_is_active(current_market, now_utc)
+                and not threshold_is_tradable(current_market)
             )
             if needs_page_threshold and should_retry_threshold(now_utc, next_threshold_retry):
                 next_threshold_retry = now_utc + timedelta(seconds=engine.config.sources.threshold_page_retry_seconds)
                 try:
+                    target_market_id = current_market.condition_id
                     if await apply_polymarket_page_threshold(client, current_market, engine.config.sources.threshold_page_timeout_seconds):
+                        fresh_now = datetime.now(timezone.utc)
+                        if (
+                            engine.market is None
+                            or engine.market.condition_id != target_market_id
+                            or not market_is_active(current_market, fresh_now)
+                        ):
+                            await asyncio.sleep(interval_seconds)
+                            continue
                         await queue.put(("market", current_market))
                         await asyncio.sleep(interval_seconds)
                         continue
@@ -291,29 +421,35 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
                 if prefetched_for_market_id != engine.market.condition_id and now_utc >= next_prefetch_attempt:
                     try:
                         prefetched_market = await prefetch_next_market_threshold(client, engine.market, engine.config)
-                        prefetched_for_market_id = engine.market.condition_id
+                        if prefetched_market is not None:
+                            prefetched_for_market_id = engine.market.condition_id
+                        else:
+                            next_prefetch_attempt = now_utc + timedelta(seconds=5)
                     except Exception as exc:
                         next_prefetch_attempt = now_utc + timedelta(seconds=5)
                         await queue.put(("error", {"source": "polymarket_page_prefetch", "error": str(exc)}))
                 await asyncio.sleep(interval_seconds)
                 continue
-            market = prefetched_market if prefetched_market and prefetched_market.end_time >= now_utc else None
+            market = prefetched_market if prefetched_market and market_is_active(prefetched_market, now_utc) else None
             prefetched_market = None
             if market is None:
                 markets = await client.discover_markets()
+                now_utc = datetime.now(timezone.utc)
                 market = choose_current_market(
                     markets,
                     now=now_utc,
                     max_start_price_lag_ms=engine.config.sources.max_start_price_lag_ms,
                 )
-            if market and (market.condition_id != last_market_id or market.threshold_price is None):
+            if market and (market.condition_id != last_market_id or not threshold_is_tradable(market)):
                 last_market_id = market.condition_id
                 try:
                     await apply_polymarket_page_threshold(client, market, engine.config.sources.threshold_page_timeout_seconds)
                 except Exception as exc:
                     await queue.put(("error", {"source": "polymarket_page", "error": str(exc)}))
-                next_threshold_retry = now_utc + timedelta(seconds=engine.config.sources.threshold_page_retry_seconds)
-                await queue.put(("market", market))
+                fresh_now = datetime.now(timezone.utc)
+                next_threshold_retry = fresh_now + timedelta(seconds=engine.config.sources.threshold_page_retry_seconds)
+                if market_is_active(market, fresh_now):
+                    await queue.put(("market", market))
         except Exception as exc:
             await queue.put(("error", {"source": "gamma", "error": str(exc)}))
         await asyncio.sleep(interval_seconds)
@@ -375,6 +511,8 @@ def books_need_rest_refresh(
     for direction in (Direction.UP, Direction.DOWN):
         book = engine.books.get(direction)
         if not book or not book_matches_market(market, direction, book):
+            return True
+        if not book.depth_trusted:
             return True
         if now - book.received_at >= BOOK_REST_FALLBACK_AFTER:
             return True
@@ -570,14 +708,19 @@ def should_publish_book_update(
 async def run_live(config: AppConfig, max_seconds: int | None = None, on_update: UpdateCallback | None = None) -> Path:
     output_dir = run_dir(config.data_dir)
     journal = RunJournal(output_dir)
-    engine = PaperEngine(config)
-    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-    poly = PolymarketClient(config.sources)
-    binance = BinanceClient(config.sources)
-    counters = {"signals": 0, "fills": 0, "exits": 0}
-    last_published_book_at: dict[Direction, datetime] = {}
-
-    await initialize_current_market(poly, engine, journal, output_dir, on_update)
+    entry_registry = SqliteMarketEntryRegistry(config.data_dir / "market-entry-ledger.sqlite3")
+    try:
+        entry_registry.seed(historical_market_entry_counts(config.data_dir))
+        engine = PaperEngine(config, entry_registry=entry_registry, run_id=output_dir.name)
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        poly = PolymarketClient(config.sources)
+        binance = BinanceClient(config.sources)
+        counters = {"signals": 0, "fills": 0, "exits": 0}
+        last_published_book_at: dict[Direction, datetime] = {}
+        await initialize_current_market(poly, engine, journal, output_dir, on_update)
+    except BaseException:
+        entry_registry.close()
+        raise
 
     tasks = [
         asyncio.create_task(data_cleanup_loop(config, output_dir, journal)),
@@ -606,6 +749,8 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 publish_update = True
                 if event_type == "market":
                     market: MarketState = payload
+                    if not market_is_active(market, datetime.now(timezone.utc)):
+                        continue
                     engine.set_market(market)
                     journal.market(market)
                 elif event_type == "tick":
@@ -639,11 +784,14 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 if publish_update:
                     await emit_update(on_update, live_snapshot(engine, output_dir, event_type, payload))
     finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        for position in engine.positions:
-            journal.position(position)
-        journal.summary(engine.summary())
-        await emit_update(on_update, live_snapshot(engine, output_dir, "summary", engine.summary()))
+        try:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for position in engine.positions:
+                journal.position(position)
+            journal.summary(engine.summary())
+            await emit_update(on_update, live_snapshot(engine, output_dir, "summary", engine.summary()))
+        finally:
+            entry_registry.close()
     return output_dir

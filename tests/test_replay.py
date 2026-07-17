@@ -15,9 +15,10 @@ def test_replay_recomputes_entry_and_exit(tmp_path) -> None:
     market = MarketState(
         condition_id="m1",
         slug="bitcoin-up-or-down",
-        question="Bitcoin Up or Down above 118000",
-        threshold_price=118000,
-        end_time=now + timedelta(seconds=120),
+            question="Bitcoin Up or Down above 118000",
+            threshold_price=118000,
+            threshold_verified=True,
+            end_time=now + timedelta(seconds=120),
         up_token_id="up",
         down_token_id="down",
     )

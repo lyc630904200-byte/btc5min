@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import SourceConfig
@@ -10,6 +10,13 @@ from .models import MarketState
 
 
 THRESHOLD_RE = re.compile(r"(?<![\d.])(?:\$\s*)?([1-9]\d{1,2}(?:,?\d{3})+(?:\.\d+)?)")
+BTC_FIVE_MINUTE_SLUG_RE = re.compile(r"^(?:bitcoin-|btc-)updown-5m-(?P<start>\d+)$")
+FIVE_MINUTES = 5 * 60
+VERIFIED_DYNAMIC_THRESHOLD_SOURCES = {
+    "polymarket_page_verified_open_price",
+    "gamma_page_verified_price_to_beat",
+    "polymarket_page_rtds_verified_open_price",
+}
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -39,6 +46,79 @@ def parse_json_list(value: Any) -> list[Any]:
         except json.JSONDecodeError:
             return []
     return []
+
+
+def market_interval_from_slug(slug: str) -> tuple[datetime, datetime] | None:
+    match = BTC_FIVE_MINUTE_SLUG_RE.fullmatch(slug)
+    if not match:
+        return None
+    try:
+        timestamp = int(match.group("start"))
+        if timestamp % FIVE_MINUTES != 0:
+            return None
+        start = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return start, start + timedelta(seconds=FIVE_MINUTES)
+
+
+def market_is_active(market: MarketState, now: datetime) -> bool:
+    return market.start_time is not None and market.start_time <= now < market.end_time
+
+
+def markets_are_adjacent(current: MarketState, candidate: MarketState) -> bool:
+    return (
+        current.start_time is not None
+        and candidate.start_time is not None
+        and current.end_time - current.start_time == timedelta(seconds=FIVE_MINUTES)
+        and candidate.end_time - candidate.start_time == timedelta(seconds=FIVE_MINUTES)
+        and candidate.start_time == current.end_time
+    )
+
+
+def threshold_is_tradable(market: MarketState) -> bool:
+    if market.threshold_price is None or not market.threshold_verified:
+        return False
+    interval = market_interval_from_slug(market.slug)
+    if interval is None:
+        # Fixed-threshold markets without the canonical dynamic five-minute
+        # slug retain their existing structured Gamma verification path.
+        return True
+    common_verified = bool(
+        market.threshold_source in VERIFIED_DYNAMIC_THRESHOLD_SOURCES
+        and market.start_time is not None
+        and interval == (market.start_time, market.end_time)
+        and market.threshold_observed_at == market.start_time
+        and market.threshold_fetched_at is not None
+        and market.threshold_fetched_at >= market.start_time
+        and not market.threshold_candidate_conflicted
+    )
+    if not common_verified:
+        return False
+    candidate_fields_present = any(
+        value is not None
+        for value in (
+            market.threshold_candidate_price,
+            market.threshold_candidate_source,
+            market.threshold_candidate_observed_at,
+            market.threshold_candidate_received_at,
+        )
+    )
+    candidate_is_valid = bool(
+        market.threshold_candidate_price is not None
+        and abs(market.threshold_candidate_price - market.threshold_price) <= 0.01
+        and market.threshold_candidate_source == "polymarket_rtds_start_tick"
+        and market.threshold_candidate_observed_at == market.start_time
+        and market.threshold_candidate_received_at is not None
+        and market.start_time - timedelta(seconds=1)
+        <= market.threshold_candidate_received_at
+        <= market.start_time + timedelta(seconds=2)
+    )
+    if candidate_fields_present and not candidate_is_valid:
+        return False
+    if market.threshold_source == "polymarket_page_rtds_verified_open_price":
+        return candidate_is_valid
+    return True
 
 
 def parse_threshold(payload: dict[str, Any]) -> float | None:
@@ -132,24 +212,36 @@ def parse_market(payload: dict[str, Any], config: SourceConfig, now: datetime | 
     end_time = parse_datetime(payload.get("endDate") or payload.get("end_date_iso"))
     if end_time is None:
         return None
-    start_time = parse_datetime(
-        payload.get("eventStartTime")
-        or payload.get("startTime")
-        or payload.get("start_time")
-        or payload.get("startDate")
-        or payload.get("start_date_iso")
+    slug = str(payload.get("slug") or payload.get("market_slug") or "")
+    canonical_interval = market_interval_from_slug(slug)
+    explicit_start = parse_datetime(
+        payload.get("eventStartTime") or payload.get("startTime") or payload.get("start_time")
     )
-    threshold = parse_threshold(payload)
-    dynamic_threshold = threshold is None and has_dynamic_start_threshold(payload)
+    if canonical_interval is not None:
+        canonical_start, canonical_end = canonical_interval
+        if end_time != canonical_end or (explicit_start is not None and explicit_start != canonical_start):
+            return None
+        start_time = canonical_start
+    else:
+        start_time = explicit_start or end_time - timedelta(seconds=FIVE_MINUTES)
+        if end_time - start_time != timedelta(seconds=FIVE_MINUTES):
+            return None
+
+    dynamic_threshold = has_dynamic_start_threshold(payload)
+    # Five-minute beginning-price markets must be verified against the exact
+    # Chainlink interval after it starts.  Gamma fields and numbers embedded in
+    # text are not a safe final threshold for these markets.
+    threshold = None if dynamic_threshold else parse_threshold(payload)
     settlement_verified = (threshold is not None or dynamic_threshold) and settlement_is_comparable(payload)
     observe_only = config.observe_only_on_unverified_settlement and not settlement_verified
 
     return MarketState(
         condition_id=str(payload.get("conditionId") or payload.get("condition_id") or payload.get("id") or ""),
-        slug=str(payload.get("slug") or payload.get("market_slug") or ""),
+        slug=slug,
         question=str(payload.get("question") or payload.get("title") or ""),
         threshold_price=threshold,
         threshold_source="gamma" if threshold is not None else "dynamic_start_price" if dynamic_threshold else None,
+        threshold_verified=threshold is not None,
         start_time=start_time,
         end_time=end_time,
         up_token_id=token_ids[up_index],
@@ -169,5 +261,8 @@ def choose_current_market(
     max_start_price_lag_ms: int = 0,
 ) -> MarketState | None:
     now = now or datetime.now(timezone.utc)
-    candidates = [market for market in markets if market.end_time >= now]
+    # Kept for API compatibility.  A future market is never considered active,
+    # regardless of the dynamic-threshold capture tolerance.
+    _ = max_start_price_lag_ms
+    candidates = [market for market in markets if market_is_active(market, now)]
     return sorted(candidates, key=lambda market: market.end_time)[0] if candidates else None

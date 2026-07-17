@@ -63,3 +63,21 @@ def test_simulated_buy_accumulates_fee_at_each_depth_level() -> None:
     result = simulate_buy(book, 8, fee_rate=0.07)
 
     assert round(result.fee_usd, 6) == 0.259
+
+
+def test_simulated_sell_reuses_complete_multilevel_liquidation_values() -> None:
+    book = OrderBookSnapshot(
+        token_id="yes",
+        timestamp=datetime.now(timezone.utc),
+        bids=[BookLevel(price=0.50, size=8), BookLevel(price=0.45, size=10)],
+    )
+
+    result = simulate_sell(book, 15, fee_rate=0.07)
+
+    expected_quote = 8 * 0.50 + 7 * 0.45
+    expected_fee = 8 * 0.07 * 0.50 * 0.50 + 7 * 0.07 * 0.45 * 0.55
+    assert result.complete is True
+    assert result.quantity == 15
+    assert round(result.quote, 6) == round(expected_quote, 6)
+    assert round(result.avg_price, 6) == round(expected_quote / 15, 6)
+    assert round(result.fee_usd, 6) == round(expected_fee, 6)

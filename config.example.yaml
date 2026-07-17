@@ -1,4 +1,5 @@
 data_dir: data
+data_cleanup_enabled: false
 data_retention_hours: 24
 data_cleanup_interval_seconds: 300
 
@@ -12,6 +13,7 @@ sources:
   clob_url: https://clob.polymarket.com
   clob_ws_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
   rtds_ws_url: wss://ws-live-data.polymarket.com
+  rtds_stale_seconds: 10
   threshold_page_timeout_seconds: 4
   threshold_page_retry_seconds: 2
   poly_book_poll_ms: 200
@@ -35,6 +37,8 @@ strategy:
   max_seconds_to_entry: 240
   force_exit_seconds: 5
   book_direction_exit_delay_seconds: 10
+  reverse_entry_enabled: false
+  entry_confirmation_enabled: true
   entry_confirmation_seconds: 1
   entry_confirmation_updates: 3
   taker_fee_rate: 0.07
@@ -44,3 +48,5 @@ risk:
   max_market_usd: 30
   max_data_age_ms: 1000
   max_hold_seconds: 120
+  max_loss_usd: 2.5
+  max_trades_per_market: 1

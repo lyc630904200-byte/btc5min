@@ -128,6 +128,13 @@ class DashboardHub:
             "threshold_price",
             "threshold_source",
             "threshold_observed_at",
+            "threshold_verified",
+            "threshold_fetched_at",
+            "threshold_candidate_price",
+            "threshold_candidate_source",
+            "threshold_candidate_observed_at",
+            "threshold_candidate_received_at",
+            "threshold_candidate_conflicted",
             "start_time",
             "end_time",
             "up_token_id",
@@ -154,6 +161,7 @@ class DashboardHub:
             "received_at": book.get("received_at"),
             "best_bid": best_bid,
             "best_ask": best_ask,
+            "depth_trusted": bool(book.get("depth_trusted")),
             "min_order_size": book.get("min_order_size"),
             "tick_size": book.get("tick_size"),
         }
@@ -178,11 +186,17 @@ class DashboardHub:
                 "take_profit_ticks": strategy.take_profit_ticks,
                 "min_seconds_to_entry": strategy.min_seconds_to_entry,
                 "max_seconds_to_entry": strategy.max_seconds_to_entry,
+                "reverse_entry_enabled": strategy.reverse_entry_enabled,
+                "entry_confirmation_enabled": strategy.entry_confirmation_enabled,
                 "entry_confirmation_seconds": strategy.entry_confirmation_seconds,
                 "entry_confirmation_updates": strategy.entry_confirmation_updates,
                 "taker_fee_rate": strategy.taker_fee_rate,
             },
-            "risk": {"max_order_usd": risk.max_order_usd},
+            "risk": {
+                "max_order_usd": risk.max_order_usd,
+                "max_loss_usd": risk.max_loss_usd,
+                "max_trades_per_market": risk.max_trades_per_market,
+            },
         }
 
     def config_status_json(self) -> dict[str, Any]:
@@ -204,8 +218,12 @@ class DashboardHub:
         active = payload.get("active")
         if isinstance(active, dict):
             try:
-                strategy = type(self.config.strategy).model_validate(active.get("strategy") or {})
-                risk = type(self.config.risk).model_validate(active.get("risk") or {})
+                strategy_payload = self.config.strategy.model_dump()
+                strategy_payload.update(active.get("strategy") or {})
+                risk_payload = self.config.risk.model_dump()
+                risk_payload.update(active.get("risk") or {})
+                strategy = type(self.config.strategy).model_validate(strategy_payload)
+                risk = type(self.config.risk).model_validate(risk_payload)
             except (TypeError, ValueError):
                 pass
             else:
@@ -215,8 +233,12 @@ class DashboardHub:
         pending = payload.get("pending")
         if isinstance(pending, dict):
             try:
-                strategy = type(self.config.strategy).model_validate(pending.get("strategy") or {})
-                risk = type(self.config.risk).model_validate(pending.get("risk") or {})
+                strategy_payload = self.config.strategy.model_dump()
+                strategy_payload.update(pending.get("strategy") or {})
+                risk_payload = self.config.risk.model_dump()
+                risk_payload.update(pending.get("risk") or {})
+                strategy = type(self.config.strategy).model_validate(strategy_payload)
+                risk = type(self.config.risk).model_validate(risk_payload)
             except (TypeError, ValueError):
                 return
             self.pending_config = {"strategy": strategy.model_dump(), "risk": risk.model_dump()}
@@ -270,11 +292,13 @@ class DashboardHub:
             "take_profit_ticks",
             "min_seconds_to_entry",
             "max_seconds_to_entry",
+            "reverse_entry_enabled",
+            "entry_confirmation_enabled",
             "entry_confirmation_seconds",
             "entry_confirmation_updates",
             "taker_fee_rate",
         }
-        risk_fields = {"max_order_usd"}
+        risk_fields = {"max_order_usd", "max_loss_usd", "max_trades_per_market"}
         unexpected_strategy = set(strategy_update or {}) - strategy_fields
         unexpected_risk = set(risk_update or {}) - risk_fields
         if unexpected_strategy or unexpected_risk:

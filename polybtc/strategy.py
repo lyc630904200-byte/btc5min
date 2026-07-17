@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .config import RiskConfig, StrategyConfig
+from .market import threshold_is_tradable
 from .models import Direction, ExitEvent, ExitReason, Fill, MarketState, OrderBookSnapshot, OrderSide, Position, PriceTick, Signal
 from .orderbook import ExecutionResult, simulate_buy, simulate_sell
 
@@ -17,7 +18,9 @@ class StrategyState:
     down_book: OrderBookSnapshot
     now: datetime
     market_exposure_usd: float = 0.0
+    market_trade_count: int = 0
     edge_correction_usd: float | None = None
+    polymarket_price_fresh: bool = True
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class EntryDecision:
     signal: Signal | None = None
     fill: Fill | None = None
     execution: ExecutionResult | None = None
+    strategy_execution: ExecutionResult | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,8 @@ def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskCo
         return "observe_only_market"
     if market.threshold_price is None:
         return "threshold_unavailable"
+    if not threshold_is_tradable(market):
+        return "threshold_unverified"
     if not market.settlement_verified:
         return "settlement_unverified"
     if not market.accepting_orders:
@@ -106,6 +112,8 @@ def validate_common(state: StrategyState, strategy: StrategyConfig, risk: RiskCo
         return "up_book_stale"
     if age_ms(state.down_book.received_at, state.now) > risk.max_data_age_ms:
         return "down_book_stale"
+    if not state.polymarket_price_fresh:
+        return "polymarket_price_stale"
     if state.market_exposure_usd + risk.max_order_usd > risk.max_market_usd:
         return "market_exposure_limit"
     return None
@@ -122,23 +130,23 @@ def evaluate_entry(
         return EntryDecision(False, common_error)
     if has_open_position:
         return EntryDecision(False, "open_position_exists")
+    if state.market_trade_count >= risk.max_trades_per_market:
+        return EntryDecision(False, "market_trade_limit")
 
     edge = corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd)
     if edge is None:
         return EntryDecision(False, "threshold_unavailable")
 
     if edge > strategy.min_entry_edge_usd:
-        direction = Direction.UP
-        book = state.up_book
-        token_id = state.market.up_token_id
+        strategy_direction = Direction.UP
+        strategy_book = state.up_book
     elif edge < -strategy.min_entry_edge_usd:
-        direction = Direction.DOWN
-        book = state.down_book
-        token_id = state.market.down_token_id
+        strategy_direction = Direction.DOWN
+        strategy_book = state.down_book
     else:
         return EntryDecision(False, "edge_too_small")
 
-    ask = book.best_ask
+    ask = strategy_book.best_ask
     if ask is None:
         return EntryDecision(False, "ask_unavailable")
     if ask < strategy.min_buy_price:
@@ -147,28 +155,62 @@ def evaluate_entry(
         return EntryDecision(False, "ask_too_expensive")
 
     book_direction = orderbook_direction(state.up_book, state.down_book)
-    if book_direction is not None and book_direction != direction:
+    if book_direction is not None and book_direction != strategy_direction:
         return EntryDecision(False, "book_direction_conflicts_with_edge")
 
-    execution = simulate_buy(book, risk.max_order_usd, strategy.taker_fee_rate)
-    if not execution.complete:
-        return EntryDecision(False, "depth_insufficient", execution=execution)
-    if execution.quantity < state.market.min_order_size:
-        return EntryDecision(False, "below_min_order_size", execution=execution)
-    fee_per_share = execution.fee_usd / execution.quantity if execution.quantity else 0.0
-    if 1.0 - execution.avg_price - fee_per_share < strategy.min_profit_after_slippage:
-        return EntryDecision(False, "profit_after_slippage_too_low", execution=execution)
+    strategy_execution = simulate_buy(strategy_book, risk.max_order_usd, strategy.taker_fee_rate)
+    if not strategy_execution.complete:
+        return EntryDecision(False, "depth_insufficient", execution=strategy_execution, strategy_execution=strategy_execution)
+    if strategy_execution.quantity < state.market.min_order_size:
+        return EntryDecision(False, "below_min_order_size", execution=strategy_execution, strategy_execution=strategy_execution)
+    fee_per_share = strategy_execution.fee_usd / strategy_execution.quantity if strategy_execution.quantity else 0.0
+    if 1.0 - strategy_execution.avg_price - fee_per_share < strategy.min_profit_after_slippage:
+        return EntryDecision(
+            False,
+            "profit_after_slippage_too_low",
+            execution=strategy_execution,
+            strategy_execution=strategy_execution,
+        )
+
+    reverse_entry = strategy.reverse_entry_enabled
+    if reverse_entry:
+        execution_direction = Direction.DOWN if strategy_direction == Direction.UP else Direction.UP
+        execution_book = state.down_book if execution_direction == Direction.DOWN else state.up_book
+        token_id = state.market.down_token_id if execution_direction == Direction.DOWN else state.market.up_token_id
+        if execution_book.best_ask is None:
+            return EntryDecision(False, "reverse_ask_unavailable", strategy_execution=strategy_execution)
+        execution = simulate_buy(execution_book, risk.max_order_usd, strategy.taker_fee_rate)
+        if not execution.complete:
+            return EntryDecision(
+                False,
+                "reverse_depth_insufficient",
+                execution=execution,
+                strategy_execution=strategy_execution,
+            )
+        if execution.quantity < state.market.min_order_size:
+            return EntryDecision(
+                False,
+                "reverse_below_min_order_size",
+                execution=execution,
+                strategy_execution=strategy_execution,
+            )
+    else:
+        execution_direction = strategy_direction
+        token_id = state.market.up_token_id if execution_direction == Direction.UP else state.market.down_token_id
+        execution = strategy_execution
 
     signal_id = str(uuid4())
     position_id = str(uuid4())
     signal = Signal(
         signal_id=signal_id,
         market_id=state.market.condition_id,
-        direction=direction,
+        direction=strategy_direction,
         binance_price=state.price_tick.price,
         threshold_price=state.market.threshold_price,
         edge_usd=edge,
         ask_price=ask,
+        execution_direction=execution_direction,
+        reverse_entry=reverse_entry,
         reason="entry_edge",
         created_at=state.now,
     )
@@ -177,17 +219,26 @@ def evaluate_entry(
         position_id=position_id,
         market_id=state.market.condition_id,
         token_id=token_id,
-        direction=direction,
+        direction=execution_direction,
         side=OrderSide.BUY,
         avg_price=execution.avg_price,
         quantity=execution.quantity,
         quote=execution.quote,
         slippage=execution.slippage,
         fee_usd=execution.fee_usd,
+        strategy_direction=strategy_direction,
+        reverse_entry=reverse_entry,
         created_at=state.now,
-        reason="entry_edge",
+        reason="reverse_entry_edge" if reverse_entry else "entry_edge",
     )
-    return EntryDecision(True, "accepted", signal=signal, fill=fill, execution=execution)
+    return EntryDecision(
+        True,
+        "accepted",
+        signal=signal,
+        fill=fill,
+        execution=execution,
+        strategy_execution=strategy_execution,
+    )
 
 
 def position_from_entry(
@@ -195,7 +246,9 @@ def position_from_entry(
     edge: float,
     opened_at: datetime | None = None,
     taker_fee_rate: float = 0.0,
+    strategy_execution: ExecutionResult | None = None,
 ) -> Position:
+    reference = strategy_execution
     return Position(
         position_id=fill.position_id or str(uuid4()),
         market_id=fill.market_id,
@@ -208,6 +261,12 @@ def position_from_entry(
         taker_fee_rate=taker_fee_rate,
         opened_at=opened_at or fill.created_at,
         entry_edge_usd=edge,
+        strategy_direction=fill.strategy_direction or fill.direction,
+        reverse_entry=fill.reverse_entry,
+        strategy_entry_price=reference.avg_price if reference else fill.avg_price,
+        strategy_quantity=reference.quantity if reference else fill.quantity,
+        strategy_entry_quote=(reference.quote + reference.fee_usd) if reference else (fill.quote + fill.fee_usd),
+        strategy_entry_fee_usd=reference.fee_usd if reference else fill.fee_usd,
     )
 
 
@@ -216,30 +275,39 @@ def choose_exit_reason(
     state: StrategyState,
     strategy: StrategyConfig,
     risk: RiskConfig,
+    strategy_execution: ExecutionResult,
 ) -> ExitReason | None:
     edge = corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd)
-    if edge is None:
-        return None
     held_seconds = (state.now - position.opened_at).total_seconds()
     book_direction = orderbook_direction(state.up_book, state.down_book)
     if (
-        held_seconds >= strategy.book_direction_exit_delay_seconds
+        edge is not None
+        and held_seconds >= strategy.book_direction_exit_delay_seconds
         and book_direction is not None
         and book_direction != edge_direction(edge)
     ):
         return ExitReason.BOOK_DIRECTION_CONFLICT
-    book = state.up_book if position.direction == Direction.UP else state.down_book
+    strategy_direction = position.strategy_direction or position.direction
+    book = state.up_book if strategy_direction == Direction.UP else state.down_book
     best_bid = book.best_bid
     expiry_seconds = seconds_to_expiry(state.market, state.now)
+
+    strategy_entry_quote = position.strategy_entry_quote if position.strategy_entry_quote is not None else position.entry_quote
+    if book.depth_trusted and strategy_execution.complete:
+        liquidation_pnl = strategy_execution.quote - strategy_execution.fee_usd - strategy_entry_quote
+        if liquidation_pnl <= -risk.max_loss_usd:
+            return ExitReason.MAX_LOSS_USD
 
     # The configured stop edge is also the "edge faded" threshold.  Entry
     # still uses min_entry_edge_usd, leaving a buffer between opening a
     # position and closing it when the directional advantage weakens.
-    if position.direction == Direction.UP and edge <= strategy.stop_edge_usd:
-        return ExitReason.EDGE_FADED
-    if position.direction == Direction.DOWN and edge >= -strategy.stop_edge_usd:
-        return ExitReason.EDGE_FADED
-    if best_bid is not None and best_bid >= position.entry_price + strategy.take_profit_ticks:
+    if edge is not None:
+        if strategy_direction == Direction.UP and edge <= strategy.stop_edge_usd:
+            return ExitReason.EDGE_FADED
+        if strategy_direction == Direction.DOWN and edge >= -strategy.stop_edge_usd:
+            return ExitReason.EDGE_FADED
+    strategy_entry_price = position.strategy_entry_price if position.strategy_entry_price is not None else position.entry_price
+    if best_bid is not None and best_bid >= strategy_entry_price + strategy.take_profit_ticks:
         return ExitReason.TAKE_PROFIT
     if held_seconds >= risk.max_hold_seconds:
         return ExitReason.MAX_HOLD_SECONDS
@@ -254,12 +322,19 @@ def evaluate_exit(
     strategy: StrategyConfig,
     risk: RiskConfig,
 ) -> ExitDecision:
-    reason = choose_exit_reason(position, state, strategy, risk)
+    actual_book = state.up_book if position.direction == Direction.UP else state.down_book
+    execution = simulate_sell(actual_book, position.quantity, strategy.taker_fee_rate)
+    strategy_direction = position.strategy_direction or position.direction
+    strategy_book = state.up_book if strategy_direction == Direction.UP else state.down_book
+    strategy_quantity = position.strategy_quantity if position.strategy_quantity is not None else position.quantity
+    if strategy_direction == position.direction and strategy_quantity == position.quantity:
+        strategy_execution = execution
+    else:
+        strategy_execution = simulate_sell(strategy_book, strategy_quantity, strategy.taker_fee_rate)
+    reason = choose_exit_reason(position, state, strategy, risk, strategy_execution=strategy_execution)
     if reason is None:
         return ExitDecision(False)
 
-    book = state.up_book if position.direction == Direction.UP else state.down_book
-    execution = simulate_sell(book, position.quantity, strategy.taker_fee_rate)
     if not execution.complete:
         return ExitDecision(False, reason=reason)
 
@@ -276,6 +351,8 @@ def evaluate_exit(
         quote=execution.quote,
         slippage=execution.slippage,
         fee_usd=execution.fee_usd,
+        strategy_direction=strategy_direction,
+        reverse_entry=position.reverse_entry,
         created_at=state.now,
         reason=reason.value,
     )
@@ -289,6 +366,8 @@ def evaluate_exit(
         quantity=execution.quantity,
         pnl=pnl,
         fee_usd=execution.fee_usd,
+        strategy_direction=strategy_direction,
+        reverse_entry=position.reverse_entry,
         created_at=state.now,
     )
     return ExitDecision(True, reason=reason, fill=fill, event=event)
@@ -312,5 +391,7 @@ def settle_position(position: Position, market: MarketState, settlement_price: f
         price=payout,
         quantity=position.quantity,
         pnl=pnl,
+        strategy_direction=position.strategy_direction or position.direction,
+        reverse_entry=position.reverse_entry,
         created_at=now or datetime.now(timezone.utc),
     )

@@ -106,6 +106,8 @@
     .setting-label { color: var(--muted); font-size: 12px; }
     .setting-input { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); padding: 0 8px; text-align: right; font: inherit; font-variant-numeric: tabular-nums; }
     .setting-input:focus { outline: 2px solid var(--blue-soft); border-color: var(--blue); }
+    .setting-toggle { min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); cursor: pointer; font-size: 12px; }
+    .setting-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
     .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
     .settings-note { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .settings-save { height: 32px; border: 0; border-radius: 6px; padding: 0 12px; background: var(--blue); color: #fff; font: inherit; font-size: 12px; font-weight: 760; cursor: pointer; white-space: nowrap; }
@@ -195,6 +197,7 @@
             <div class="kv-row"><div class="kv-label">Slug</div><div class="kv-value" id="marketSlug">--</div></div>
             <div class="kv-row"><div class="kv-label">阈值</div><div class="kv-value" id="threshold">--</div></div>
             <div class="kv-row"><div class="kv-label">来源</div><div class="kv-value" id="thresholdSource">--</div></div>
+            <div class="kv-row"><div class="kv-label">校验</div><div class="kv-value" id="thresholdVerified">--</div></div>
             <div class="kv-row"><div class="kv-label">剩余</div><div class="kv-value" id="timeLeft">--</div></div>
           </div>
         </div>
@@ -217,7 +220,9 @@
             <div class="metric"><div class="metric-name">信号</div><div class="metric-value" id="signals">0</div></div>
             <div class="metric"><div class="metric-name">成交</div><div class="metric-value" id="fills">0</div></div>
             <div class="metric"><div class="metric-name">拒绝</div><div class="metric-value" id="rejections">0</div></div>
-            <div class="metric"><div class="metric-name">已实现盈亏</div><div class="metric-value" id="pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">总盈亏</div><div class="metric-value" id="pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">普通盈亏</div><div class="metric-value" id="normalPnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">反买盈亏</div><div class="metric-value" id="reversePnl">0.00</div></div>
           </div>
         </div>
       </section>
@@ -264,7 +269,7 @@
             <div class="metric"><div class="metric-name">方向</div><div class="metric-value" id="posDir">--</div></div>
             <div class="metric"><div class="metric-name">均价</div><div class="metric-value" id="posEntry">--</div></div>
             <div class="metric"><div class="metric-name">数量</div><div class="metric-value" id="posQty">--</div></div>
-            <div class="metric"><div class="metric-name">浮动</div><div class="metric-value" id="posUnrealized">--</div></div>
+            <div class="metric"><div class="metric-name">浮动（买一估算）</div><div class="metric-value" id="posUnrealized">--</div></div>
           </div>
         </div>
 
@@ -278,10 +283,14 @@
               <label class="setting"><span class="setting-label">买入最高价</span><input class="setting-input" id="maxBuyPrice" type="number" min="0.01" max="0.99" step="0.01" required></label>
               <label class="setting"><span class="setting-label">止盈价差</span><input class="setting-input" id="takeProfitTicks" type="number" min="0.01" step="0.01" required></label>
               <label class="setting"><span class="setting-label">单笔模拟金额（USD）</span><input class="setting-input" id="maxOrderUsd" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">最大净亏损（USD）</span><input class="setting-input" id="maxLossUsd" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">每期最多交易次数</span><input class="setting-input" id="maxTradesPerMarket" type="number" min="1" step="1" required></label>
               <label class="setting"><span class="setting-label">入场最早（距到期秒）</span><input class="setting-input" id="minEntrySeconds" type="number" min="1" step="1" required></label>
               <label class="setting"><span class="setting-label">入场最晚（距到期秒）</span><input class="setting-input" id="maxEntrySeconds" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">反买模式</span><span class="setting-toggle"><input id="reverseEntryEnabled" type="checkbox">仅反转实际订单方向</span></label>
+              <label class="setting"><span class="setting-label">入场持续确认</span><span class="setting-toggle"><input id="entryConfirmationEnabled" type="checkbox">启用：持续 1 秒且连续 3 次确认</span></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">以保存值为准；当前市场保持原参数，下一把自动生效。入场需持续1秒且连续3次确认；模拟成交计入taker手续费。</span><button class="settings-save" id="saveStrategy" type="submit">保存参数</button></div>
+            <div class="settings-actions"><span class="settings-note">以保存值为准；当前市场保持原参数，下一把自动生效。反买仅对调真实买卖方向，所有规则仍按原信号盘口判断；模拟成交计入 taker 手续费。</span><button class="settings-save" id="saveStrategy" type="submit">保存参数</button></div>
           </form>
         </div>
 
@@ -311,6 +320,13 @@
       take_profit_ticks: 'takeProfitTicks',
       min_seconds_to_entry: 'minEntrySeconds',
       max_seconds_to_entry: 'maxEntrySeconds',
+      reverse_entry_enabled: 'reverseEntryEnabled',
+      entry_confirmation_enabled: 'entryConfirmationEnabled',
+    };
+    const riskInputs = {
+      max_order_usd: 'maxOrderUsd',
+      max_loss_usd: 'maxLossUsd',
+      max_trades_per_market: 'maxTradesPerMarket',
     };
 
     function scheduleRender(snapshot) {
@@ -345,7 +361,12 @@
 
     function setRuntimeInput(id, value) {
       const input = $(id);
-      if (!input || !Number.isFinite(Number(value))) return;
+      if (!input) return;
+      if (input.type === 'checkbox') {
+        input.checked = Boolean(value);
+        return;
+      }
+      if (!Number.isFinite(Number(value))) return;
       input.value = String(value);
     }
 
@@ -354,11 +375,11 @@
       const risk = snapshot.pending_risk || snapshot.risk || {};
       const configKey = JSON.stringify({
         strategy: Object.fromEntries(Object.keys(configInputs).map((field) => [field, strategy[field]])),
-        max_order_usd: risk.max_order_usd,
+        risk: Object.fromEntries(Object.keys(riskInputs).map((field) => [field, risk[field]])),
       });
       if (force || !configFormInitialized || (!configFormDirty && configKey !== renderedConfigKey)) {
         Object.entries(configInputs).forEach(([field, id]) => setRuntimeInput(id, strategy[field]));
-        setRuntimeInput('maxOrderUsd', risk.max_order_usd);
+        Object.entries(riskInputs).forEach(([field, id]) => setRuntimeInput(id, risk[field]));
         renderedConfigKey = configKey;
         configFormInitialized = true;
       }
@@ -494,7 +515,8 @@
       if (type === 'fill') {
         const side = p.side === 'BUY' ? '买入' : p.side === 'SELL' ? '卖出' : p.side || '成交';
         const color = p.side === 'BUY' ? 'green' : 'red';
-        return [side, `${p.direction || ''} ${fmtProb(p.avg_price)} / ${fmtNumber(p.quantity, 2)} · 费 ${fmtNumber(p.fee_usd || 0, 3)}`, color];
+        const reverse = p.reverse_entry ? `反买·信号 ${p.strategy_direction || '--'} → ` : '';
+        return [side, `${reverse}${p.direction || ''} ${fmtProb(p.avg_price)} / ${fmtNumber(p.quantity, 2)} · 费 ${fmtNumber(p.fee_usd || 0, 3)}`, color];
       }
       return ['成交', '--', 'amber'];
     }
@@ -512,12 +534,14 @@
 
       $('runPath').textContent = snapshot.output_dir || '等待运行数据';
       $('updatedAt').textContent = fmtTime(snapshot.created_at);
-      $('marketState').textContent = market ? (market.threshold_price ? '已定阈值' : '等开盘') : '未发现';
-      $('marketState').className = 'tag ' + (market?.threshold_price ? 'green' : market ? 'amber' : 'red');
+      const thresholdReady = market?.threshold_verified === true && market?.threshold_price != null;
+      $('marketState').textContent = market ? (thresholdReady ? '阈值已核验' : '待核验·禁止下单') : '未发现';
+      $('marketState').className = 'tag ' + (thresholdReady ? 'green' : market ? 'amber' : 'red');
       $('marketWindow').textContent = market ? `${fmtTime(market.start_time)} - ${fmtTime(market.end_time)}` : '--';
       $('marketSlug').textContent = market?.slug || '--';
       $('threshold').textContent = market?.threshold_price ? fmtPrice(market.threshold_price) : '--';
       $('thresholdSource').textContent = market?.threshold_source || '--';
+      $('thresholdVerified').textContent = thresholdReady ? '双页面一致' : '未通过';
       const left = secondsLeft(market);
       $('timeLeft').textContent = left === null ? '--' : `${left}s`;
 
@@ -545,6 +569,10 @@
       $('rejections').textContent = summary.rejections ?? 0;
       $('pnl').textContent = fmtNumber(summary.realized_pnl ?? 0, 2);
       $('pnl').style.color = Number(summary.realized_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+      $('normalPnl').textContent = fmtNumber(summary.normal_realized_pnl ?? 0, 2);
+      $('normalPnl').style.color = Number(summary.normal_realized_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+      $('reversePnl').textContent = fmtNumber(summary.reverse_realized_pnl ?? 0, 2);
+      $('reversePnl').style.color = Number(summary.reverse_realized_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
 
       const lastRejection = snapshot.last_rejection?.reason;
       const lastEvent = snapshot.event;
@@ -553,11 +581,15 @@
       let meta = lastRejection || '--';
       if (position) {
         mode = position.direction === 'UP' ? 'up' : 'down';
-        signalText = `持有 ${position.direction}`;
-        meta = `entry ${fmtProb(position.entry_price)}`;
+        signalText = `持有 ${position.direction}${position.reverse_entry ? '（反买）' : ''}`;
+        meta = position.reverse_entry
+          ? `原信号 ${position.strategy_direction} / entry ${fmtProb(position.entry_price)}`
+          : `entry ${fmtProb(position.entry_price)}`;
       } else if (lastEvent?.type === 'signal') {
         mode = lastEvent.payload.direction === 'UP' ? 'up' : 'down';
-        signalText = `买入 ${lastEvent.payload.direction}`;
+        signalText = lastEvent.payload.reverse_entry
+          ? `信号 ${lastEvent.payload.direction} / 反买 ${lastEvent.payload.execution_direction}`
+          : `买入 ${lastEvent.payload.direction}`;
         meta = `edge ${fmtNumber(lastEvent.payload.edge_usd, 0)}`;
       }
       $('signalBox').className = `signal-box ${mode}`;
@@ -570,6 +602,7 @@
         ['偏离', fmtSigned(edge, 2)],
         ['修正', fmtSigned(correction, 2)],
         ['Polymarket BTC', fmtPrice(polymarketPrice)],
+        ['反买模式', (snapshot.pending_strategy || snapshot.strategy || {}).reverse_entry_enabled ? '开启' : '关闭'],
         ['UP 盘口', `买 ${fmtProb(bestBid(upBook))} / 卖 ${fmtProb(bestAsk(upBook))}`],
         ['DOWN 盘口', `买 ${fmtProb(bestBid(downBook))} / 卖 ${fmtProb(bestAsk(downBook))}`],
         ['最近拒绝', lastRejection || '--']
@@ -578,7 +611,9 @@
 
       $('positionState').textContent = position ? '持仓' : '空仓';
       $('positionState').className = 'tag ' + (position ? 'green' : 'blue');
-      $('posDir').textContent = position?.direction || '--';
+      $('posDir').textContent = position
+        ? `${position.direction}${position.reverse_entry ? `（反买·信号 ${position.strategy_direction}）` : ''}`
+        : '--';
       $('posEntry').textContent = fmtProb(position?.entry_price);
       $('posQty').textContent = position?.quantity ? fmtNumber(position.quantity, 2) : '--';
       const bid = position?.direction === 'UP' ? bestBid(upBook) : position?.direction === 'DOWN' ? bestBid(downBook) : null;
@@ -667,8 +702,10 @@
             take_profit_ticks: runtimeNumber('takeProfitTicks'),
             min_seconds_to_entry: runtimeNumber('minEntrySeconds'),
             max_seconds_to_entry: runtimeNumber('maxEntrySeconds'),
+            reverse_entry_enabled: $('reverseEntryEnabled').checked,
+            entry_confirmation_enabled: $('entryConfirmationEnabled').checked,
           },
-          risk: { max_order_usd: runtimeNumber('maxOrderUsd') },
+          risk: Object.fromEntries(Object.entries(riskInputs).map(([field, id]) => [field, runtimeNumber(id)])),
         };
         const response = await fetch('/api/config', {
           method: 'POST',

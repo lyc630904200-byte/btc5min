@@ -17,6 +17,7 @@ class SourceConfig(BaseModel):
     clob_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
+    rtds_stale_seconds: float = 10.0
     threshold_page_timeout_seconds: float = 4.0
     threshold_page_retry_seconds: float = 2.0
     poly_book_poll_ms: int = 200
@@ -25,7 +26,7 @@ class SourceConfig(BaseModel):
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])
     observe_only_on_unverified_settlement: bool = True
 
-    @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms", "threshold_page_timeout_seconds", "threshold_page_retry_seconds")
+    @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms", "threshold_page_timeout_seconds", "threshold_page_retry_seconds", "rtds_stale_seconds")
     @classmethod
     def positive_interval(cls, value: float) -> float:
         if value <= 0:
@@ -44,6 +45,8 @@ class StrategyConfig(BaseModel):
     max_seconds_to_entry: float = 240.0
     force_exit_seconds: float = 5.0
     book_direction_exit_delay_seconds: float = 10.0
+    reverse_entry_enabled: bool = False
+    entry_confirmation_enabled: bool = True
     entry_confirmation_seconds: float = 1.0
     entry_confirmation_updates: int = 3
     taker_fee_rate: float = 0.07
@@ -97,17 +100,27 @@ class RiskConfig(BaseModel):
     max_market_usd: float = 30.0
     max_data_age_ms: int = 1000
     max_hold_seconds: float = 120.0
+    max_loss_usd: float = 2.5
+    max_trades_per_market: int = 1
 
-    @field_validator("max_order_usd", "max_market_usd", "max_data_age_ms", "max_hold_seconds")
+    @field_validator("max_order_usd", "max_market_usd", "max_data_age_ms", "max_hold_seconds", "max_loss_usd")
     @classmethod
     def positive_value(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("risk values must be positive")
         return value
 
+    @field_validator("max_trades_per_market")
+    @classmethod
+    def positive_trade_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_trades_per_market must be at least one")
+        return value
+
 
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
+    data_cleanup_enabled: bool = False
     data_retention_hours: float = 24.0
     data_cleanup_interval_seconds: float = 300.0
     sources: SourceConfig = Field(default_factory=SourceConfig)

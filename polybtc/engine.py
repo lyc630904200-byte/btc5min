@@ -1,19 +1,31 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 from .config import AppConfig
+from .entry_registry import InMemoryMarketEntryRegistry, MarketEntryRegistry
 from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Position, PriceTick, rest_request_started_at
 from .strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry, settle_position
 
 
 MAX_RECENT_REJECTIONS = 500
 REJECTION_RECORD_INTERVAL = timedelta(seconds=1)
+RTDS_THRESHOLD_EARLY_TOLERANCE = timedelta(seconds=1)
+RTDS_THRESHOLD_LATE_TOLERANCE = timedelta(seconds=2)
+RTDS_DUPLICATE_PRICE_TOLERANCE = 1e-9
 
 
 class PaperEngine:
-    def __init__(self, config: AppConfig):
+    def __init__(
+        self,
+        config: AppConfig,
+        entry_registry: MarketEntryRegistry | None = None,
+        run_id: str = "memory",
+    ):
         self.config = config
+        self.entry_registry = entry_registry or InMemoryMarketEntryRegistry()
+        self.run_id = run_id
         self.market: MarketState | None = None
         self.tick: PriceTick | None = None
         self.polymarket_tick: PriceTick | None = None
@@ -27,10 +39,13 @@ class PaperEngine:
         self.rejection_count = 0
         self.last_rejection_at_by_reason: dict[str, datetime] = {}
         self.market_exposure_usd = 0.0
+        self.market_trade_count = 0
         self.entry_confirmation_direction: Direction | None = None
         self.entry_confirmation_started_at: datetime | None = None
         self.entry_confirmation_last_at: datetime | None = None
         self.entry_confirmation_updates = 0
+        self.polymarket_ticks_by_exchange_time: dict[datetime, PriceTick] = {}
+        self.polymarket_tick_conflicts: set[datetime] = set()
 
     def reset_entry_confirmation(self) -> None:
         self.entry_confirmation_direction = None
@@ -40,6 +55,9 @@ class PaperEngine:
 
     def entry_is_confirmed(self, direction: Direction, now: datetime, observed_at: datetime) -> bool:
         strategy = self.config.strategy
+        if not strategy.entry_confirmation_enabled:
+            self.reset_entry_confirmation()
+            return True
         max_gap_seconds = max(strategy.entry_confirmation_seconds, self.config.risk.max_data_age_ms / 1000)
         gap_too_large = (
             self.entry_confirmation_last_at is not None
@@ -77,10 +95,16 @@ class PaperEngine:
         if self.market and is_new_market and self.open_position:
             self._settle_if_expired(datetime.now(timezone.utc), force=True)
         self.market = market
+        self.apply_polymarket_start_threshold_candidate()
         if is_new_market:
             self.books = {}
             self.reset_entry_confirmation()
         self.market_exposure_usd = sum(pos.entry_quote for pos in self.positions if pos.market_id == market.condition_id)
+        try:
+            self.market_trade_count = self.entry_registry.count(market.condition_id)
+        except Exception:
+            self.market_trade_count = self.config.risk.max_trades_per_market
+            self.record_rejection("market_entry_registry_error")
 
     def book_matches_current_market(self, direction: Direction, book: OrderBookSnapshot) -> bool:
         if not self.market:
@@ -98,16 +122,83 @@ class PaperEngine:
         self.evaluate(tick.received_at)
 
     def set_polymarket_tick(self, tick: PriceTick) -> None:
+        self.remember_polymarket_tick(tick)
         self.polymarket_tick = tick
+        self.apply_polymarket_start_threshold_candidate()
         self.evaluate(tick.received_at)
 
-    def edge_correction_usd(self) -> float | None:
-        if self.tick and self.polymarket_tick:
+    def remember_polymarket_tick(self, tick: PriceTick) -> None:
+        if (
+            tick.source != "polymarket_rtds"
+            or tick.symbol.upper() != "BTC/USD"
+            or tick.exchange_timestamp is None
+            or not math.isfinite(tick.price)
+        ):
+            return
+        exchange_time = tick.exchange_timestamp
+        if exchange_time.tzinfo is None:
+            exchange_time = exchange_time.replace(tzinfo=timezone.utc)
+        else:
+            exchange_time = exchange_time.astimezone(timezone.utc)
+        existing = self.polymarket_ticks_by_exchange_time.get(exchange_time)
+        if existing is not None and abs(existing.price - tick.price) > RTDS_DUPLICATE_PRICE_TOLERANCE:
+            self.polymarket_tick_conflicts.add(exchange_time)
+        else:
+            self.polymarket_ticks_by_exchange_time[exchange_time] = tick
+        cutoff = tick.received_at - timedelta(minutes=10)
+        for timestamp in list(self.polymarket_ticks_by_exchange_time):
+            if timestamp < cutoff:
+                self.polymarket_ticks_by_exchange_time.pop(timestamp, None)
+                self.polymarket_tick_conflicts.discard(timestamp)
+
+    def apply_polymarket_start_threshold_candidate(self) -> bool:
+        market = self.market
+        if market is None or market.start_time is None:
+            return False
+        start_time = market.start_time.astimezone(timezone.utc)
+        if start_time in self.polymarket_tick_conflicts:
+            changed = not market.threshold_candidate_conflicted or market.threshold_candidate_price is not None
+            market.threshold_candidate_price = None
+            market.threshold_candidate_source = "polymarket_rtds_conflict"
+            market.threshold_candidate_observed_at = start_time
+            market.threshold_candidate_received_at = None
+            market.threshold_candidate_conflicted = True
+            return changed
+        tick = self.polymarket_ticks_by_exchange_time.get(start_time)
+        if (
+            tick is None
+            or tick.received_at < start_time - RTDS_THRESHOLD_EARLY_TOLERANCE
+            or tick.received_at > start_time + RTDS_THRESHOLD_LATE_TOLERANCE
+        ):
+            return False
+        changed = (
+            market.threshold_candidate_price != tick.price
+            or market.threshold_candidate_observed_at != start_time
+            or market.threshold_candidate_conflicted
+        )
+        market.threshold_candidate_price = tick.price
+        market.threshold_candidate_source = "polymarket_rtds_start_tick"
+        market.threshold_candidate_observed_at = start_time
+        market.threshold_candidate_received_at = tick.received_at
+        market.threshold_candidate_conflicted = False
+        return changed
+
+    def polymarket_price_is_fresh(self, now: datetime | None = None) -> bool:
+        if self.polymarket_tick is None:
+            return False
+        reference_time = now or (self.tick.received_at if self.tick else self.polymarket_tick.received_at)
+        age_seconds = (reference_time - self.polymarket_tick.received_at).total_seconds()
+        return 0 <= age_seconds <= self.config.sources.rtds_stale_seconds
+
+    def edge_correction_usd(self, now: datetime | None = None) -> float | None:
+        if self.tick and self.polymarket_tick and self.polymarket_price_is_fresh(now):
             return self.tick.price - self.polymarket_tick.price
         return None
 
-    def edge_correction_source(self) -> str:
-        return "binance_minus_polymarket" if self.edge_correction_usd() is not None else "unavailable_zero"
+    def edge_correction_source(self, now: datetime | None = None) -> str:
+        if self.edge_correction_usd(now) is not None:
+            return "binance_minus_polymarket"
+        return "polymarket_price_stale" if self.polymarket_tick else "polymarket_price_unavailable"
 
     def capture_dynamic_threshold(self, tick: PriceTick) -> bool:
         if not self.market or self.market.threshold_price is not None:
@@ -123,6 +214,8 @@ class PaperEngine:
         self.market.threshold_price = tick.price
         self.market.threshold_observed_at = source_time
         self.market.threshold_source = f"{tick.source}_first_tick_after_start"
+        self.market.threshold_verified = False
+        self.market.threshold_fetched_at = tick.received_at
         return True
 
     def apply_threshold(self, price: float, source: str, observed_at: datetime) -> bool:
@@ -133,6 +226,8 @@ class PaperEngine:
         self.market.threshold_price = price
         self.market.threshold_source = source
         self.market.threshold_observed_at = observed_at
+        self.market.threshold_verified = False
+        self.market.threshold_fetched_at = datetime.now(timezone.utc)
         return True
 
     def set_book(self, direction: Direction, book: OrderBookSnapshot) -> None:
@@ -187,7 +282,15 @@ class PaperEngine:
             down_book=self.books[Direction.DOWN],
             now=now,
             market_exposure_usd=self.market_exposure_usd,
-            edge_correction_usd=self.edge_correction_usd(),
+            market_trade_count=self.market_trade_count,
+            edge_correction_usd=self.edge_correction_usd(now),
+            # Historical replay files from before RTDS support have no
+            # Polymarket ticks.  They retain their original raw-edge replay
+            # behavior; once RTDS has produced a tick, it must stay fresh for
+            # any subsequent live entry.
+            polymarket_price_fresh=(
+                self.polymarket_price_is_fresh(now) if self.polymarket_tick is not None else True
+            ),
         )
         if self.open_position:
             self.reset_entry_confirmation()
@@ -213,6 +316,23 @@ class PaperEngine:
             if not self.entry_is_confirmed(entry.signal.direction, now, observed_at):
                 return
             self.reset_entry_confirmation()
+            position_id = entry.fill.position_id or ""
+            try:
+                claimed = self.entry_registry.claim(
+                    self.market.condition_id,
+                    position_id,
+                    now,
+                    self.run_id,
+                    self.config.risk.max_trades_per_market,
+                )
+            except Exception:
+                self.record_rejection("market_entry_registry_error", now)
+                return
+            if not claimed:
+                self.market_trade_count = self.config.risk.max_trades_per_market
+                self.record_rejection("market_trade_limit", now)
+                return
+            self.market_trade_count += 1
             self.signals.append(entry.signal)
             self.fills.append(entry.fill)
             edge = entry.signal.edge_usd
@@ -221,6 +341,7 @@ class PaperEngine:
                 edge=edge,
                 opened_at=now,
                 taker_fee_rate=self.config.strategy.taker_fee_rate,
+                strategy_execution=entry.strategy_execution,
             )
             self.positions.append(self.open_position)
             self.market_exposure_usd += self.open_position.entry_quote
@@ -260,7 +381,9 @@ class PaperEngine:
         self._apply_exit(event.reason, event.price or 0.0, event.quantity * (event.price or 0.0), event.pnl, now)
 
     def summary(self) -> dict[str, float | int]:
-        realized = sum(position.realized_pnl for position in self.positions)
+        normal_realized = sum(position.realized_pnl for position in self.positions if not position.reverse_entry)
+        reverse_realized = sum(position.realized_pnl for position in self.positions if position.reverse_entry)
+        realized = normal_realized + reverse_realized
         take_profit = sum(
             position.realized_pnl for position in self.positions if position.exit_reason == ExitReason.TAKE_PROFIT
         )
@@ -270,6 +393,7 @@ class PaperEngine:
             if position.exit_reason in {
                 ExitReason.BOOK_DIRECTION_CONFLICT,
                 ExitReason.EDGE_FADED,
+                ExitReason.MAX_LOSS_USD,
                 ExitReason.REVERSE_BREAK,
                 ExitReason.MAX_HOLD_SECONDS,
                 ExitReason.FORCE_EXIT,
@@ -288,10 +412,18 @@ class PaperEngine:
             "signals": len(self.signals),
             "rejections": self.rejection_count,
             "realized_pnl": realized,
+            "normal_realized_pnl": normal_realized,
+            "reverse_realized_pnl": reverse_realized,
             "take_profit_pnl": take_profit,
             "risk_exit_pnl": risk_exit,
             "settlement_pnl": settlement,
             "total_quote": sum(pos.entry_quote for pos in self.positions),
             "entry_confirmation_updates": self.entry_confirmation_updates,
+            "current_market_trade_count": self.market_trade_count,
+            "max_trades_per_market": self.config.risk.max_trades_per_market,
+            "max_loss_usd": self.config.risk.max_loss_usd,
+            "max_loss_exit_count": len(
+                [position for position in self.positions if position.exit_reason == ExitReason.MAX_LOSS_USD]
+            ),
             "fees_paid_usd": sum(fill.fee_usd for fill in self.fills),
         }

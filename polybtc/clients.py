@@ -3,16 +3,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Iterable
 
 import httpx
 import websockets
 
 from .config import SourceConfig
-from .market import choose_current_market, parse_market
+from .market import choose_current_market, market_interval_from_slug, parse_market
 from .models import BookLevel, MarketState, OrderBookSnapshot, PriceTick
 
 
@@ -93,6 +94,7 @@ def parse_clob_book(payload: dict[str, Any]) -> OrderBookSnapshot:
         timestamp=timestamp,
         bids=[BookLevel(price=float(level["price"]), size=float(level["size"])) for level in payload.get("bids", [])],
         asks=[BookLevel(price=float(level["price"]), size=float(level["size"])) for level in payload.get("asks", [])],
+        depth_trusted=True,
         min_order_size=float(payload.get("min_order_size") or 5),
         tick_size=float(payload.get("tick_size") or 0.01),
         raw=payload,
@@ -109,6 +111,7 @@ def parse_clob_best_bid_ask(payload: dict[str, Any]) -> OrderBookSnapshot:
         timestamp=clob_timestamp(payload.get("timestamp")),
         bids=[BookLevel(price=float(best_bid), size=min_order_size)] if best_bid is not None else [],
         asks=[BookLevel(price=float(best_ask), size=min_order_size)] if best_ask is not None else [],
+        depth_trusted=False,
         min_order_size=min_order_size,
         tick_size=float(payload.get("tick_size") or 0.01),
         raw=payload,
@@ -149,6 +152,7 @@ def apply_clob_price_change(book: OrderBookSnapshot, payload: dict[str, Any], ch
         timestamp=clob_timestamp(change.get("timestamp") or payload.get("timestamp")),
         bids=bids,
         asks=asks,
+        depth_trusted=book.depth_trusted,
         min_order_size=book.min_order_size,
         tick_size=book.tick_size,
         raw=payload,
@@ -158,17 +162,24 @@ def apply_clob_price_change(book: OrderBookSnapshot, payload: dict[str, Any], ch
 def apply_clob_best_bid_ask(book: OrderBookSnapshot, payload: dict[str, Any]) -> OrderBookSnapshot:
     bids = list(book.bids)
     asks = list(book.asks)
+    depth_trusted = book.depth_trusted
     best_bid = payload.get("best_bid") or payload.get("bid")
     best_ask = payload.get("best_ask") or payload.get("ask")
 
     if best_bid is not None:
         price = float(best_bid)
-        size = next((level.size for level in bids if level.price == price), bids[0].size if bids else book.min_order_size)
+        known_size = next((level.size for level in bids if level.price == price), None)
+        if known_size is None:
+            depth_trusted = False
+        size = known_size if known_size is not None else bids[0].size if bids else book.min_order_size
         bids = sort_book_levels(update_levels([level for level in bids if level.price <= price], price, size), reverse=True)
 
     if best_ask is not None:
         price = float(best_ask)
-        size = next((level.size for level in asks if level.price == price), asks[0].size if asks else book.min_order_size)
+        known_size = next((level.size for level in asks if level.price == price), None)
+        if known_size is None:
+            depth_trusted = False
+        size = known_size if known_size is not None else asks[0].size if asks else book.min_order_size
         asks = sort_book_levels(update_levels([level for level in asks if level.price >= price], price, size), reverse=False)
 
     return OrderBookSnapshot(
@@ -177,6 +188,7 @@ def apply_clob_best_bid_ask(book: OrderBookSnapshot, payload: dict[str, Any]) ->
         timestamp=clob_timestamp(payload.get("timestamp")),
         bids=bids,
         asks=asks,
+        depth_trusted=depth_trusted,
         min_order_size=book.min_order_size,
         tick_size=book.tick_size,
         raw=payload,
@@ -346,6 +358,9 @@ class PolymarketOutcomePrice:
     slug: str
     open_price: float
     close_price: float | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    updated_at_ms: int = 0
 
 
 PAST_RESULT_RE = re.compile(
@@ -354,72 +369,124 @@ PAST_RESULT_RE = re.compile(
     r'(?:,"outcome":"(?P<outcome>[^"]+)")?'
 )
 
-OUTCOME_PRICE_RE = re.compile(
-    r'"slug":"(?P<slug>btc-updown-5m-\d+)"(?:(?!"slug":).){0,500}?'
-    r'"data":\{"openPrice":(?P<open>[0-9.]+)(?:,"closePrice":(?P<close>[0-9.]+))?',
-    re.DOTALL,
-)
-CRYPTO_PRICE_RE = re.compile(
-    r'"state":\{"data":\{"openPrice":(?P<open>[0-9.]+),"closePrice":(?P<close>null|[0-9.]+)\}.*?'
-    r'"queryKey":\["crypto-prices","price","BTC","(?P<start>[^"]+)","fiveminute","(?P<end>[^"]+)"\]',
-    re.DOTALL,
-)
+REACT_QUERY_OBJECT_START_RE = re.compile(r'\{(?="(?:dehydratedAt|state)":)')
+NEXT_FLIGHT_PUSH_RE = re.compile(r'<script>self\.__next_f\.push\((?P<payload>.*?)\)</script>', re.DOTALL)
+PRICE_CONFLICT_TOLERANCE = 1e-9
 
 
 def parse_polymarket_past_results(html: str) -> list[PolymarketPastResult]:
-    results: list[PolymarketPastResult] = []
-    seen: set[tuple[datetime, datetime]] = set()
+    grouped: dict[tuple[datetime, datetime], list[PolymarketPastResult]] = {}
     normalized = html.replace('\\"', '"')
     for match in PAST_RESULT_RE.finditer(normalized):
         try:
             start = datetime.fromisoformat(match.group("start").replace("Z", "+00:00"))
             end = datetime.fromisoformat(match.group("end").replace("Z", "+00:00"))
+            open_price = float(match.group("open"))
+            close_price = float(match.group("close"))
+            if not all(math.isfinite(value) and 1000 <= value <= 1_000_000 for value in (open_price, close_price)):
+                continue
             result = PolymarketPastResult(
                 start_time=start,
                 end_time=end,
-                open_price=float(match.group("open")),
-                close_price=float(match.group("close")),
+                open_price=open_price,
+                close_price=close_price,
                 outcome=match.group("outcome"),
             )
         except (TypeError, ValueError):
             continue
-        key = (result.start_time, result.end_time)
-        if key not in seen:
-            seen.add(key)
-            results.append(result)
+        grouped.setdefault((result.start_time, result.end_time), []).append(result)
+    results: list[PolymarketPastResult] = []
+    for candidates in grouped.values():
+        opens = [candidate.open_price for candidate in candidates]
+        closes = [candidate.close_price for candidate in candidates]
+        if max(opens) - min(opens) > PRICE_CONFLICT_TOLERANCE:
+            continue
+        if max(closes) - min(closes) > PRICE_CONFLICT_TOLERANCE:
+            continue
+        results.append(candidates[-1])
     return sorted(results, key=lambda item: item.start_time)
 
 
-def parse_polymarket_outcome_prices(html: str) -> list[PolymarketOutcomePrice]:
-    prices: list[PolymarketOutcomePrice] = []
-    seen: set[str] = set()
-    normalized = html.replace('\\"', '"')
-    for match in CRYPTO_PRICE_RE.finditer(normalized):
+def react_query_objects(html: str) -> list[dict[str, Any]]:
+    """Decode complete React Query cache objects without crossing object boundaries."""
+    decoder = json.JSONDecoder()
+    sources = [html]
+    for match in NEXT_FLIGHT_PUSH_RE.finditer(html):
         try:
-            start = datetime.fromisoformat(match.group("start").replace("Z", "+00:00"))
-            open_price = float(match.group("open"))
-            close = match.group("close")
-            close_price = None if close == "null" else float(close)
+            payload = json.loads(match.group("payload"))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], str):
+            sources.append(payload[1])
+
+    objects: list[dict[str, Any]] = []
+    for source in sources:
+        for match in REACT_QUERY_OBJECT_START_RE.finditer(source):
+            try:
+                value, _ = decoder.raw_decode(source[match.start() :])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if (
+                isinstance(value, dict)
+                and isinstance(value.get("queryKey"), list)
+                and isinstance(value.get("state"), dict)
+            ):
+                objects.append(value)
+    return objects
+
+
+def parse_polymarket_outcome_prices(html: str) -> list[PolymarketOutcomePrice]:
+    grouped: dict[str, list[PolymarketOutcomePrice]] = {}
+    for item in react_query_objects(html):
+        query_key = item.get("queryKey")
+        if (
+            len(query_key) != 6
+            or query_key[:3] != ["crypto-prices", "price", "BTC"]
+            or query_key[4] != "fiveminute"
+        ):
+            continue
+        state = item.get("state")
+        if not isinstance(state, dict) or state.get("status") != "success":
+            continue
+        data = state.get("data")
+        if not isinstance(data, dict):
+            continue
+        try:
+            start = datetime.fromisoformat(str(query_key[3]).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(query_key[5]).replace("Z", "+00:00"))
+            open_price = float(data["openPrice"])
+            close = data.get("closePrice")
+            close_price = None if close is None else float(close)
+            updated_at_ms = int(state.get("dataUpdatedAt") or item.get("dehydratedAt") or 0)
         except (TypeError, ValueError):
+            continue
+        numeric_prices = [open_price] + ([] if close_price is None else [close_price])
+        if (
+            end - start != timedelta(minutes=5)
+            or not all(math.isfinite(value) and 1000 <= value <= 1_000_000 for value in numeric_prices)
+        ):
             continue
         slug = f"btc-updown-5m-{int(start.timestamp())}"
-        if slug in seen:
+        grouped.setdefault(slug, []).append(
+            PolymarketOutcomePrice(
+                slug=slug,
+                open_price=open_price,
+                close_price=close_price,
+                start_time=start,
+                end_time=end,
+                updated_at_ms=updated_at_ms,
+            )
+        )
+    prices: list[PolymarketOutcomePrice] = []
+    for candidates in grouped.values():
+        opens = [candidate.open_price for candidate in candidates]
+        if max(opens) - min(opens) > PRICE_CONFLICT_TOLERANCE:
             continue
-        seen.add(slug)
-        prices.append(PolymarketOutcomePrice(slug=slug, open_price=open_price, close_price=close_price))
-    for match in OUTCOME_PRICE_RE.finditer(normalized):
-        slug = match.group("slug")
-        if slug in seen:
+        closes = [candidate.close_price for candidate in candidates if candidate.close_price is not None]
+        if closes and max(closes) - min(closes) > PRICE_CONFLICT_TOLERANCE:
             continue
-        try:
-            open_price = float(match.group("open"))
-            close = match.group("close")
-            close_price = float(close) if close is not None else None
-        except (TypeError, ValueError):
-            continue
-        seen.add(slug)
-        prices.append(PolymarketOutcomePrice(slug=slug, open_price=open_price, close_price=close_price))
-    return prices
+        prices.append(max(candidates, key=lambda candidate: candidate.updated_at_ms))
+    return sorted(prices, key=lambda candidate: candidate.start_time or datetime.min.replace(tzinfo=timezone.utc))
 
 
 class BinanceClient:
@@ -649,8 +716,26 @@ class PolymarketClient:
                 ) as websocket:
                     connected = True
                     await websocket.send(json.dumps(subscription, separators=(",", ":"), ensure_ascii=False))
-                    async for message in websocket:
-                        for tick in parse_rtds_crypto_price_message(message, symbol=symbol):
+                    loop = asyncio.get_running_loop()
+                    last_tick_at = loop.time()
+                    while True:
+                        remaining = self.config.rtds_stale_seconds - (loop.time() - last_tick_at)
+                        if remaining <= 0:
+                            raise TimeoutError(
+                                f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
+                                f"{self.config.rtds_stale_seconds:g} seconds"
+                            )
+                        try:
+                            message = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+                        except asyncio.TimeoutError as exc:
+                            raise TimeoutError(
+                                f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
+                                f"{self.config.rtds_stale_seconds:g} seconds"
+                            ) from exc
+                        ticks = parse_rtds_crypto_price_message(message, symbol=symbol)
+                        if ticks:
+                            last_tick_at = loop.time()
+                        for tick in ticks:
                             yield tick
             except Exception:
                 if connected or options == options_list[-1]:
@@ -668,9 +753,55 @@ class PolymarketClient:
         return response.text
 
     async def market_page_data(self, market_slug: str) -> tuple[PolymarketOutcomePrice | None, list[PolymarketPastResult]]:
-        text = await self.event_page_text(market_slug, self.config.threshold_page_timeout_seconds)
-        outcome_price = next((price for price in parse_polymarket_outcome_prices(text) if price.slug == market_slug), None)
-        return outcome_price, parse_polymarket_past_results(text)
+        interval = market_interval_from_slug(market_slug)
+        previous_slug = None
+        requests = [self.event_page_text(market_slug, self.config.threshold_page_timeout_seconds)]
+        if interval is not None:
+            previous_start = interval[0] - timedelta(minutes=5)
+            previous_slug = f"btc-updown-5m-{int(previous_start.timestamp())}"
+            requests.append(self.event_page_text(previous_slug, self.config.threshold_page_timeout_seconds))
+        responses = await asyncio.gather(*requests, return_exceptions=True)
+        if isinstance(responses[0], Exception):
+            raise responses[0]
+        current_text = responses[0]
+        assert isinstance(current_text, str)
+        outcome_price = next(
+            (price for price in parse_polymarket_outcome_prices(current_text) if price.slug == market_slug),
+            None,
+        )
+        results = parse_polymarket_past_results(current_text)
+        if interval is not None:
+            # The previous close must come from the previous market's own page.
+            # Do not let a cached/current-page past-results list satisfy the
+            # independent second-source requirement.
+            results = [
+                result
+                for result in results
+                if not (
+                    result.start_time == interval[0] - timedelta(minutes=5)
+                    and result.end_time == interval[0]
+                )
+            ]
+        if previous_slug is not None and len(responses) > 1 and isinstance(responses[1], str):
+            previous_outcome = next(
+                (price for price in parse_polymarket_outcome_prices(responses[1]) if price.slug == previous_slug),
+                None,
+            )
+            if (
+                previous_outcome is not None
+                and previous_outcome.start_time == interval[0] - timedelta(minutes=5)
+                and previous_outcome.end_time == interval[0]
+                and previous_outcome.close_price is not None
+            ):
+                results.append(
+                    PolymarketPastResult(
+                        start_time=previous_outcome.start_time,
+                        end_time=previous_outcome.end_time,
+                        open_price=previous_outcome.open_price,
+                        close_price=previous_outcome.close_price,
+                    )
+                )
+        return outcome_price, results
 
     async def past_results(self, market_slug: str) -> list[PolymarketPastResult]:
         return parse_polymarket_past_results(await self.event_page_text(market_slug))

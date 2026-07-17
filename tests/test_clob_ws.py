@@ -23,6 +23,7 @@ def test_clob_market_book_and_price_change_update_local_depth() -> None:
     assert books["up"].market_id == "m1"
     assert books["up"].best_bid == 0.48
     assert books["up"].best_ask == 0.52
+    assert books["up"].depth_trusted is True
 
     updates = update_books_from_market_message(
         {
@@ -41,6 +42,7 @@ def test_clob_market_book_and_price_change_update_local_depth() -> None:
     assert updates[0][1].best_bid is None
     assert updates[0][1].best_ask == 0.52
     assert books["up"].market_id == "m1"
+    assert books["up"].depth_trusted is True
     assert [(level.price, level.size) for level in books["up"].bids] == []
     assert [(level.price, level.size) for level in books["up"].asks] == [(0.52, 12.0), (0.53, 8.0)]
 
@@ -210,6 +212,7 @@ def test_clob_market_updates_best_bid_ask_from_top_of_book_event() -> None:
     assert [token_id for token_id, _ in updates] == ["up"]
     assert books["up"].best_bid == 0.49
     assert books["up"].best_ask == 0.51
+    assert books["up"].depth_trusted is False
 
 
 def test_clob_best_bid_ask_can_seed_a_book_and_reject_stale_update() -> None:
@@ -230,6 +233,7 @@ def test_clob_best_bid_ask_can_seed_a_book_and_reject_stale_update() -> None:
     assert [token_id for token_id, _ in updates] == ["up"]
     assert books["up"].best_bid == 0.49
     assert books["up"].best_ask == 0.51
+    assert books["up"].depth_trusted is False
 
     updates = update_books_from_market_message(
         {

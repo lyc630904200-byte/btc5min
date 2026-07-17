@@ -25,6 +25,7 @@ class ExitReason(StrEnum):
     BOOK_DIRECTION_CONFLICT = "book_direction_conflict"
     REVERSE_BREAK = "reverse_break"
     EDGE_FADED = "edge_faded"
+    MAX_LOSS_USD = "max_loss_usd"
     TAKE_PROFIT = "take_profit"
     MAX_HOLD_SECONDS = "max_hold_seconds"
     FORCE_EXIT = "force_exit"
@@ -49,6 +50,7 @@ class OrderBookSnapshot(BaseModel):
     received_at: datetime = Field(default_factory=utc_now)
     bids: list[BookLevel] = Field(default_factory=list)
     asks: list[BookLevel] = Field(default_factory=list)
+    depth_trusted: bool = False
     min_order_size: float = 5.0
     tick_size: float = 0.01
     raw: dict[str, Any] | None = None
@@ -83,6 +85,13 @@ class MarketState(BaseModel):
     threshold_price: float | None
     threshold_source: str | None = None
     threshold_observed_at: datetime | None = None
+    threshold_verified: bool = False
+    threshold_fetched_at: datetime | None = None
+    threshold_candidate_price: float | None = None
+    threshold_candidate_source: str | None = None
+    threshold_candidate_observed_at: datetime | None = None
+    threshold_candidate_received_at: datetime | None = None
+    threshold_candidate_conflicted: bool = False
     start_time: datetime | None = None
     end_time: datetime
     up_token_id: str
@@ -115,6 +124,8 @@ class Fill(BaseModel):
     quote: float
     slippage: float
     fee_usd: float = 0.0
+    strategy_direction: Direction | None = None
+    reverse_entry: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     reason: str
 
@@ -132,6 +143,12 @@ class Position(BaseModel):
     taker_fee_rate: float = 0.0
     opened_at: datetime
     entry_edge_usd: float
+    strategy_direction: Direction | None = None
+    reverse_entry: bool = False
+    strategy_entry_price: float | None = None
+    strategy_quantity: float | None = None
+    strategy_entry_quote: float | None = None
+    strategy_entry_fee_usd: float = 0.0
     status: str = "OPEN"
     exit_price: float | None = None
     exit_quote: float = 0.0
@@ -154,6 +171,8 @@ class Signal(BaseModel):
     threshold_price: float
     edge_usd: float
     ask_price: float
+    execution_direction: Direction | None = None
+    reverse_entry: bool = False
     reason: str
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -168,6 +187,8 @@ class ExitEvent(BaseModel):
     quantity: float
     pnl: float
     fee_usd: float = 0.0
+    strategy_direction: Direction | None = None
+    reverse_entry: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -176,6 +197,8 @@ class PnLReport(BaseModel):
     closed_positions: int = 0
     open_positions: int = 0
     realized_pnl: float = 0.0
+    normal_realized_pnl: float = 0.0
+    reverse_realized_pnl: float = 0.0
     settlement_pnl: float = 0.0
     take_profit_pnl: float = 0.0
     risk_exit_pnl: float = 0.0
