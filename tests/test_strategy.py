@@ -1273,7 +1273,7 @@ def test_reverse_entry_checks_actual_minimum_order_size() -> None:
     assert decision.reason == "reverse_below_min_order_size"
 
 
-def test_reverse_exit_uses_signal_book_for_take_profit_and_actual_book_for_sale() -> None:
+def test_reverse_exit_uses_actual_book_for_take_profit() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     strategy = StrategyConfig(
         min_entry_edge_usd=10,
@@ -1304,19 +1304,30 @@ def test_reverse_exit_uses_signal_book_for_take_profit_and_actual_book_for_sale(
         now=now,
     )
 
-    decision = evaluate_exit(position, exit_state, strategy, RiskConfig(max_loss_usd=100))
+    source_take_profit = evaluate_exit(position, exit_state, strategy, RiskConfig(max_loss_usd=100))
+
+    assert source_take_profit.should_exit is False
+
+    actual_take_profit_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.75, 0.76, now),
+        down_book=book("down", 0.55, 0.56, now),
+        now=now,
+    )
+    decision = evaluate_exit(position, actual_take_profit_state, strategy, RiskConfig(max_loss_usd=100))
 
     assert decision.should_exit is True
     assert decision.reason == ExitReason.TAKE_PROFIT
     assert decision.fill is not None
     assert decision.fill.direction == Direction.DOWN
-    assert decision.fill.avg_price == 0.20
+    assert decision.fill.avg_price == 0.55
     assert decision.fill.reverse_entry is True
     assert decision.event is not None
-    assert decision.event.pnl < 0
+    assert decision.event.pnl > 0
 
 
-def test_reverse_exit_uses_signal_position_for_max_loss() -> None:
+def test_reverse_exit_uses_actual_position_for_max_loss() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     strategy = StrategyConfig(min_entry_edge_usd=10, reverse_entry_enabled=True)
     entry_state = StrategyState(
@@ -1339,15 +1350,147 @@ def test_reverse_exit_uses_signal_position_for_max_loss() -> None:
         market=market(now),
         price_tick=PriceTick(price=118070, received_at=now),
         up_book=book("up", 0.40, 0.41, now),
-        down_book=book("down", 0.35, 0.36, now),
+        down_book=book("down", 0.40, 0.41, now),
         now=now,
     )
 
-    decision = evaluate_exit(position, exit_state, strategy, RiskConfig(max_loss_usd=2.5))
+    same_price = evaluate_exit(position, exit_state, strategy, RiskConfig(max_loss_usd=1))
+
+    assert same_price.should_exit is False
+
+    actual_loss_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.40, 0.41, now),
+        down_book=book("down", 0.35, 0.36, now),
+        now=now,
+    )
+    decision = evaluate_exit(position, actual_loss_state, strategy, RiskConfig(max_loss_usd=1))
 
     assert decision.should_exit is True
     assert decision.reason == ExitReason.MAX_LOSS_USD
     assert decision.fill is not None and decision.fill.direction == Direction.DOWN
+
+
+def test_reverse_exit_requires_book_to_support_actual_position_after_delay() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = StrategyConfig(
+        min_entry_edge_usd=10,
+        take_profit_ticks=0.50,
+        reverse_entry_enabled=True,
+    )
+    entry_state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now),
+        up_book=book("up", 0.58, 0.60, now),
+        down_book=book("down", 0.38, 0.40, now),
+        now=now,
+    )
+    entry = evaluate_entry(entry_state, strategy, RiskConfig())
+    assert entry.fill is not None
+    position = position_from_entry(
+        entry.fill,
+        edge=70,
+        opened_at=now,
+        taker_fee_rate=strategy.taker_fee_rate,
+        strategy_execution=entry.strategy_execution,
+    )
+
+    before_delay = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now + timedelta(seconds=9)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=9)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=9)),
+        now=now + timedelta(seconds=9),
+    )
+    after_delay = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=118070, received_at=now + timedelta(seconds=10)),
+        up_book=book("up", 0.58, 0.60, now + timedelta(seconds=10)),
+        down_book=book("down", 0.38, 0.40, now + timedelta(seconds=10)),
+        now=now + timedelta(seconds=10),
+    )
+
+    assert evaluate_exit(position, before_delay, strategy, RiskConfig(max_loss_usd=100)).should_exit is False
+    decision = evaluate_exit(position, after_delay, strategy, RiskConfig(max_loss_usd=100))
+    assert decision.should_exit is True
+    assert decision.reason == ExitReason.BOOK_DIRECTION_CONFLICT
+
+
+def test_reverse_book_conflict_uses_inverted_live_edge_direction() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = StrategyConfig(
+        stop_edge_usd=10,
+        take_profit_ticks=0.50,
+        reverse_entry_enabled=True,
+    )
+    position = Position(
+        position_id="reverse-down",
+        market_id="m1",
+        token_id="down",
+        direction=Direction.DOWN,
+        entry_price=0.40,
+        quantity=20,
+        entry_quote=8,
+        opened_at=now,
+        entry_edge_usd=70,
+        strategy_direction=Direction.UP,
+        reverse_entry=True,
+    )
+    # Raw edge is now DOWN (-70), so the reverse position first sees an
+    # effective UP edge (+70).  A DOWN book therefore conflicts with that
+    # inverted edge, even though DOWN is the token currently held.
+    state = StrategyState(
+        market=market(now),
+        price_tick=PriceTick(price=117930, received_at=now + timedelta(seconds=10)),
+        up_book=book("up", 0.39, 0.40, now + timedelta(seconds=10)),
+        down_book=book("down", 0.59, 0.60, now + timedelta(seconds=10)),
+        now=now + timedelta(seconds=10),
+    )
+
+    decision = evaluate_exit(position, state, strategy, RiskConfig(max_loss_usd=100))
+
+    assert decision.should_exit is True
+    assert decision.reason == ExitReason.BOOK_DIRECTION_CONFLICT
+    assert decision.event is not None
+    assert decision.event.edge_usd == 70
+
+
+def test_reverse_exit_uses_inverted_edge_for_both_actual_directions() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    strategy = StrategyConfig(min_entry_edge_usd=10, stop_edge_usd=10, reverse_entry_enabled=True)
+
+    for entry_price, faded_price, actual_direction in (
+        (118070, 118010, Direction.DOWN),
+        (117930, 117990, Direction.UP),
+    ):
+        entry_state = StrategyState(
+            market=market(now),
+            price_tick=PriceTick(price=entry_price, received_at=now),
+            up_book=(book("up", 0.58, 0.60, now) if entry_price > 118000 else book("up", 0.38, 0.40, now)),
+            down_book=(book("down", 0.38, 0.40, now) if entry_price > 118000 else book("down", 0.58, 0.60, now)),
+            now=now,
+        )
+        entry = evaluate_entry(entry_state, strategy, RiskConfig())
+        assert entry.fill is not None and entry.fill.direction == actual_direction
+        position = position_from_entry(
+            entry.fill,
+            edge=entry.signal.edge_usd if entry.signal else 0,
+            opened_at=now,
+            taker_fee_rate=strategy.taker_fee_rate,
+            strategy_execution=entry.strategy_execution,
+        )
+        exit_state = StrategyState(
+            market=market(now),
+            price_tick=PriceTick(price=faded_price, received_at=now),
+            up_book=book("up", 0.39, 0.40, now),
+            down_book=book("down", 0.39, 0.40, now),
+            now=now,
+        )
+
+        decision = evaluate_exit(position, exit_state, strategy, RiskConfig(max_loss_usd=100))
+        assert decision.should_exit is True
+        assert decision.reason == ExitReason.EDGE_FADED
 
 
 def test_engine_summary_splits_normal_and_reverse_realized_pnl() -> None:

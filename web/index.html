@@ -97,6 +97,7 @@
 
     .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .metric { min-height: 74px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: grid; align-content: space-between; gap: 8px; }
+    .metric-wide { grid-column: 1 / -1; }
     .metric-name { color: var(--muted); font-size: 12px; }
     .metric-value { color: var(--ink); font-size: 23px; line-height: 1; font-weight: 780; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .metric-input { width: 100%; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); padding: 0 8px; text-align: right; font: inherit; font-size: 20px; font-weight: 760; font-variant-numeric: tabular-nums; }
@@ -209,6 +210,7 @@
             <div class="metric"><div class="metric-name">Polymarket BTC</div><div class="metric-value" id="polymarketPrice">--</div></div>
             <div class="metric"><div class="metric-name">价格偏离</div><div class="metric-value" id="edgeValue">--</div></div>
             <div class="metric"><div class="metric-name">偏离修正</div><div class="metric-value" id="edgeCorrection">--</div></div>
+            <div class="metric metric-wide"><div class="metric-name">有效偏离</div><div class="metric-value" id="effectiveEdgeValue">--</div></div>
             <div class="metric"><div class="metric-name">UP 卖一</div><div class="metric-value" id="upAsk">--</div></div>
             <div class="metric"><div class="metric-name">DOWN 卖一</div><div class="metric-value" id="downAsk">--</div></div>
           </div>
@@ -437,7 +439,10 @@
       const threshold = market?.threshold_price;
       const edge = threshold ? Number(tick.price) - Number(threshold) - correction : null;
       const last = history[history.length - 1];
-      if (last && last.time === tick.received_at) return;
+      if (last && last.time === tick.received_at) {
+        last.edge = edge;
+        return;
+      }
       history.push({ time: tick.received_at, price: Number(tick.price), threshold: threshold ? Number(threshold) : null, edge });
       while (history.length > 180) history.shift();
     }
@@ -550,15 +555,18 @@
       const polymarketPrice = polymarketTick?.price ? Number(polymarketTick.price) : null;
       const correction = dynamicCorrection(snapshot, price, polymarketPrice);
       const rawEdge = threshold !== null && price !== null ? price - threshold : null;
-      const edge = rawEdge !== null ? rawEdge - correction : null;
+      const marketEdge = rawEdge !== null ? rawEdge - correction : null;
+      const reversePositionOpen = position?.reverse_entry === true;
+      const effectiveEdge = reversePositionOpen && marketEdge !== null ? -marketEdge : marketEdge;
       updateHistory(tick, market, correction);
       $('btcPrice').textContent = fmtPrice(price);
       $('polymarketPrice').textContent = fmtPrice(polymarketPrice);
       $('edgeCorrection').textContent = fmtSigned(correction, 2);
       $('edgeCorrection').style.color = correction >= 0 ? 'var(--green)' : 'var(--red)';
-      $('edgeValue').textContent = fmtSigned(edge, 2);
-      $('edgeTag').textContent = edge === null ? '--' : `${fmtSigned(edge, 0)} USD`;
-      $('edgeTag').className = 'tag ' + classForEdge(edge);
+      $('edgeValue').textContent = fmtSigned(marketEdge, 2);
+      $('effectiveEdgeValue').textContent = fmtSigned(effectiveEdge, 2);
+      $('edgeTag').textContent = marketEdge === null ? '--' : `${fmtSigned(marketEdge, 0)} USD`;
+      $('edgeTag').className = 'tag ' + classForEdge(marketEdge);
       $('upAsk').textContent = fmtProb(bestAsk(upBook));
       $('downAsk').textContent = fmtProb(bestAsk(downBook));
       $('tickAge').textContent = tick?.received_at ? fmtTime(tick.received_at) : '--';
@@ -599,7 +607,8 @@
       $('decisionTag').className = 'tag ' + (position ? 'green' : lastRejection ? 'amber' : 'blue');
       const reasons = [
         ['阈值', market?.threshold_price ? fmtPrice(market.threshold_price) : '等待开盘'],
-        ['偏离', fmtSigned(edge, 2)],
+        ['价格偏离', fmtSigned(marketEdge, 2)],
+        ['有效偏离', fmtSigned(effectiveEdge, 2)],
         ['修正', fmtSigned(correction, 2)],
         ['Polymarket BTC', fmtPrice(polymarketPrice)],
         ['反买模式', (snapshot.pending_strategy || snapshot.strategy || {}).reverse_entry_enabled ? '开启' : '关闭'],

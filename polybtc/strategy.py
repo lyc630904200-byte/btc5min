@@ -275,39 +275,38 @@ def choose_exit_reason(
     state: StrategyState,
     strategy: StrategyConfig,
     risk: RiskConfig,
-    strategy_execution: ExecutionResult,
+    execution: ExecutionResult,
 ) -> ExitReason | None:
     edge = corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd)
+    effective_edge = -edge if edge is not None and position.reverse_entry else edge
     held_seconds = (state.now - position.opened_at).total_seconds()
     book_direction = orderbook_direction(state.up_book, state.down_book)
+    # Once a reverse order is open, invert the live edge first.  Every
+    # directional exit rule below then follows the same rules as a normal
+    # position, using that inverted edge as its source of truth.
+    expected_book_direction = edge_direction(effective_edge)
     if (
-        edge is not None
+        effective_edge is not None
         and held_seconds >= strategy.book_direction_exit_delay_seconds
         and book_direction is not None
-        and book_direction != edge_direction(edge)
+        and book_direction != expected_book_direction
     ):
         return ExitReason.BOOK_DIRECTION_CONFLICT
-    strategy_direction = position.strategy_direction or position.direction
-    book = state.up_book if strategy_direction == Direction.UP else state.down_book
+    book = state.up_book if position.direction == Direction.UP else state.down_book
     best_bid = book.best_bid
     expiry_seconds = seconds_to_expiry(state.market, state.now)
 
-    strategy_entry_quote = position.strategy_entry_quote if position.strategy_entry_quote is not None else position.entry_quote
-    if book.depth_trusted and strategy_execution.complete:
-        liquidation_pnl = strategy_execution.quote - strategy_execution.fee_usd - strategy_entry_quote
+    if book.depth_trusted and execution.complete:
+        liquidation_pnl = execution.quote - execution.fee_usd - position.entry_quote
         if liquidation_pnl <= -risk.max_loss_usd:
             return ExitReason.MAX_LOSS_USD
 
-    # The configured stop edge is also the "edge faded" threshold.  Entry
-    # still uses min_entry_edge_usd, leaving a buffer between opening a
-    # position and closing it when the directional advantage weakens.
-    if edge is not None:
-        if strategy_direction == Direction.UP and edge <= strategy.stop_edge_usd:
+    if effective_edge is not None:
+        if position.direction == Direction.UP and effective_edge <= strategy.stop_edge_usd:
             return ExitReason.EDGE_FADED
-        if strategy_direction == Direction.DOWN and edge >= -strategy.stop_edge_usd:
+        if position.direction == Direction.DOWN and effective_edge >= -strategy.stop_edge_usd:
             return ExitReason.EDGE_FADED
-    strategy_entry_price = position.strategy_entry_price if position.strategy_entry_price is not None else position.entry_price
-    if best_bid is not None and best_bid >= strategy_entry_price + strategy.take_profit_ticks:
+    if best_bid is not None and best_bid >= position.entry_price + strategy.take_profit_ticks:
         return ExitReason.TAKE_PROFIT
     if held_seconds >= risk.max_hold_seconds:
         return ExitReason.MAX_HOLD_SECONDS
@@ -325,13 +324,7 @@ def evaluate_exit(
     actual_book = state.up_book if position.direction == Direction.UP else state.down_book
     execution = simulate_sell(actual_book, position.quantity, strategy.taker_fee_rate)
     strategy_direction = position.strategy_direction or position.direction
-    strategy_book = state.up_book if strategy_direction == Direction.UP else state.down_book
-    strategy_quantity = position.strategy_quantity if position.strategy_quantity is not None else position.quantity
-    if strategy_direction == position.direction and strategy_quantity == position.quantity:
-        strategy_execution = execution
-    else:
-        strategy_execution = simulate_sell(strategy_book, strategy_quantity, strategy.taker_fee_rate)
-    reason = choose_exit_reason(position, state, strategy, risk, strategy_execution=strategy_execution)
+    reason = choose_exit_reason(position, state, strategy, risk, execution=execution)
     if reason is None:
         return ExitDecision(False)
 
@@ -339,6 +332,9 @@ def evaluate_exit(
         return ExitDecision(False, reason=reason)
 
     pnl = execution.quote - execution.fee_usd - position.entry_quote
+    exit_edge = corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd)
+    if exit_edge is not None and position.reverse_entry:
+        exit_edge = -exit_edge
     fill = Fill(
         fill_id=str(uuid4()),
         position_id=position.position_id,
@@ -361,7 +357,7 @@ def evaluate_exit(
         market_id=position.market_id,
         direction=position.direction,
         reason=reason,
-        edge_usd=corrected_edge_usd(state.market, state.price_tick, state.edge_correction_usd),
+        edge_usd=exit_edge,
         price=execution.avg_price,
         quantity=execution.quantity,
         pnl=pnl,
