@@ -120,7 +120,7 @@ class RiskConfig(BaseModel):
 
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
-    data_cleanup_enabled: bool = False
+    data_cleanup_enabled: bool = True
     data_retention_hours: float = 24.0
     data_cleanup_interval_seconds: float = 300.0
     sources: SourceConfig = Field(default_factory=SourceConfig)

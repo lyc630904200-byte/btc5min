@@ -1,5 +1,5 @@
 data_dir: data
-data_cleanup_enabled: false
+data_cleanup_enabled: true
 data_retention_hours: 24
 data_cleanup_interval_seconds: 300
 

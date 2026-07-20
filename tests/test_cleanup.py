@@ -41,8 +41,12 @@ def test_cleanup_loop_returns_without_removing_runs_when_disabled(tmp_path) -> N
     expired_at = datetime.now(timezone.utc) - timedelta(hours=25)
     os.utime(expired, (expired_at.timestamp(), expired_at.timestamp()))
     journal = RunJournal(active)
-    config = AppConfig(data_dir=data_dir)
+    config = AppConfig(data_dir=data_dir, data_cleanup_enabled=False)
 
     asyncio.run(asyncio.wait_for(data_cleanup_loop(config, active, journal), timeout=0.1))
 
     assert expired.exists()
+
+
+def test_data_cleanup_is_enabled_by_default() -> None:
+    assert AppConfig().data_cleanup_enabled is True
