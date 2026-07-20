@@ -79,6 +79,7 @@ def rest_request_started_at(book: OrderBookSnapshot) -> datetime | None:
 
 
 class MarketState(BaseModel):
+    asset: str = "BTC"
     condition_id: str
     slug: str
     question: str

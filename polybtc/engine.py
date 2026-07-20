@@ -22,8 +22,10 @@ class PaperEngine:
         config: AppConfig,
         entry_registry: MarketEntryRegistry | None = None,
         run_id: str = "memory",
+        asset: str = "BTC",
     ):
         self.config = config
+        self.asset = asset.upper()
         self.entry_registry = entry_registry or InMemoryMarketEntryRegistry()
         self.run_id = run_id
         self.market: MarketState | None = None
@@ -40,6 +42,7 @@ class PaperEngine:
         self.last_rejection_at_by_reason: dict[str, datetime] = {}
         self.market_exposure_usd = 0.0
         self.market_trade_count = 0
+        self.entry_enabled = True
         self.entry_confirmation_direction: Direction | None = None
         self.entry_confirmation_started_at: datetime | None = None
         self.entry_confirmation_last_at: datetime | None = None
@@ -122,6 +125,8 @@ class PaperEngine:
         self.evaluate(tick.received_at)
 
     def set_polymarket_tick(self, tick: PriceTick) -> None:
+        if tick.symbol.upper() != f"{self.asset}/USD":
+            return
         self.remember_polymarket_tick(tick)
         self.polymarket_tick = tick
         self.apply_polymarket_start_threshold_candidate()
@@ -130,7 +135,7 @@ class PaperEngine:
     def remember_polymarket_tick(self, tick: PriceTick) -> None:
         if (
             tick.source != "polymarket_rtds"
-            or tick.symbol.upper() != "BTC/USD"
+            or tick.symbol.upper() != f"{self.asset}/USD"
             or tick.exchange_timestamp is None
             or not math.isfinite(tick.price)
         ):
@@ -308,6 +313,11 @@ class PaperEngine:
                 )
             else:
                 self._settle_if_expired(now)
+            return
+
+        if not self.entry_enabled:
+            self.reset_entry_confirmation()
+            self.record_rejection("pair_match_replaces_single_strategy", now)
             return
 
         entry = evaluate_entry(state, self.config.strategy, self.config.risk)

@@ -26,6 +26,7 @@ class DashboardHub:
         self.runtime_settings_path = self.config.data_dir / "dashboard-settings.json"
         self.pending_config: dict[str, dict[str, Any]] | None = None
         self.pending_after_market_id: str | None = None
+        self.pending_after_market_ids: set[str] = set()
         self._load_runtime_settings()
         self.latest: dict[str, Any] = {
             "type": "snapshot",
@@ -37,13 +38,26 @@ class DashboardHub:
             "books": {},
             "open_position": None,
             "summary": {},
+            "pair_match": {
+                "status": "starting",
+                "config": self.config.pair_match.model_dump(mode="json"),
+                "candidates": {},
+                "summary": {},
+                "recent_orders": [],
+                "recent_markets": [],
+            },
             "events": [],
+            "assets": {},
             "strategy": self.config_json()["strategy"],
             "risk": self.config_json()["risk"],
             **self.config_status_json(),
             "ws_url": self.ws_url,
         }
         self.events: list[dict[str, Any]] = []
+        self.events_by_asset: dict[str, list[dict[str, Any]]] = {
+            asset: [] for asset in self.config.sources.enabled_assets
+        }
+        self.asset_snapshots: dict[str, dict[str, Any]] = {}
         self.clients: set[Any] = set()
         self.lock = asyncio.Lock()
         self.last_push_at = datetime.min.replace(tzinfo=timezone.utc)
@@ -122,6 +136,7 @@ class DashboardHub:
         if not market:
             return None
         keys = [
+            "asset",
             "condition_id",
             "slug",
             "question",
@@ -197,6 +212,7 @@ class DashboardHub:
                 "max_loss_usd": risk.max_loss_usd,
                 "max_trades_per_market": risk.max_trades_per_market,
             },
+            "pair_match": self.config.pair_match.model_dump(mode="json"),
         }
 
     def config_status_json(self) -> dict[str, Any]:
@@ -205,6 +221,7 @@ class DashboardHub:
             "config_status": "pending_next_market" if self.pending_config else "active",
             "pending_strategy": pending.get("strategy"),
             "pending_risk": pending.get("risk"),
+            "pending_pair_match": pending.get("pair_match"),
         }
 
     def _load_runtime_settings(self) -> None:
@@ -222,13 +239,17 @@ class DashboardHub:
                 strategy_payload.update(active.get("strategy") or {})
                 risk_payload = self.config.risk.model_dump()
                 risk_payload.update(active.get("risk") or {})
+                pair_payload = self.config.pair_match.model_dump()
+                pair_payload.update(active.get("pair_match") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
                 risk = type(self.config.risk).model_validate(risk_payload)
+                pair_match = type(self.config.pair_match).model_validate(pair_payload)
             except (TypeError, ValueError):
                 pass
             else:
                 self.config.strategy = strategy
                 self.config.risk = risk
+                self.config.pair_match = pair_match
 
         pending = payload.get("pending")
         if isinstance(pending, dict):
@@ -237,22 +258,36 @@ class DashboardHub:
                 strategy_payload.update(pending.get("strategy") or {})
                 risk_payload = self.config.risk.model_dump()
                 risk_payload.update(pending.get("risk") or {})
+                pair_payload = self.config.pair_match.model_dump()
+                pair_payload.update(pending.get("pair_match") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
                 risk = type(self.config.risk).model_validate(risk_payload)
+                pair_match = type(self.config.pair_match).model_validate(pair_payload)
             except (TypeError, ValueError):
                 return
-            self.pending_config = {"strategy": strategy.model_dump(), "risk": risk.model_dump()}
+            self.pending_config = {
+                "strategy": strategy.model_dump(),
+                "risk": risk.model_dump(),
+                "pair_match": pair_match.model_dump(),
+            }
             after_market = payload.get("apply_after_market_id")
             self.pending_after_market_id = str(after_market) if after_market else None
+            after_markets = payload.get("apply_after_market_ids")
+            if isinstance(after_markets, list):
+                self.pending_after_market_ids = {str(value) for value in after_markets if value}
+            elif self.pending_after_market_id:
+                self.pending_after_market_ids = {self.pending_after_market_id}
 
     def _save_runtime_settings(self) -> None:
         payload = {
             "active": {
                 "strategy": self.config.strategy.model_dump(),
                 "risk": self.config.risk.model_dump(),
+                "pair_match": self.config.pair_match.model_dump(),
             },
             "pending": self.pending_config,
             "apply_after_market_id": self.pending_after_market_id,
+            "apply_after_market_ids": sorted(self.pending_after_market_ids),
         }
         self.runtime_settings_path.parent.mkdir(parents=True, exist_ok=True)
         self.runtime_settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -264,25 +299,41 @@ class DashboardHub:
         market_id = market.get("condition_id")
         return str(market_id) if market_id else None
 
+    def current_market_ids(self) -> set[str]:
+        market_ids = {
+            str((snapshot.get("market") or {}).get("condition_id"))
+            for snapshot in self.asset_snapshots.values()
+            if (snapshot.get("market") or {}).get("condition_id")
+        }
+        current = self.current_market_id()
+        if current:
+            market_ids.add(current)
+        return market_ids
+
     def apply_pending_config_for_market(self, market_id: str | None) -> bool:
-        if not self.pending_config or not market_id or market_id == self.pending_after_market_id:
+        if not self.pending_config or not market_id or market_id in self.pending_after_market_ids:
             return False
         self.config.strategy = type(self.config.strategy).model_validate(self.pending_config["strategy"])
         self.config.risk = type(self.config.risk).model_validate(self.pending_config["risk"])
+        self.config.pair_match = type(self.config.pair_match).model_validate(self.pending_config["pair_match"])
         self.pending_config = None
         self.pending_after_market_id = None
+        self.pending_after_market_ids = set()
         self._save_runtime_settings()
         return True
 
     def set_runtime_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         strategy_update = payload.get("strategy")
         risk_update = payload.get("risk")
+        pair_update = payload.get("pair_match")
         if strategy_update is not None and not isinstance(strategy_update, dict):
             raise ValueError("strategy must be an object")
         if risk_update is not None and not isinstance(risk_update, dict):
             raise ValueError("risk must be an object")
-        if not strategy_update and not risk_update:
-            raise ValueError("strategy or risk settings are required")
+        if pair_update is not None and not isinstance(pair_update, dict):
+            raise ValueError("pair_match must be an object")
+        if not strategy_update and not risk_update and not pair_update:
+            raise ValueError("strategy, risk, or pair_match settings are required")
 
         strategy_fields = {
             "min_entry_edge_usd",
@@ -299,10 +350,20 @@ class DashboardHub:
             "taker_fee_rate",
         }
         risk_fields = {"max_order_usd", "max_loss_usd", "max_trades_per_market"}
+        pair_fields = {
+            "enabled",
+            "leg_quote_usd",
+            "min_spread_cents",
+            "start_seconds_after_open",
+            "end_seconds_after_open",
+            "max_pairs_per_market",
+            "alternate_directions",
+        }
         unexpected_strategy = set(strategy_update or {}) - strategy_fields
         unexpected_risk = set(risk_update or {}) - risk_fields
-        if unexpected_strategy or unexpected_risk:
-            names = sorted(unexpected_strategy | unexpected_risk)
+        unexpected_pair = set(pair_update or {}) - pair_fields
+        if unexpected_strategy or unexpected_risk or unexpected_pair:
+            names = sorted(unexpected_strategy | unexpected_risk | unexpected_pair)
             raise ValueError(f"unsupported runtime settings: {', '.join(names)}")
 
         pending = self.pending_config or {}
@@ -310,40 +371,83 @@ class DashboardHub:
         strategy_payload.update(strategy_update or {})
         risk_payload = dict(pending.get("risk") or self.config.risk.model_dump())
         risk_payload.update(risk_update or {})
+        pair_payload = dict(pending.get("pair_match") or self.config.pair_match.model_dump())
+        pair_payload.update(pair_update or {})
         strategy = type(self.config.strategy).model_validate(strategy_payload)
         risk = type(self.config.risk).model_validate(risk_payload)
-        self.pending_config = {"strategy": strategy.model_dump(), "risk": risk.model_dump()}
-        self.pending_after_market_id = self.current_market_id()
+        pair_match = type(self.config.pair_match).model_validate(pair_payload)
+        self.pending_config = {
+            "strategy": strategy.model_dump(),
+            "risk": risk.model_dump(),
+            "pair_match": pair_match.model_dump(),
+        }
+        self.pending_after_market_ids = self.current_market_ids()
+        self.pending_after_market_id = next(iter(self.pending_after_market_ids), None)
         self._save_runtime_settings()
         return {**self.config_json(), **self.config_status_json()}
+
+    def pending_config_ready_for_snapshot(self, snapshot: dict[str, Any], asset: str) -> bool:
+        if not self.pending_config:
+            return False
+        prospective = dict(self.asset_snapshots)
+        prospective[asset] = snapshot
+        markets: list[dict[str, Any]] = []
+        for required_asset in self.config.sources.enabled_assets:
+            market = prospective.get(required_asset, {}).get("market") or {}
+            if not isinstance(market, dict) or not market.get("condition_id"):
+                return False
+            markets.append(market)
+        market_ids = {str(market["condition_id"]) for market in markets}
+        if market_ids & self.pending_after_market_ids:
+            return False
+        starts = {market.get("start_time") for market in markets}
+        ends = {market.get("end_time") for market in markets}
+        return len(starts) == 1 and len(ends) == 1
 
     async def publish(self, snapshot: dict[str, Any]) -> None:
         message: str
         event = snapshot.get("event")
         market = snapshot.get("market") or {}
-        if isinstance(event, dict) and event.get("type") == "market" and isinstance(market, dict):
+        asset = str(snapshot.get("asset") or (snapshot.get("market") or {}).get("asset") or "BTC").upper()
+        if (
+            isinstance(event, dict)
+            and event.get("type") == "market"
+            and isinstance(market, dict)
+            and self.pending_config_ready_for_snapshot(snapshot, asset)
+        ):
             market_id = market.get("condition_id")
             self.apply_pending_config_for_market(str(market_id) if market_id else None)
         snapshot = self.compact_snapshot(snapshot)
+        snapshot["asset"] = asset
         async with self.lock:
             event = snapshot.get("event")
             compacted_event = self.compact_event(event) if event else None
             if compacted_event and compacted_event.get("type") == "fill":
+                asset_events = self.events_by_asset.setdefault(asset, [])
+                asset_events.append(compacted_event)
+                self.events_by_asset[asset] = asset_events[-250:]
                 self.events.append(compacted_event)
-                self.events = self.events[-250:]
+                self.events = self.events[-500:]
             snapshot["event"] = compacted_event
             snapshot["status"] = "running"
             snapshot.update(self.config_status_json())
-            snapshot["events"] = list(self.events)
+            snapshot["events"] = list(self.events_by_asset.get(asset, []))
             snapshot["ws_url"] = self.ws_url
-            self.latest = snapshot
+            self.asset_snapshots[asset] = snapshot
+            primary_asset = self.config.sources.enabled_assets[0]
+            primary = self.asset_snapshots.get(primary_asset, snapshot)
+            combined = dict(primary)
+            combined["assets"] = dict(self.asset_snapshots)
+            combined["ws_url"] = self.ws_url
+            combined.update(self.config_status_json())
+            self.latest = combined
             now = datetime.now(timezone.utc)
             event_type = event.get("type") if isinstance(event, dict) else None
             should_push = event_type not in {"tick", "polymarket_tick"} or now - self.last_push_at >= self.push_interval
             if not should_push:
                 return
             self.last_push_at = now
-            message = json.dumps(snapshot, ensure_ascii=False)
+            message = json.dumps(combined, ensure_ascii=False)
             clients = set(self.clients)
         if clients:
             await asyncio.gather(*(client.send(message) for client in clients), return_exceptions=True)
@@ -361,7 +465,7 @@ class DashboardHub:
 
     def state_json(self) -> bytes:
         payload = dict(self.latest)
-        payload["events"] = list(self.events)
+        payload["events"] = list(payload.get("events") or [])
         payload["ws_url"] = self.ws_url
         payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
         payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}

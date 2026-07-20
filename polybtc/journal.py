@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from .models import ExitEvent, Fill, MarketState, OrderBookSnapshot, Position, PriceTick, Signal
+from .pair_match import PairOrder
 
 
 def json_default(value: Any) -> Any:
@@ -109,6 +110,17 @@ class RunJournal:
                 "closed_at",
             ],
         )
+        pair_fields = [
+            "order_id", "interval_key", "direction", "opened_at", "start_time", "end_time",
+            "btc_slug", "btc_token_id", "btc_direction", "btc_avg_price", "btc_quantity",
+            "btc_quote", "btc_fee_usd", "eth_slug", "eth_token_id", "eth_direction",
+            "eth_avg_price", "eth_quantity", "eth_quote", "eth_fee_usd", "spread_cents",
+            "total_cost_usd", "status", "btc_outcome", "eth_outcome", "payout_usd",
+            "realized_pnl", "settled_at",
+        ]
+        self.pair_orders = CsvTable(run_dir / "pair_orders.csv", pair_fields)
+        self.pair_results = CsvTable(run_dir / "pair_results.csv", pair_fields)
+        self.pair_markets = JsonlWriter(run_dir / "pair_markets.jsonl")
         self.latency = CsvTable(run_dir / "latency.csv", ["created_at", "source", "operation", "ok", "latency_ms", "detail"])
 
     def event(self, event_type: str, payload: Any) -> None:
@@ -151,6 +163,39 @@ class RunJournal:
 
     def exit_event(self, event: ExitEvent) -> None:
         self.event("exit", event)
+
+    def _pair_order_row(self, order: PairOrder) -> dict[str, Any]:
+        payload = order.model_dump(mode="json")
+        btc = payload["btc_leg"]
+        eth = payload["eth_leg"]
+        return {
+            "order_id": payload["order_id"], "interval_key": payload["interval_key"],
+            "direction": payload["direction"], "opened_at": payload["opened_at"],
+            "start_time": payload["start_time"], "end_time": payload["end_time"],
+            "btc_slug": btc["market_slug"], "btc_token_id": btc["token_id"],
+            "btc_direction": btc["direction"], "btc_avg_price": btc["avg_price"],
+            "btc_quantity": btc["quantity"], "btc_quote": btc["quote"],
+            "btc_fee_usd": btc["fee_usd"], "eth_slug": eth["market_slug"],
+            "eth_token_id": eth["token_id"], "eth_direction": eth["direction"],
+            "eth_avg_price": eth["avg_price"], "eth_quantity": eth["quantity"],
+            "eth_quote": eth["quote"], "eth_fee_usd": eth["fee_usd"],
+            "spread_cents": payload["spread_cents"], "total_cost_usd": payload["total_cost_usd"],
+            "status": payload["status"], "btc_outcome": payload["btc_outcome"],
+            "eth_outcome": payload["eth_outcome"], "payout_usd": payload["payout_usd"],
+            "realized_pnl": payload["realized_pnl"], "settled_at": payload["settled_at"],
+        }
+
+    def pair_order(self, order: PairOrder) -> None:
+        self.pair_orders.write(self._pair_order_row(order))
+        self.event("pair_order", order)
+
+    def pair_result(self, order: PairOrder) -> None:
+        self.pair_results.write(self._pair_order_row(order))
+        self.event("pair_settlement", order)
+
+    def pair_market(self, summary: dict[str, Any]) -> None:
+        self.pair_markets.write(summary)
+        self.event("pair_market", summary)
 
     def latency_row(self, source: str, operation: str, ok: bool, latency_ms: float | None, detail: str = "") -> None:
         self.latency.write(

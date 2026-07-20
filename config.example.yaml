@@ -4,6 +4,9 @@ data_retention_hours: 24
 data_cleanup_interval_seconds: 300
 
 sources:
+  enabled_assets:
+    - BTC
+    - ETH
   proxy_url: http://127.0.0.1:10808
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
@@ -50,3 +53,12 @@ risk:
   max_hold_seconds: 120
   max_loss_usd: 2.5
   max_trades_per_market: 1
+
+pair_match:
+  enabled: false
+  leg_quote_usd: 10
+  min_spread_cents: 0
+  start_seconds_after_open: 20
+  end_seconds_after_open: 280
+  max_pairs_per_market: 1
+  alternate_directions: true

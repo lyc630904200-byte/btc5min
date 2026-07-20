@@ -17,7 +17,7 @@ from .report import build_report, latest_run_dir
 from .runner import check_connectivity, run_live, run_dir
 
 
-app = typer.Typer(help="Polymarket 5 minute BTC paper trading tool")
+app = typer.Typer(help="Polymarket 5 minute BTC/ETH paper trading tool")
 console = Console()
 
 

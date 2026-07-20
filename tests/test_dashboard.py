@@ -55,6 +55,30 @@ def test_compact_book_keeps_only_top_prices() -> None:
     assert "asks" not in compact
 
 
+def test_dashboard_keeps_btc_and_eth_snapshots_separate() -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+
+    for asset, price in (("BTC", 64000), ("ETH", 3500)):
+        asyncio.run(
+            hub.publish(
+                {
+                    "asset": asset,
+                    "event": {"type": "tick", "payload": {"price": price}},
+                    "market": {"asset": asset, "condition_id": f"{asset}-market", "slug": f"{asset.lower()}-updown-5m-1"},
+                    "tick": {"symbol": f"{asset}USDT", "price": price},
+                    "books": {},
+                }
+            )
+        )
+
+    state = json.loads(hub.state_json())
+
+    assert set(state["assets"]) == {"BTC", "ETH"}
+    assert state["assets"]["BTC"]["tick"]["price"] == 64000
+    assert state["assets"]["ETH"]["tick"]["price"] == 3500
+    assert state["assets"]["ETH"]["market"]["asset"] == "ETH"
+
+
 def test_recent_events_keep_only_fills() -> None:
     hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
 
@@ -198,3 +222,75 @@ def test_old_runtime_settings_gain_new_risk_defaults(tmp_path) -> None:
         "max_loss_usd": 3.5,
         "max_trades_per_market": 2,
     }
+    assert hub.config_json()["pair_match"] == {
+        "enabled": False,
+        "leg_quote_usd": 10.0,
+        "min_spread_cents": 0.0,
+        "start_seconds_after_open": 20,
+        "end_seconds_after_open": 280,
+        "max_pairs_per_market": 1,
+        "alternate_directions": True,
+    }
+
+
+def test_pair_config_is_pending_and_persists_after_activation(tmp_path) -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path))
+
+    response = hub.set_runtime_config(
+        {
+            "pair_match": {
+                "enabled": True,
+                "leg_quote_usd": 25,
+                "min_spread_cents": 2,
+                "start_seconds_after_open": 30,
+                "end_seconds_after_open": 270,
+                "max_pairs_per_market": 3,
+                "alternate_directions": False,
+            }
+        }
+    )
+
+    assert response["pair_match"]["enabled"] is False
+    assert response["pending_pair_match"]["enabled"] is True
+    assert response["pending_pair_match"]["min_spread_cents"] == 2.0
+    assert hub.apply_pending_config_for_market("aligned-1") is True
+
+    reloaded = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path))
+    assert reloaded.config.pair_match.enabled is True
+    assert reloaded.config.pair_match.leg_quote_usd == 25.0
+    assert reloaded.config.pair_match.max_pairs_per_market == 3
+    assert reloaded.config.pair_match.alternate_directions is False
+
+
+def test_pending_config_waits_for_new_aligned_btc_and_eth_markets(tmp_path) -> None:
+    config = AppConfig(data_dir=tmp_path)
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+
+    def snapshot(asset: str, market_id: str, start: str, end: str) -> dict:
+        return {
+            "asset": asset,
+            "event": {"type": "market", "payload": {}},
+            "market": {
+                "asset": asset,
+                "condition_id": market_id,
+                "slug": f"{asset.lower()}-updown-5m-1",
+                "start_time": start,
+                "end_time": end,
+            },
+            "books": {},
+            "pair_match": {},
+        }
+
+    old_start, old_end = "2026-07-20T00:00:00Z", "2026-07-20T00:05:00Z"
+    asyncio.run(hub.publish(snapshot("BTC", "btc-old", old_start, old_end)))
+    asyncio.run(hub.publish(snapshot("ETH", "eth-old", old_start, old_end)))
+    hub.set_runtime_config({"pair_match": {"enabled": True}})
+
+    new_start, new_end = "2026-07-20T00:05:00Z", "2026-07-20T00:10:00Z"
+    asyncio.run(hub.publish(snapshot("BTC", "btc-new", new_start, new_end)))
+    assert hub.config.pair_match.enabled is False
+    assert hub.pending_config is not None
+
+    asyncio.run(hub.publish(snapshot("ETH", "eth-new", new_start, new_end)))
+    assert hub.config.pair_match.enabled is True
+    assert hub.pending_config is None

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "polybtc"
 version = "0.1.0"
-description = "Polymarket 5 minute BTC paper trading research tool"
+description = "Polymarket 5 minute BTC/ETH paper trading research tool"
 requires-python = ">=3.11"
 dependencies = [
   "typer>=0.12",

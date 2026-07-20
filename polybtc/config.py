@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SourceConfig(BaseModel):
+    enabled_assets: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
     proxy_url: str | None = "http://127.0.0.1:10808"
     market_slug: str | None = None
     binance_symbol: str = "BTCUSDT"
@@ -25,6 +26,20 @@ class SourceConfig(BaseModel):
     max_start_price_lag_ms: int = 2000
     market_slug_patterns: list[str] = Field(default_factory=lambda: ["bitcoin", "btc", "up-or-down", "updown"])
     observe_only_on_unverified_settlement: bool = True
+
+    @field_validator("enabled_assets")
+    @classmethod
+    def valid_enabled_assets(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            asset = str(value).strip().upper()
+            if asset not in {"BTC", "ETH"}:
+                raise ValueError(f"unsupported five-minute asset: {asset}")
+            if asset not in normalized:
+                normalized.append(asset)
+        if not normalized:
+            raise ValueError("enabled_assets must contain at least one asset")
+        return normalized
 
     @field_validator("poly_book_poll_ms", "market_refresh_seconds", "max_start_price_lag_ms", "threshold_page_timeout_seconds", "threshold_page_retry_seconds", "rtds_stale_seconds")
     @classmethod
@@ -118,6 +133,49 @@ class RiskConfig(BaseModel):
         return value
 
 
+class PairMatchConfig(BaseModel):
+    enabled: bool = False
+    leg_quote_usd: float = 10.0
+    min_spread_cents: float = 0.0
+    start_seconds_after_open: float = 20.0
+    end_seconds_after_open: float = 280.0
+    max_pairs_per_market: int = 1
+    alternate_directions: bool = True
+
+    @field_validator("leg_quote_usd")
+    @classmethod
+    def positive_leg_quote(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("leg_quote_usd must be positive")
+        return value
+
+    @field_validator("min_spread_cents")
+    @classmethod
+    def valid_spread_cents(cls, value: float) -> float:
+        if not -100 <= value <= 100:
+            raise ValueError("min_spread_cents must be between -100 and 100")
+        return value
+
+    @field_validator("start_seconds_after_open", "end_seconds_after_open")
+    @classmethod
+    def valid_market_second(cls, value: float) -> float:
+        if not 0 <= value <= 300:
+            raise ValueError("pair match market seconds must be between 0 and 300")
+        return value
+
+    @field_validator("max_pairs_per_market")
+    @classmethod
+    def positive_pair_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_pairs_per_market must be at least one")
+        return value
+
+    @model_validator(mode="after")
+    def valid_pair_window(self) -> "PairMatchConfig":
+        if self.start_seconds_after_open >= self.end_seconds_after_open:
+            raise ValueError("start_seconds_after_open must be lower than end_seconds_after_open")
+        return self
+
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
     data_cleanup_enabled: bool = True
@@ -126,6 +184,7 @@ class AppConfig(BaseModel):
     sources: SourceConfig = Field(default_factory=SourceConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    pair_match: PairMatchConfig = Field(default_factory=PairMatchConfig)
 
     @field_validator("data_retention_hours", "data_cleanup_interval_seconds")
     @classmethod

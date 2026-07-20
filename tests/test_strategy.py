@@ -814,6 +814,37 @@ def test_engine_uses_binance_minus_polymarket_as_dynamic_correction() -> None:
     assert engine.signals[-1].edge_usd == 40
 
 
+def test_pair_match_mode_blocks_new_single_asset_entries() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig(strategy={"entry_confirmation_enabled": False}))
+    engine.entry_enabled = False
+    engine.set_market(market(now))
+    engine.set_tick(PriceTick(price=118070, received_at=now))
+    engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
+    engine.set_book(Direction.DOWN, book("down", 0.38, 0.40, now))
+
+    assert engine.open_position is None
+    assert engine.fills == []
+    assert engine.rejections[-1]["reason"] == "pair_match_replaces_single_strategy"
+
+
+def test_pair_match_mode_still_exits_existing_single_asset_position() -> None:
+    now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig(strategy={"entry_confirmation_enabled": False}))
+    engine.set_market(market(now))
+    engine.set_tick(PriceTick(price=118070, received_at=now))
+    engine.set_book(Direction.UP, book("up", 0.58, 0.60, now))
+    engine.set_book(Direction.DOWN, book("down", 0.38, 0.40, now))
+    assert engine.open_position is not None
+
+    engine.entry_enabled = False
+    later = now + timedelta(seconds=1)
+    engine.set_book(Direction.UP, book("up", 0.72, 0.73, later))
+
+    assert engine.open_position is None
+    assert engine.exit_events[-1].reason == ExitReason.TAKE_PROFIT
+
+
 def test_engine_blocks_second_entry_in_same_market_and_resets_for_new_market() -> None:
     now = datetime(2026, 7, 11, 1, 0, tzinfo=timezone.utc)
     engine = PaperEngine(AppConfig(risk={"max_data_age_ms": 10000, "max_trades_per_market": 1}))

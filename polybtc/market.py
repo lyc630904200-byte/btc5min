@@ -10,7 +10,9 @@ from .models import MarketState
 
 
 THRESHOLD_RE = re.compile(r"(?<![\d.])(?:\$\s*)?([1-9]\d{1,2}(?:,?\d{3})+(?:\.\d+)?)")
-BTC_FIVE_MINUTE_SLUG_RE = re.compile(r"^(?:bitcoin-|btc-)updown-5m-(?P<start>\d+)$")
+CRYPTO_FIVE_MINUTE_SLUG_RE = re.compile(
+    r"^(?P<asset>bitcoin|btc|ethereum|eth)-updown-5m-(?P<start>\d+)$"
+)
 FIVE_MINUTES = 5 * 60
 VERIFIED_DYNAMIC_THRESHOLD_SOURCES = {
     "polymarket_page_verified_open_price",
@@ -49,7 +51,7 @@ def parse_json_list(value: Any) -> list[Any]:
 
 
 def market_interval_from_slug(slug: str) -> tuple[datetime, datetime] | None:
-    match = BTC_FIVE_MINUTE_SLUG_RE.fullmatch(slug)
+    match = CRYPTO_FIVE_MINUTE_SLUG_RE.fullmatch(slug)
     if not match:
         return None
     try:
@@ -68,6 +70,8 @@ def market_is_active(market: MarketState, now: datetime) -> bool:
 
 def markets_are_adjacent(current: MarketState, candidate: MarketState) -> bool:
     return (
+        current.asset == candidate.asset
+        and
         current.start_time is not None
         and candidate.start_time is not None
         and current.end_time - current.start_time == timedelta(seconds=FIVE_MINUTES)
@@ -86,6 +90,7 @@ def threshold_is_tradable(market: MarketState) -> bool:
         return True
     common_verified = bool(
         market.threshold_source in VERIFIED_DYNAMIC_THRESHOLD_SOURCES
+        and asset_from_slug(market.slug) == market.asset
         and market.start_time is not None
         and interval == (market.start_time, market.end_time)
         and market.threshold_observed_at == market.start_time
@@ -128,7 +133,7 @@ def parse_threshold(payload: dict[str, Any]) -> float | None:
             parsed = float(str(value).replace(",", ""))
         except (TypeError, ValueError):
             continue
-        if parsed >= 1000:
+        if 0 < parsed <= 1_000_000:
             return parsed
 
     text = " ".join(
@@ -136,18 +141,39 @@ def parse_threshold(payload: dict[str, Any]) -> float | None:
     )
     candidates = [float(match.group(1).replace(",", "")) for match in THRESHOLD_RE.finditer(text)]
     # Ignore Unix-like event timestamps embedded in slugs such as btc-updown-5m-1783704300.
-    btc_like = [candidate for candidate in candidates if 1000 <= candidate <= 1_000_000]
-    return btc_like[0] if btc_like else None
+    crypto_like = [candidate for candidate in candidates if 0 < candidate <= 1_000_000]
+    return crypto_like[0] if crypto_like else None
 
 
-def is_btc_five_min_candidate(payload: dict[str, Any], config: SourceConfig, now: datetime | None = None) -> bool:
+def asset_from_slug(slug: str) -> str | None:
+    match = CRYPTO_FIVE_MINUTE_SLUG_RE.fullmatch(slug)
+    if not match:
+        return None
+    return "BTC" if match.group("asset") in {"bitcoin", "btc"} else "ETH"
+
+
+def text_mentions_asset(text: str, asset: str) -> bool:
+    lowered = text.lower()
+    if asset.upper() == "BTC":
+        return "bitcoin" in lowered or re.search(r"\bbtc\b", lowered) is not None
+    return "ethereum" in lowered or re.search(r"\beth\b", lowered) is not None
+
+
+def is_crypto_five_min_candidate(
+    payload: dict[str, Any],
+    config: SourceConfig,
+    now: datetime | None = None,
+    *,
+    asset: str = "BTC",
+) -> bool:
     now = now or datetime.now(timezone.utc)
     text = " ".join(
         str(payload.get(key) or "") for key in ("question", "title", "slug", "description", "market_slug")
     ).lower()
     if not any(pattern.lower() in text for pattern in config.market_slug_patterns):
         return False
-    if not ("bitcoin" in text or "btc" in text):
+    asset = asset.upper()
+    if not text_mentions_asset(text, asset):
         return False
     if "5m" not in text and "5 min" not in text and "5 minute" not in text and "five minute" not in text:
         if config.market_slug and str(payload.get("slug") or payload.get("market_slug") or "") == config.market_slug:
@@ -165,12 +191,17 @@ def is_btc_five_min_candidate(payload: dict[str, Any], config: SourceConfig, now
     return -60 <= delta <= 12 * 60
 
 
-def settlement_is_comparable(payload: dict[str, Any]) -> bool:
+def is_btc_five_min_candidate(payload: dict[str, Any], config: SourceConfig, now: datetime | None = None) -> bool:
+    return is_crypto_five_min_candidate(payload, config, now=now, asset="BTC")
+
+
+def settlement_is_comparable(payload: dict[str, Any], asset: str = "BTC") -> bool:
     text = " ".join(str(payload.get(key) or "") for key in ("description", "resolutionSource", "question", "slug"))
     lowered = text.lower()
-    if "bitcoin" not in lowered and "btc" not in lowered:
+    asset = asset.upper()
+    if not text_mentions_asset(lowered, asset):
         return False
-    if "binance" in lowered or "chain.link" in lowered or "chainlink" in lowered or "btc" in lowered or "bitcoin" in lowered:
+    if "binance" in lowered or "chain.link" in lowered or "chainlink" in lowered or text_mentions_asset(lowered, asset):
         return True
     return False
 
@@ -181,8 +212,15 @@ def has_dynamic_start_threshold(payload: dict[str, Any]) -> bool:
     return "beginning of" in lowered or "beginning price" in lowered or "start price" in lowered
 
 
-def parse_market(payload: dict[str, Any], config: SourceConfig, now: datetime | None = None) -> MarketState | None:
-    if not is_btc_five_min_candidate(payload, config, now=now):
+def parse_market(
+    payload: dict[str, Any],
+    config: SourceConfig,
+    now: datetime | None = None,
+    *,
+    asset: str = "BTC",
+) -> MarketState | None:
+    asset = asset.upper()
+    if not is_crypto_five_min_candidate(payload, config, now=now, asset=asset):
         return None
 
     outcomes = [str(item) for item in parse_json_list(payload.get("outcomes"))]
@@ -214,6 +252,9 @@ def parse_market(payload: dict[str, Any], config: SourceConfig, now: datetime | 
         return None
     slug = str(payload.get("slug") or payload.get("market_slug") or "")
     canonical_interval = market_interval_from_slug(slug)
+    canonical_asset = asset_from_slug(slug)
+    if canonical_asset is not None and canonical_asset != asset:
+        return None
     explicit_start = parse_datetime(
         payload.get("eventStartTime") or payload.get("startTime") or payload.get("start_time")
     )
@@ -232,10 +273,11 @@ def parse_market(payload: dict[str, Any], config: SourceConfig, now: datetime | 
     # Chainlink interval after it starts.  Gamma fields and numbers embedded in
     # text are not a safe final threshold for these markets.
     threshold = None if dynamic_threshold else parse_threshold(payload)
-    settlement_verified = (threshold is not None or dynamic_threshold) and settlement_is_comparable(payload)
+    settlement_verified = (threshold is not None or dynamic_threshold) and settlement_is_comparable(payload, asset)
     observe_only = config.observe_only_on_unverified_settlement and not settlement_verified
 
     return MarketState(
+        asset=asset,
         condition_id=str(payload.get("conditionId") or payload.get("condition_id") or payload.get("id") or ""),
         slug=slug,
         question=str(payload.get("question") or payload.get("title") or ""),

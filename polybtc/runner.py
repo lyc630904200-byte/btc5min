@@ -20,6 +20,7 @@ from .market import (
     threshold_is_tradable,
 )
 from .models import Direction, MarketState, OrderBookSnapshot, PriceTick, rest_request_started_at
+from .pair_match import PairMatchEngine, PairMatchRegistry
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -85,7 +86,13 @@ def model_payload(value: Any) -> Any:
     return value
 
 
-def live_snapshot(engine: PaperEngine, output_dir: Path, event_type: str, payload: Any) -> dict[str, Any]:
+def live_snapshot(
+    engine: PaperEngine,
+    output_dir: Path,
+    event_type: str,
+    payload: Any,
+    pair_match: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     books = {direction.value: book.model_dump(mode="json") for direction, book in engine.books.items()}
     event_payload: Any
     if event_type == "book" and isinstance(payload, tuple):
@@ -95,6 +102,7 @@ def live_snapshot(engine: PaperEngine, output_dir: Path, event_type: str, payloa
         event_payload = model_payload(payload)
     return {
         "type": "snapshot",
+        "asset": engine.asset,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "output_dir": str(output_dir),
         "event": {"type": event_type, "payload": event_payload},
@@ -109,6 +117,7 @@ def live_snapshot(engine: PaperEngine, output_dir: Path, event_type: str, payloa
             "edge_correction_source": engine.edge_correction_source(datetime.now(timezone.utc)),
         },
         "last_rejection": engine.rejections[-1] if engine.rejections else None,
+        "pair_match": pair_match or {},
     }
 
 
@@ -121,31 +130,38 @@ async def emit_update(callback: UpdateCallback | None, snapshot: dict[str, Any])
 
 
 async def check_connectivity(config: AppConfig) -> dict[str, Any]:
-    binance = BinanceClient(config.sources)
-    polymarket = PolymarketClient(config.sources)
     result: dict[str, Any] = {}
-
-    try:
-        result["binance_time"] = await binance.server_time()
-    except Exception as exc:  # pragma: no cover - network dependent
-        result["binance_time"] = {"ok": False, "error": str(exc)}
-
-    try:
-        markets = await polymarket.discover_markets()
-        current = choose_current_market(markets, max_start_price_lag_ms=config.sources.max_start_price_lag_ms)
-        result["gamma"] = {"ok": True, "market_count": len(markets), "current_market": current.model_dump(mode="json") if current else None}
-    except Exception as exc:  # pragma: no cover - network dependent
-        markets = []
-        current = None
-        result["gamma"] = {"ok": False, "error": str(exc)}
-
-    if current:
+    for asset in config.sources.enabled_assets:
+        binance = BinanceClient(config.sources, asset)
+        polymarket = PolymarketClient(config.sources, asset)
+        asset_result: dict[str, Any] = {}
         try:
-            result["clob"] = await polymarket.price_probe(current.up_token_id)
+            asset_result["binance_time"] = await binance.server_time()
         except Exception as exc:  # pragma: no cover - network dependent
-            result["clob"] = {"ok": False, "error": str(exc)}
-    else:
-        result["clob"] = {"ok": False, "error": "no candidate BTC 5 minute market discovered"}
+            asset_result["binance_time"] = {"ok": False, "error": str(exc)}
+        try:
+            markets = await polymarket.discover_markets()
+            current = choose_current_market(markets, max_start_price_lag_ms=config.sources.max_start_price_lag_ms)
+            asset_result["gamma"] = {
+                "ok": True,
+                "market_count": len(markets),
+                "current_market": current.model_dump(mode="json") if current else None,
+            }
+        except Exception as exc:  # pragma: no cover - network dependent
+            current = None
+            asset_result["gamma"] = {"ok": False, "error": str(exc)}
+        if current:
+            try:
+                asset_result["clob"] = await polymarket.price_probe(current.up_token_id)
+            except Exception as exc:  # pragma: no cover - network dependent
+                asset_result["clob"] = {"ok": False, "error": str(exc)}
+        else:
+            asset_result["clob"] = {"ok": False, "error": f"no candidate {asset} 5 minute market discovered"}
+        asset_result["ok"] = all(
+            bool(asset_result.get(source, {}).get("ok"))
+            for source in ("binance_time", "gamma", "clob")
+        )
+        result[asset] = asset_result
     return result
 
 
@@ -472,11 +488,31 @@ async def binance_loop(client: BinanceClient, queue: asyncio.Queue) -> None:
 async def polymarket_price_loop(client: PolymarketClient, queue: asyncio.Queue) -> None:
     while True:
         try:
-            async for tick in client.rtds_crypto_price_ticks("btc/usd"):
+            async for tick in client.rtds_crypto_price_ticks():
                 await queue.put(("polymarket_tick", tick))
         except Exception as exc:
             await queue.put(("error", {"source": "polymarket_rtds", "error": str(exc)}))
             await asyncio.sleep(1)
+
+
+async def pair_resolution_loop(
+    btc_client: PolymarketClient,
+    eth_client: PolymarketClient,
+    pair_engine: PairMatchEngine,
+    queue: asyncio.Queue[tuple[str, str, Any]],
+) -> None:
+    while True:
+        for btc_slug, eth_slug in pair_engine.pending_market_pairs():
+            try:
+                btc_outcome, eth_outcome = await asyncio.gather(
+                    btc_client.resolved_outcome(btc_slug),
+                    eth_client.resolved_outcome(eth_slug),
+                )
+                if btc_outcome is not None and eth_outcome is not None:
+                    await queue.put(("PAIR", "pair_resolution", (btc_slug, eth_slug, btc_outcome, eth_outcome)))
+            except Exception as exc:
+                await queue.put(("PAIR", "pair_error", {"source": "gamma_resolution", "error": str(exc)}))
+        await asyncio.sleep(2)
 
 
 def book_matches_market(market: MarketState, direction: Direction, book: OrderBookSnapshot) -> bool:
@@ -705,31 +741,92 @@ def should_publish_book_update(
     return last_published_at is None or current.received_at - last_published_at >= BOOK_PUBLISH_HEARTBEAT
 
 
+class AssetEventQueue:
+    def __init__(self, queue: asyncio.Queue[tuple[str, str, Any]], asset: str):
+        self.queue = queue
+        self.asset = asset
+
+    async def put(self, event: tuple[str, Any]) -> None:
+        event_type, payload = event
+        await self.queue.put((self.asset, event_type, payload))
+
+
+def aggregate_engine_summaries(engines: dict[str, PaperEngine]) -> dict[str, float | int]:
+    summaries = [engine.summary() for engine in engines.values()]
+    additive = {
+        "total_positions",
+        "closed_positions",
+        "open_positions",
+        "fills",
+        "signals",
+        "rejections",
+        "realized_pnl",
+        "normal_realized_pnl",
+        "reverse_realized_pnl",
+        "take_profit_pnl",
+        "risk_exit_pnl",
+        "settlement_pnl",
+        "total_quote",
+        "fees_paid_usd",
+        "max_loss_exit_count",
+        "entry_confirmation_updates",
+        "current_market_trade_count",
+    }
+    combined = {key: sum(summary.get(key, 0) for summary in summaries) for key in additive}
+    if engines:
+        config = next(iter(engines.values())).config
+        combined["max_trades_per_market"] = config.risk.max_trades_per_market
+        combined["max_loss_usd"] = config.risk.max_loss_usd
+    return combined
+
+
 async def run_live(config: AppConfig, max_seconds: int | None = None, on_update: UpdateCallback | None = None) -> Path:
     output_dir = run_dir(config.data_dir)
     journal = RunJournal(output_dir)
     entry_registry = SqliteMarketEntryRegistry(config.data_dir / "market-entry-ledger.sqlite3")
+    pair_registry = PairMatchRegistry(config.data_dir / "pair-match-ledger.sqlite3")
     try:
         entry_registry.seed(historical_market_entry_counts(config.data_dir))
-        engine = PaperEngine(config, entry_registry=entry_registry, run_id=output_dir.name)
-        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-        poly = PolymarketClient(config.sources)
-        binance = BinanceClient(config.sources)
-        counters = {"signals": 0, "fills": 0, "exits": 0}
-        last_published_book_at: dict[Direction, datetime] = {}
-        await initialize_current_market(poly, engine, journal, output_dir, on_update)
+        assets = config.sources.enabled_assets
+        engines = {
+            asset: PaperEngine(config, entry_registry=entry_registry, run_id=output_dir.name, asset=asset)
+            for asset in assets
+        }
+        queue: asyncio.Queue[tuple[str, str, Any]] = asyncio.Queue()
+        clients = {asset: PolymarketClient(config.sources, asset) for asset in assets}
+        binance_clients = {asset: BinanceClient(config.sources, asset) for asset in assets}
+        counters = {asset: {"signals": 0, "fills": 0, "exits": 0} for asset in assets}
+        last_published_book_at: dict[tuple[str, Direction], datetime] = {}
+        pair_engine = PairMatchEngine(config, pair_registry)
+        await asyncio.gather(
+            *(
+                initialize_current_market(clients[asset], engines[asset], journal, output_dir, on_update)
+                for asset in assets
+            )
+        )
     except BaseException:
         entry_registry.close()
+        pair_registry.close()
         raise
 
-    tasks = [
-        asyncio.create_task(data_cleanup_loop(config, output_dir, journal)),
-        asyncio.create_task(market_loop(poly, engine, queue, config.sources.market_refresh_seconds)),
-        asyncio.create_task(binance_loop(binance, queue)),
-        asyncio.create_task(polymarket_price_loop(poly, queue)),
-        asyncio.create_task(book_rest_loop(poly, engine, queue, config.sources.poly_book_poll_ms)),
-        asyncio.create_task(book_loop(poly, engine, queue, config.sources.poly_book_poll_ms)),
-    ]
+    tasks = [asyncio.create_task(data_cleanup_loop(config, output_dir, journal))]
+    for asset in assets:
+        asset_queue = AssetEventQueue(queue, asset)
+        engine = engines[asset]
+        poly = clients[asset]
+        tasks.extend(
+            [
+                asyncio.create_task(market_loop(poly, engine, asset_queue, config.sources.market_refresh_seconds)),
+                asyncio.create_task(binance_loop(binance_clients[asset], asset_queue)),
+                asyncio.create_task(polymarket_price_loop(poly, asset_queue)),
+                asyncio.create_task(book_rest_loop(poly, engine, asset_queue, config.sources.poly_book_poll_ms)),
+                asyncio.create_task(book_loop(poly, engine, asset_queue, config.sources.poly_book_poll_ms)),
+            ]
+        )
+    if "BTC" in clients and "ETH" in clients:
+        tasks.append(
+            asyncio.create_task(pair_resolution_loop(clients["BTC"], clients["ETH"], pair_engine, queue))
+        )
     started = datetime.now(timezone.utc)
     try:
         while True:
@@ -745,53 +842,149 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
             await asyncio.sleep(LIVE_EVENT_COALESCE_SECONDS)
             while not queue.empty() and len(pending_events) < 500:
                 pending_events.append(queue.get_nowait())
-            for event_type, payload in coalesce_live_events(pending_events):
-                publish_update = True
-                if event_type == "market":
-                    market: MarketState = payload
-                    if not market_is_active(market, datetime.now(timezone.utc)):
-                        continue
-                    engine.set_market(market)
-                    journal.market(market)
-                elif event_type == "tick":
-                    tick: PriceTick = payload
-                    engine.set_tick(tick)
-                    journal.tick(tick)
-                elif event_type == "polymarket_tick":
-                    tick = payload
-                    assert isinstance(tick, PriceTick)
-                    engine.set_polymarket_tick(tick)
-                    journal.event("polymarket_tick", tick)
-                elif event_type == "book":
-                    direction, book = payload
-                    assert isinstance(book, OrderBookSnapshot)
-                    previous_book = engine.books.get(direction)
-                    engine.set_book(direction, book)
-                    active_book = engine.books.get(direction)
-                    publish_update = active_book is book and should_publish_book_update(
-                        previous_book,
-                        book,
-                        last_published_book_at.get(direction),
-                    )
+            pair_input_changed = False
+            for asset in assets:
+                asset_events = [(event_type, payload) for event_asset, event_type, payload in pending_events if event_asset == asset]
+                if not asset_events:
+                    continue
+                engine = engines[asset]
+                for event_type, payload in coalesce_live_events(asset_events):
+                    engine.entry_enabled = not config.pair_match.enabled
+                    publish_update = True
+                    if event_type == "market":
+                        pair_input_changed = True
+                        market: MarketState = payload
+                        if not market_is_active(market, datetime.now(timezone.utc)):
+                            continue
+                        engine.set_market(market)
+                        journal.market(market)
+                    elif event_type == "tick":
+                        tick: PriceTick = payload
+                        engine.set_tick(tick)
+                        journal.tick(tick)
+                    elif event_type == "polymarket_tick":
+                        tick = payload
+                        assert isinstance(tick, PriceTick)
+                        engine.set_polymarket_tick(tick)
+                        journal.event("polymarket_tick", tick)
+                    elif event_type == "book":
+                        pair_input_changed = True
+                        direction, book = payload
+                        assert isinstance(book, OrderBookSnapshot)
+                        previous_book = engine.books.get(direction)
+                        engine.set_book(direction, book)
+                        active_book = engine.books.get(direction)
+                        publish_update = active_book is book and should_publish_book_update(
+                            previous_book,
+                            book,
+                            last_published_book_at.get((asset, direction)),
+                        )
+                        if publish_update:
+                            journal.book(direction.value, book)
+                            last_published_book_at[(asset, direction)] = book.received_at
+                    elif event_type == "error":
+                        source = f"{asset.lower()}_{payload.get('source', 'unknown')}"
+                        journal.latency_row(source, "stream", False, None, payload.get("error", ""))
+                    live_events = flush_engine_updates(engine, journal, counters[asset])
+                    for live_event_type, live_payload in live_events:
+                        await emit_update(
+                            on_update,
+                            live_snapshot(
+                                engine, output_dir, live_event_type, live_payload, pair_engine.dashboard_state()
+                            ),
+                        )
                     if publish_update:
-                        journal.book(direction.value, book)
-                        last_published_book_at[direction] = book.received_at
-                elif event_type == "error":
-                    journal.latency_row(payload.get("source", "unknown"), "stream", False, None, payload.get("error", ""))
-                live_events = flush_engine_updates(engine, journal, counters)
-                for live_event_type, live_payload in live_events:
-                    await emit_update(on_update, live_snapshot(engine, output_dir, live_event_type, live_payload))
-                if publish_update:
-                    await emit_update(on_update, live_snapshot(engine, output_dir, event_type, payload))
+                        await emit_update(
+                            on_update,
+                            live_snapshot(engine, output_dir, event_type, payload, pair_engine.dashboard_state()),
+                        )
+
+            primary_engine = engines.get("BTC") or next(iter(engines.values()))
+            pair_events = [
+                (event_type, payload)
+                for event_asset, event_type, payload in pending_events
+                if event_asset == "PAIR"
+            ]
+            for event_type, payload in pair_events:
+                if event_type == "pair_resolution":
+                    btc_slug, eth_slug, btc_outcome, eth_outcome = payload
+                    settled = pair_engine.settle(btc_slug, eth_slug, btc_outcome, eth_outcome)
+                    for order in settled:
+                        journal.pair_result(order)
+                        await emit_update(
+                            on_update,
+                            live_snapshot(
+                                primary_engine,
+                                output_dir,
+                                "pair_settlement",
+                                order,
+                                pair_engine.dashboard_state(),
+                            ),
+                        )
+                    if settled:
+                        matching_summary = next(
+                            (
+                                summary
+                                for summary in pair_engine.dashboard_state()["recent_markets"]
+                                if summary["btc_slug"] == btc_slug and summary["eth_slug"] == eth_slug
+                            ),
+                            None,
+                        )
+                        if matching_summary:
+                            journal.pair_market(matching_summary)
+                elif event_type == "pair_error":
+                    journal.latency_row(
+                        payload.get("source", "pair_match"),
+                        "resolution",
+                        False,
+                        None,
+                        payload.get("error", ""),
+                    )
+
+            for engine in engines.values():
+                engine.entry_enabled = not config.pair_match.enabled
+            if pair_input_changed:
+                order = pair_engine.evaluate(engines, datetime.now(timezone.utc))
+                if order is not None:
+                    journal.pair_order(order)
+                    event_type: str = "pair_order"
+                    event_payload: Any = order
+                else:
+                    event_type = "pair_state"
+                    event_payload = pair_engine.dashboard_state()
+                await emit_update(
+                    on_update,
+                    live_snapshot(
+                        primary_engine,
+                        output_dir,
+                        event_type,
+                        event_payload,
+                        pair_engine.dashboard_state(),
+                    ),
+                )
     finally:
         try:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            for position in engine.positions:
-                journal.position(position)
-            journal.summary(engine.summary())
-            await emit_update(on_update, live_snapshot(engine, output_dir, "summary", engine.summary()))
+            for asset, engine in engines.items():
+                for position in engine.positions:
+                    journal.position(position)
+                await emit_update(
+                    on_update,
+                    live_snapshot(engine, output_dir, "summary", engine.summary(), pair_engine.dashboard_state()),
+                )
+            summary = aggregate_engine_summaries(engines)
+            pair_summary = pair_engine.dashboard_state()["summary"]
+            summary.update(
+                {
+                    "pair_orders": pair_summary["orders"],
+                    "pair_pending_orders": pair_summary["pending_orders"],
+                    "pair_realized_pnl": pair_summary["realized_pnl"],
+                }
+            )
+            journal.summary(summary)
         finally:
             entry_registry.close()
+            pair_registry.close()
     return output_dir

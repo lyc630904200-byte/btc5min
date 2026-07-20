@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from polybtc.config import SourceConfig
-from polybtc.market import choose_current_market, market_interval_from_slug, parse_market
+from polybtc.market import asset_from_slug, choose_current_market, market_interval_from_slug, parse_market
 from polybtc.models import MarketState
 
 
@@ -62,6 +62,57 @@ def test_parse_dynamic_start_threshold_market() -> None:
     assert market.start_time == now
     assert market.settlement_verified is True
     assert market.observe_only is False
+
+
+def test_parse_eth_five_minute_market() -> None:
+    start = datetime(2026, 7, 20, 8, 0, tzinfo=timezone.utc)
+    payload = {
+        "conditionId": "eth-market",
+        "slug": f"eth-updown-5m-{int(start.timestamp())}",
+        "question": "Ethereum Up or Down - five minute",
+        "description": (
+            "Resolves Up if the Ethereum price at the end is greater than or equal to "
+            "the price at the beginning of that range. Chainlink ETH/USD."
+        ),
+        "resolutionSource": "https://data.chain.link/streams/eth-usd",
+        "active": True,
+        "closed": False,
+        "enableOrderBook": True,
+        "eventStartTime": start.isoformat(),
+        "endDate": (start + timedelta(minutes=5)).isoformat(),
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["eth-up", "eth-down"]',
+    }
+
+    market = parse_market(payload, SourceConfig(), now=start, asset="ETH")
+
+    assert market is not None
+    assert market.asset == "ETH"
+    assert market.slug == f"eth-updown-5m-{int(start.timestamp())}"
+    assert market.up_token_id == "eth-up"
+    assert market.down_token_id == "eth-down"
+    assert market.threshold_source == "dynamic_start_price"
+    assert market.settlement_verified is True
+    assert asset_from_slug(market.slug) == "ETH"
+    assert market_interval_from_slug(market.slug) == (start, start + timedelta(minutes=5))
+
+
+def test_eth_parser_rejects_btc_slug_even_when_text_mentions_eth() -> None:
+    start = datetime(2026, 7, 20, 8, 0, tzinfo=timezone.utc)
+    payload = {
+        "conditionId": "wrong-asset",
+        "slug": f"btc-updown-5m-{int(start.timestamp())}",
+        "question": "Ethereum Up or Down - five minute",
+        "description": "Ethereum beginning price. Chainlink ETH/USD.",
+        "active": True,
+        "closed": False,
+        "enableOrderBook": True,
+        "endDate": (start + timedelta(minutes=5)).isoformat(),
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["up", "down"]',
+    }
+
+    assert parse_market(payload, SourceConfig(), now=start, asset="ETH") is None
 
 
 def test_choose_current_market_keeps_active_market_without_threshold() -> None:

@@ -118,6 +118,19 @@ def test_outcome_parser_rejects_conflicting_close_and_nonfinite_prices() -> None
     assert parse_polymarket_outcome_prices(nonfinite) == []
 
 
+def test_outcome_parser_reads_exact_eth_five_minute_query() -> None:
+    html = r'''
+    {"state":{"data":{"openPrice":3540.25,"closePrice":null},"status":"success"},"queryKey":["crypto-prices","price","ETH","2026-07-20T08:00:00Z","fiveminute","2026-07-20T08:05:00Z"]}
+    {"state":{"data":{"openPrice":64000,"closePrice":null},"status":"success"},"queryKey":["crypto-prices","price","BTC","2026-07-20T08:00:00Z","fiveminute","2026-07-20T08:05:00Z"]}
+    '''
+
+    prices = parse_polymarket_outcome_prices(html, "ETH")
+
+    assert len(prices) == 1
+    assert prices[0].slug == "eth-updown-5m-1784534400"
+    assert prices[0].open_price == 3540.25
+
+
 def test_market_page_data_requires_previous_market_page_for_previous_close() -> None:
     start = datetime(2026, 7, 11, 3, 10, tzinfo=timezone.utc)
     slug = f"btc-updown-5m-{int(start.timestamp())}"

@@ -57,6 +57,14 @@
     h1 { margin: 0; font-size: 16px; line-height: 1; }
     .subline { margin-top: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
     .topbar { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+    .asset-switch { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .asset-tab { border: 0; border-radius: 5px; background: transparent; color: var(--muted); padding: 6px 12px; font-weight: 800; cursor: pointer; }
+    .asset-tab.active { background: var(--ink); color: #fff; }
+    .pair-only { display: none; }
+    body.pair-mode .pair-only { display: block; }
+    body.pair-mode .single-only,
+    body.pair-mode .single-only-section { display: none; }
+    body.pair-mode .shell { grid-template-columns: minmax(300px, 380px) minmax(560px, 1fr); }
 
     .pill {
       display: inline-flex;
@@ -120,9 +128,6 @@
     .tag.blue { color: var(--blue); background: var(--blue-soft); }
     .tag.amber { color: var(--amber); background: var(--amber-soft); }
 
-    .chart-wrap { height: 220px; padding: 12px; }
-    canvas { width: 100%; height: 100%; display: block; }
-
     .book-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .book-side { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
     .book-title { height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 760; }
@@ -139,6 +144,11 @@
     .trade-mode { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 720; }
     .trade-caret { color: #8d9792; font-size: 15px; transform: translateY(-1px); }
     .trade-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 17px 14px 12px; }
+    .trade-market + .trade-market { border-top: 1px solid var(--line); }
+    .trade-market-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 0; }
+    .trade-market-name { color: var(--ink); font-size: 13px; font-weight: 800; }
+    .trade-market-age { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .trade-market .trade-options { padding-top: 10px; }
     .trade-option { min-height: 44px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: #f1f3f2; color: #7a8580; font: inherit; font-size: 14px; font-weight: 760; font-variant-numeric: tabular-nums; }
     .trade-option.up { background: #31a65c; color: #fff; }
     .trade-option.down { background: #f1f3f2; color: #7a8580; }
@@ -157,6 +167,28 @@
     .timeline { display: grid; gap: 8px; max-height: 392px; overflow: auto; padding-right: 4px; }
     .event-row { display: grid; grid-template-columns: 68px 1fr; gap: 9px; min-height: 34px; align-items: center; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 7px 9px; font-size: 12px; }
     .mono { font-variant-numeric: tabular-nums; }
+    .pair-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .pair-card { border: 1px solid var(--line); border-radius: 8px; padding: 11px; display: grid; gap: 7px; min-width: 0; }
+    .pair-card.eligible { border-color: #addfca; background: var(--green-soft); }
+    .pair-card.rejected { border-color: #e7c991; background: var(--amber-soft); }
+    .pair-card-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-weight: 780; }
+    .pair-line { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
+    .pair-line strong { color: var(--ink); font-weight: 730; text-align: right; }
+    .scenario-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .scenario { border: 1px solid var(--line); border-radius: 7px; padding: 8px; text-align: center; background: #fff; }
+    .scenario span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+    .table-wrap { overflow: auto; max-height: 260px; border: 1px solid var(--line); border-radius: 7px; margin-top: 10px; }
+    .data-table { width: 100%; border-collapse: collapse; min-width: 760px; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .data-table th, .data-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    .data-table th:first-child, .data-table td:first-child { text-align: left; }
+    .data-table th { position: sticky; top: 0; z-index: 1; background: var(--panel-soft); color: var(--muted); }
+    .subhead { margin: 14px 0 6px; font-size: 12px; font-weight: 780; color: var(--ink); }
+    .pair-market-list { display: grid; gap: 10px; }
+    .pair-market-card { border: 1px solid var(--line); border-radius: 8px; padding: 11px; background: #fff; display: grid; gap: 8px; }
+    .pair-market-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .pair-market-name { font-size: 15px; font-weight: 820; }
+    .pair-market-slug { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .pair-market-card .pair-line strong { min-width: 0; overflow-wrap: anywhere; word-break: break-all; }
 
     @media (max-width: 1180px) {
       .shell { grid-template-columns: 320px 1fr; }
@@ -167,7 +199,8 @@
       header { min-height: 58px; height: auto; align-items: flex-start; padding: 12px 14px; flex-direction: column; }
       .topbar { width: 100%; justify-content: flex-start; }
       .shell { grid-template-columns: 1fr; padding: 10px; }
-      .book-grid, .signal, .metrics, .settings-grid { grid-template-columns: 1fr; }
+      body.pair-mode .shell { grid-template-columns: 1fr; }
+      .book-grid, .signal, .metrics, .settings-grid, .pair-grid, .scenario-grid { grid-template-columns: 1fr; }
       .metric-value { font-size: 21px; }
     }
   </style>
@@ -178,11 +211,16 @@
       <div class="brand">
         <div class="mark">P</div>
         <div>
-          <h1>polybtc 实时面板</h1>
+          <h1 id="brandTitle">polybtc 实时面板</h1>
           <div class="subline" id="runPath">等待运行数据</div>
         </div>
       </div>
       <div class="topbar">
+        <div class="asset-switch" role="tablist" aria-label="数字资产">
+          <button class="asset-tab active" id="assetBTC" type="button" role="tab" aria-selected="true">BTC</button>
+          <button class="asset-tab" id="assetETH" type="button" role="tab" aria-selected="false">ETH</button>
+          <button class="asset-tab" id="assetPAIR" type="button" role="tab" aria-selected="false">BTC/ETH 匹配</button>
+        </div>
         <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
         <div class="pill"><span id="wsText">WebSocket</span></div>
         <div class="pill"><span id="updatedAt">--</span></div>
@@ -191,7 +229,7 @@
 
     <main class="shell">
       <section class="stack">
-        <div class="panel">
+        <div class="panel single-only">
           <div class="panel-head"><div class="panel-title">市场</div><div class="tag blue" id="marketState">--</div></div>
           <div class="panel-body kv">
             <div class="kv-row"><div class="kv-label">窗口</div><div class="kv-value" id="marketWindow">--</div></div>
@@ -203,11 +241,11 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel single-only">
           <div class="panel-head"><div class="panel-title">行情</div><div class="tag" id="edgeTag">--</div></div>
           <div class="panel-body metrics">
-            <div class="metric"><div class="metric-name">Binance BTC</div><div class="metric-value" id="btcPrice">--</div></div>
-            <div class="metric"><div class="metric-name">Polymarket BTC</div><div class="metric-value" id="polymarketPrice">--</div></div>
+            <div class="metric"><div class="metric-name" id="binanceAssetLabel">Binance BTC</div><div class="metric-value" id="btcPrice">--</div></div>
+            <div class="metric"><div class="metric-name" id="polymarketAssetLabel">Polymarket BTC</div><div class="metric-value" id="polymarketPrice">--</div></div>
             <div class="metric"><div class="metric-name">价格偏离</div><div class="metric-value" id="edgeValue">--</div></div>
             <div class="metric"><div class="metric-name">偏离修正</div><div class="metric-value" id="edgeCorrection">--</div></div>
             <div class="metric metric-wide"><div class="metric-name">有效偏离</div><div class="metric-value" id="effectiveEdgeValue">--</div></div>
@@ -216,7 +254,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel single-only">
           <div class="panel-head"><div class="panel-title">统计</div><div class="tag amber" id="summaryState">paper</div></div>
           <div class="panel-body metrics">
             <div class="metric"><div class="metric-name">信号</div><div class="metric-value" id="signals">0</div></div>
@@ -227,31 +265,41 @@
             <div class="metric"><div class="metric-name">反买盈亏</div><div class="metric-value" id="reversePnl">0.00</div></div>
           </div>
         </div>
+
+        <div class="panel pair-only">
+          <div class="panel-head"><div class="panel-title">BTC/ETH 配对市场</div><div class="tag blue" id="pairMarketAlignment">等待对齐</div></div>
+          <div class="panel-body"><div class="pair-market-list" id="pairMarketList"></div></div>
+        </div>
       </section>
 
       <section class="stack">
         <div class="panel">
-          <div class="panel-head"><div class="panel-title">价格偏离</div><div class="tag blue" id="tickAge">--</div></div>
-          <div class="chart-wrap"><canvas id="priceCanvas" width="900" height="260"></canvas></div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head"><div class="panel-title">盘口</div><div class="tag blue" id="bookAge">--</div></div>
+          <div class="panel-head"><div class="panel-title">盘口</div><div class="tag blue" id="bookAge">BTC + ETH</div></div>
           <div class="panel-body trade-book">
             <div class="trade-tabs" role="tablist" aria-label="盘口方向">
               <button class="trade-tab active" id="bookBuyTab" type="button" role="tab" aria-selected="true">买入</button>
               <button class="trade-tab" id="bookSellTab" type="button" role="tab" aria-selected="false">卖出</button>
               <div class="trade-mode">盘口 <span class="trade-caret">⌄</span></div>
             </div>
-            <div class="trade-options">
-              <div class="trade-option up" id="upTradeQuote">Up --</div>
-              <div class="trade-option down" id="downTradeQuote">Down --</div>
+            <div class="trade-market">
+              <div class="trade-market-head"><span class="trade-market-name">BTC 盘口</span><span class="trade-market-age" id="btcBookAge">--</span></div>
+              <div class="trade-options">
+                <div class="trade-option up" id="btcUpTradeQuote">Up --</div>
+                <div class="trade-option down" id="btcDownTradeQuote">Down --</div>
+              </div>
             </div>
-            <div class="trade-note" id="tradeBookNote">买入按卖一价格展示</div>
+            <div class="trade-market">
+              <div class="trade-market-head"><span class="trade-market-name">ETH 盘口</span><span class="trade-market-age" id="ethBookAge">--</span></div>
+              <div class="trade-options">
+                <div class="trade-option up" id="ethUpTradeQuote">Up --</div>
+                <div class="trade-option down" id="ethDownTradeQuote">Down --</div>
+              </div>
+            </div>
+            <div class="trade-note" id="tradeBookNote">BTC、ETH 同时展示 · 买入按卖一价格</div>
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel single-only">
           <div class="panel-head"><div class="panel-title">决策</div><div class="tag" id="decisionTag">等待</div></div>
           <div class="panel-body signal">
             <div class="signal-box flat" id="signalBox">
@@ -262,9 +310,34 @@
             <div class="reason-list" id="reasonList"></div>
           </div>
         </div>
+
+        <div class="panel pair-only">
+          <div class="panel-head"><div class="panel-title">BTC/ETH 自动匹配</div><div class="tag blue" id="pairStatus">关闭</div></div>
+          <div class="panel-body">
+            <form id="pairForm">
+              <div class="settings-grid">
+                <label class="setting"><span class="setting-label">自动匹配</span><span class="setting-toggle"><input id="pairEnabled" type="checkbox">启用后停止单币新入场</span></label>
+                <label class="setting"><span class="setting-label">严格交替</span><span class="setting-toggle"><input id="pairAlternate" type="checkbox">A/B 严格轮换</span></label>
+                <label class="setting"><span class="setting-label">每腿金额（USD）</span><input class="setting-input" id="pairLegQuote" type="number" min="0.01" step="0.01" required></label>
+                <label class="setting"><span class="setting-label">最低价差（美分）</span><input class="setting-input" id="pairMinSpread" type="number" min="-100" max="100" step="0.01" required></label>
+                <label class="setting"><span class="setting-label">开盘后开始秒数</span><input class="setting-input" id="pairStartSeconds" type="number" min="0" max="299" step="1" required></label>
+                <label class="setting"><span class="setting-label">开盘后结束秒数（不含）</span><input class="setting-input" id="pairEndSeconds" type="number" min="1" max="300" step="1" required></label>
+                <label class="setting"><span class="setting-label">每场配对上限</span><input class="setting-input" id="pairMaxPairs" type="number" min="1" step="1" required></label>
+              </div>
+              <div class="settings-actions"><span class="settings-note">保存后在下一组起止时间完全一致的 BTC/ETH 场次原子生效。</span><button class="settings-save" id="savePair" type="submit">保存匹配参数</button></div>
+            </form>
+            <div class="subhead">实时组合 · <span id="pairRuntime">--</span></div>
+            <div class="pair-grid" id="pairCandidates"></div>
+            <div class="subhead">累计 · <span id="pairSummary">--</span></div>
+            <div class="subhead">最近 20 场</div>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>场次</th><th>官方结果</th><th>A/B 数量</th><th>成本</th><th>手续费</th><th>兑付</th><th>净盈亏</th><th>状态</th></tr></thead><tbody id="pairMarkets"></tbody></table></div>
+            <div class="subhead">最近 100 单</div>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>时间/方向</th><th>BTC 方向 / 均价 / 份数 / 金额 / 费</th><th>ETH 方向 / 均价 / 份数 / 金额 / 费</th><th>价差</th><th>官方结果</th><th>实际盈亏</th><th>状态</th></tr></thead><tbody id="pairOrders"></tbody></table></div>
+          </div>
+        </div>
       </section>
 
-      <section class="stack right">
+      <section class="stack right single-only-section">
         <div class="panel">
           <div class="panel-head"><div class="panel-title">持仓</div><div class="tag blue" id="positionState">空仓</div></div>
           <div class="panel-body metrics">
@@ -306,14 +379,17 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const history = [];
     let latest = null;
     let reconnectTimer = null;
     let renderScheduled = false;
     let bookSide = 'BUY';
+    let selectedAsset = 'BTC';
     let configFormInitialized = false;
     let configFormDirty = false;
     let renderedConfigKey = '';
+    let pairFormInitialized = false;
+    let pairFormDirty = false;
+    let renderedPairConfigKey = '';
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -329,6 +405,15 @@
       max_order_usd: 'maxOrderUsd',
       max_loss_usd: 'maxLossUsd',
       max_trades_per_market: 'maxTradesPerMarket',
+    };
+    const pairInputs = {
+      enabled: 'pairEnabled',
+      leg_quote_usd: 'pairLegQuote',
+      min_spread_cents: 'pairMinSpread',
+      start_seconds_after_open: 'pairStartSeconds',
+      end_seconds_after_open: 'pairEndSeconds',
+      max_pairs_per_market: 'pairMaxPairs',
+      alternate_directions: 'pairAlternate',
     };
 
     function scheduleRender(snapshot) {
@@ -400,6 +485,80 @@
       }
     }
 
+    function renderPairConfig(snapshot, force = false) {
+      const active = snapshot.pair_match?.config || {};
+      const pair = snapshot.pending_pair_match || active;
+      const configKey = JSON.stringify(Object.fromEntries(Object.keys(pairInputs).map((field) => [field, pair[field]])));
+      if (force || !pairFormInitialized || (!pairFormDirty && configKey !== renderedPairConfigKey)) {
+        Object.entries(pairInputs).forEach(([field, id]) => setRuntimeInput(id, pair[field]));
+        renderedPairConfigKey = configKey;
+        pairFormInitialized = true;
+      }
+    }
+
+    function pnlHtml(value) {
+      if (value === null || value === undefined) return '--';
+      const number = Number(value);
+      const color = number >= 0 ? 'var(--green)' : 'var(--red)';
+      return `<strong style="color:${color}">${fmtSigned(number, 3)}</strong>`;
+    }
+
+    function pairLegText(leg) {
+      if (!leg) return '--';
+      return `${leg.direction} · 均 ${fmtProb(leg.avg_price)} · ${fmtNumber(leg.quantity, 3)} 份 · $${fmtNumber(leg.quote, 2)} · 费 $${fmtNumber(leg.fee_usd, 4)}`;
+    }
+
+    function renderPairMatch(pair, configStatus) {
+      pair = pair || {};
+      const candidates = pair.candidates || {};
+      const directionRows = [
+        ['BTC_UP_ETH_DOWN', 'A · BTC YES + ETH NO'],
+        ['BTC_DOWN_ETH_UP', 'B · BTC NO + ETH YES'],
+      ];
+      $('pairCandidates').innerHTML = directionRows.map(([key, label]) => {
+        const candidate = candidates[key];
+        if (!candidate) return `<div class="pair-card"><div class="pair-card-head"><span>${label}</span><span class="tag blue">等待盘口</span></div></div>`;
+        const css = candidate.meets_spread ? 'eligible' : 'rejected';
+        const scenarios = candidate.scenario_pnl || {};
+        return `<div class="pair-card ${css}">
+          <div class="pair-card-head"><span>${label}</span><span class="tag ${candidate.meets_spread ? 'green' : 'amber'}">${candidate.meets_spread ? '达标' : '未达标'}</span></div>
+          <div class="pair-line"><span>BTC 腿</span><strong>${pairLegText(candidate.btc_leg)}</strong></div>
+          <div class="pair-line"><span>ETH 腿</span><strong>${pairLegText(candidate.eth_leg)}</strong></div>
+          <div class="pair-line"><span>入场价差</span><strong>${candidate.spread_cents == null ? '--' : `${fmtNumber(candidate.spread_cents, 3)}¢`}</strong></div>
+          <div class="pair-line"><span>总成本（含费）</span><strong>$${fmtNumber(candidate.total_cost_usd, 4)}</strong></div>
+          <div class="pair-line"><span>拒绝原因</span><strong>${candidate.reason || '--'}</strong></div>
+          <div class="scenario-grid">
+            <div class="scenario"><span>全输</span>${pnlHtml(scenarios.both_lose)}</div>
+            <div class="scenario"><span>仅 BTC 赢</span>${pnlHtml(scenarios.btc_only_wins)}</div>
+            <div class="scenario"><span>仅 ETH 赢</span>${pnlHtml(scenarios.eth_only_wins)}</div>
+            <div class="scenario"><span>两腿全赢</span>${pnlHtml(scenarios.both_win)}</div>
+          </div>
+        </div>`;
+      }).join('');
+
+      const status = pairFormDirty ? '有修改，尚未保存' : configStatus === 'pending_next_market' ? '已保存，下组生效' : (pair.status || '等待');
+      $('pairStatus').textContent = status;
+      $('pairStatus').className = `tag ${pairFormDirty || configStatus === 'pending_next_market' ? 'amber' : pair.status === 'pair_opened' ? 'green' : 'blue'}`;
+      $('pairRuntime').textContent = `状态 ${pair.status || '--'} · 下一方向 ${pair.next_direction || '首单择优'} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`;
+      const summary = pair.summary || {};
+      $('pairSummary').innerHTML = `${summary.orders || 0} 单 / ${summary.settled_orders || 0} 已结算 / ${summary.pending_orders || 0} 待结算 · 胜率 ${fmtNumber((summary.win_rate || 0) * 100, 1)}% · 净盈亏 ${pnlHtml(summary.realized_pnl || 0)}`;
+
+      $('pairMarkets').innerHTML = (pair.recent_markets || []).map((market) => `<tr>
+        <td>${fmtTime(market.start_time)}</td><td>${market.btc_outcome || '--'} / ${market.eth_outcome || '--'}</td>
+        <td>${market.btc_up_eth_down_orders || 0} / ${market.btc_down_eth_up_orders || 0}</td>
+        <td>$${fmtNumber(market.total_cost_usd, 3)}</td><td>$${fmtNumber(market.fees_usd, 4)}</td>
+        <td>$${fmtNumber(market.payout_usd, 3)}</td><td>${pnlHtml(market.realized_pnl)}</td><td>${market.status || '--'}</td>
+      </tr>`).join('') || '<tr><td colspan="8">暂无配对场次</td></tr>';
+
+      $('pairOrders').innerHTML = (pair.recent_orders || []).map((order) => `<tr>
+        <td>${fmtTime(order.opened_at)} · ${order.direction || '--'}</td>
+        <td>${pairLegText(order.btc_leg)}</td>
+        <td>${pairLegText(order.eth_leg)}</td>
+        <td>${fmtNumber(order.spread_cents, 3)}¢</td><td>${order.btc_outcome || '--'} / ${order.eth_outcome || '--'}</td>
+        <td>${order.realized_pnl == null ? '--' : pnlHtml(order.realized_pnl)}</td><td>${order.status || '--'}</td>
+      </tr>`).join('') || '<tr><td colspan="7">暂无配对订单</td></tr>';
+    }
+
     function runtimeNumber(id) {
       const value = Number($(id).value);
       if (!Number.isFinite(value)) throw new Error('请填写有效的数值');
@@ -434,61 +593,6 @@
       $('connText').textContent = status === 'live' ? '实时' : status === 'off' ? '断线' : '连接中';
     }
 
-    function updateHistory(tick, market, correction) {
-      if (!tick?.price) return;
-      const threshold = market?.threshold_price;
-      const edge = threshold ? Number(tick.price) - Number(threshold) - correction : null;
-      const last = history[history.length - 1];
-      if (last && last.time === tick.received_at) {
-        last.edge = edge;
-        return;
-      }
-      history.push({ time: tick.received_at, price: Number(tick.price), threshold: threshold ? Number(threshold) : null, edge });
-      while (history.length > 180) history.shift();
-    }
-
-    function drawChart() {
-      const canvas = $('priceCanvas');
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width;
-      const h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, w, h);
-      if (!history.length) {
-        ctx.fillStyle = '#65716c';
-        ctx.fillText('等待 tick', 24, 32);
-        return;
-      }
-      const values = history.map((x) => x.price);
-      const thresholds = history.map((x) => x.threshold).filter((x) => x !== null);
-      const min = Math.min(...values, ...thresholds) - 8;
-      const max = Math.max(...values, ...thresholds) + 8;
-      const y = (v) => h - 24 - ((v - min) / Math.max(1, max - min)) * (h - 48);
-      const x = (i) => 22 + (i / Math.max(1, history.length - 1)) * (w - 44);
-      const lastThreshold = history.slice().reverse().find((p) => p.threshold !== null)?.threshold;
-      if (lastThreshold !== undefined) {
-        ctx.strokeStyle = '#dce2df';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(18, y(lastThreshold));
-        ctx.lineTo(w - 18, y(lastThreshold));
-        ctx.stroke();
-        ctx.fillStyle = '#65716c';
-        ctx.fillText(`阈值 ${fmtPrice(lastThreshold)}`, 24, y(lastThreshold) - 8);
-      }
-      ctx.strokeStyle = '#2c6f98';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      history.forEach((p, i) => i ? ctx.lineTo(x(i), y(p.price)) : ctx.moveTo(x(i), y(p.price)));
-      ctx.stroke();
-      const last = history[history.length - 1];
-      ctx.fillStyle = classForEdge(last.edge) === 'green' ? '#14805a' : classForEdge(last.edge) === 'red' ? '#bd4438' : '#a86614';
-      ctx.beginPath();
-      ctx.arc(x(history.length - 1), y(last.price), 5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
     function renderLevels(id, book) {
       const target = $(id);
       if (!book) {
@@ -501,17 +605,52 @@
       `;
     }
 
-    function renderTradeBook(upBook, downBook) {
+    function renderTradeMarket(asset, upBook, downBook) {
       const buying = bookSide === 'BUY';
       const upPrice = buying ? bestAsk(upBook) : bestBid(upBook);
       const downPrice = buying ? bestAsk(downBook) : bestBid(downBook);
-      $('upTradeQuote').textContent = `Up ${fmtCents(upPrice)}`;
-      $('downTradeQuote').textContent = `Down ${fmtCents(downPrice)}`;
+      const prefix = asset.toLowerCase();
+      $(`${prefix}UpTradeQuote`).textContent = `Up ${fmtCents(upPrice)}`;
+      $(`${prefix}DownTradeQuote`).textContent = `Down ${fmtCents(downPrice)}`;
+      const updatedAt = upBook?.received_at || upBook?.timestamp;
+      $(`${prefix}BookAge`).textContent = updatedAt ? `更新 ${fmtTime(updatedAt)}` : '--';
+    }
+
+    function renderTradeBooks(assets) {
+      renderTradeMarket('BTC', assets?.BTC?.books?.UP, assets?.BTC?.books?.DOWN);
+      renderTradeMarket('ETH', assets?.ETH?.books?.UP, assets?.ETH?.books?.DOWN);
+      const buying = bookSide === 'BUY';
       $('bookBuyTab').classList.toggle('active', buying);
       $('bookSellTab').classList.toggle('active', !buying);
       $('bookBuyTab').setAttribute('aria-selected', String(buying));
       $('bookSellTab').setAttribute('aria-selected', String(!buying));
-      $('tradeBookNote').textContent = buying ? '买入按卖一价格展示' : '卖出按买一价格展示';
+      $('tradeBookNote').textContent = buying
+        ? 'BTC、ETH 同时展示 · 买入按卖一价格'
+        : 'BTC、ETH 同时展示 · 卖出按买一价格';
+    }
+
+    function renderPairMarkets(assets) {
+      const btc = assets?.BTC?.market;
+      const eth = assets?.ETH?.market;
+      const aligned = Boolean(
+        btc?.start_time && eth?.start_time
+        && btc.start_time === eth.start_time
+        && btc.end_time === eth.end_time
+      );
+      const alignment = $('pairMarketAlignment');
+      alignment.textContent = aligned ? '场次已对齐' : '等待对齐';
+      alignment.className = `tag ${aligned ? 'green' : 'amber'}`;
+      $('pairMarketList').innerHTML = [['BTC', btc], ['ETH', eth]].map(([asset, market]) => {
+        if (!market) return `<div class="pair-market-card"><div class="pair-market-head"><span class="pair-market-name">${asset}</span><span class="tag amber">未发现市场</span></div></div>`;
+        const left = secondsLeft(market);
+        const accepting = market.accepting_orders !== false;
+        return `<div class="pair-market-card">
+          <div class="pair-market-head"><span class="pair-market-name">${asset} 5 分钟市场</span><span class="tag ${accepting ? 'green' : 'red'}">${accepting ? '可接单' : '停止接单'}</span></div>
+          <div class="pair-market-slug">${market.slug || '--'}</div>
+          <div class="pair-line"><span>时间窗口</span><strong>${fmtTime(market.start_time)} - ${fmtTime(market.end_time)}</strong></div>
+          <div class="pair-line"><span>剩余时间</span><strong>${left == null ? '--' : `${left}s`}</strong></div>
+        </div>`;
+      }).join('');
     }
 
     function describeEvent(event) {
@@ -528,6 +667,31 @@
 
     function render(snapshot) {
       latest = snapshot;
+      const aggregate = snapshot;
+      const pairPage = selectedAsset === 'PAIR';
+      const assetSnapshot = pairPage ? (aggregate.assets?.BTC || aggregate) : (aggregate.assets?.[selectedAsset] || aggregate);
+      snapshot = {
+        ...assetSnapshot,
+        strategy: aggregate.strategy || assetSnapshot.strategy,
+        risk: aggregate.risk || assetSnapshot.risk,
+        pending_strategy: aggregate.pending_strategy,
+        pending_risk: aggregate.pending_risk,
+        pending_pair_match: aggregate.pending_pair_match,
+        pair_match: aggregate.pair_match || assetSnapshot.pair_match,
+        config_status: aggregate.config_status,
+        ws_url: aggregate.ws_url,
+      };
+      const asset = String(snapshot.asset || selectedAsset).toUpperCase();
+      document.body.classList.toggle('pair-mode', pairPage);
+      $('assetBTC').classList.toggle('active', selectedAsset === 'BTC');
+      $('assetETH').classList.toggle('active', selectedAsset === 'ETH');
+      $('assetPAIR').classList.toggle('active', pairPage);
+      $('assetBTC').setAttribute('aria-selected', String(selectedAsset === 'BTC'));
+      $('assetETH').setAttribute('aria-selected', String(selectedAsset === 'ETH'));
+      $('assetPAIR').setAttribute('aria-selected', String(pairPage));
+      $('brandTitle').textContent = pairPage ? 'polybtc · BTC/ETH 自动匹配' : `polybtc · ${asset} 实时面板`;
+      $('binanceAssetLabel').textContent = `Binance ${asset}`;
+      $('polymarketAssetLabel').textContent = `Polymarket ${asset}`;
       const market = snapshot.market;
       const tick = snapshot.tick;
       const polymarketTick = snapshot.polymarket_tick;
@@ -536,6 +700,9 @@
       const summary = snapshot.summary || {};
       const position = snapshot.open_position;
       renderRuntimeConfig(snapshot);
+      renderPairConfig(snapshot);
+      renderPairMatch(snapshot.pair_match, snapshot.config_status);
+      renderPairMarkets(aggregate.assets || {});
 
       $('runPath').textContent = snapshot.output_dir || '等待运行数据';
       $('updatedAt').textContent = fmtTime(snapshot.created_at);
@@ -546,7 +713,7 @@
       $('marketSlug').textContent = market?.slug || '--';
       $('threshold').textContent = market?.threshold_price ? fmtPrice(market.threshold_price) : '--';
       $('thresholdSource').textContent = market?.threshold_source || '--';
-      $('thresholdVerified').textContent = thresholdReady ? '双页面一致' : '未通过';
+      $('thresholdVerified').textContent = thresholdReady ? '双通道一致' : '未通过';
       const left = secondsLeft(market);
       $('timeLeft').textContent = left === null ? '--' : `${left}s`;
 
@@ -558,7 +725,6 @@
       const marketEdge = rawEdge !== null ? rawEdge - correction : null;
       const reversePositionOpen = position?.reverse_entry === true;
       const effectiveEdge = reversePositionOpen && marketEdge !== null ? -marketEdge : marketEdge;
-      updateHistory(tick, market, correction);
       $('btcPrice').textContent = fmtPrice(price);
       $('polymarketPrice').textContent = fmtPrice(polymarketPrice);
       $('edgeCorrection').textContent = fmtSigned(correction, 2);
@@ -569,8 +735,7 @@
       $('edgeTag').className = 'tag ' + classForEdge(marketEdge);
       $('upAsk').textContent = fmtProb(bestAsk(upBook));
       $('downAsk').textContent = fmtProb(bestAsk(downBook));
-      $('tickAge').textContent = tick?.received_at ? fmtTime(tick.received_at) : '--';
-      $('bookAge').textContent = upBook?.received_at ? fmtTime(upBook.received_at) : upBook?.timestamp ? fmtTime(upBook.timestamp) : '--';
+      $('bookAge').textContent = 'BTC + ETH';
 
       $('signals').textContent = summary.signals ?? 0;
       $('fills').textContent = summary.fills ?? 0;
@@ -610,7 +775,7 @@
         ['价格偏离', fmtSigned(marketEdge, 2)],
         ['有效偏离', fmtSigned(effectiveEdge, 2)],
         ['修正', fmtSigned(correction, 2)],
-        ['Polymarket BTC', fmtPrice(polymarketPrice)],
+        [`Polymarket ${asset}`, fmtPrice(polymarketPrice)],
         ['反买模式', (snapshot.pending_strategy || snapshot.strategy || {}).reverse_entry_enabled ? '开启' : '关闭'],
         ['UP 盘口', `买 ${fmtProb(bestBid(upBook))} / 卖 ${fmtProb(bestAsk(upBook))}`],
         ['DOWN 盘口', `买 ${fmtProb(bestBid(downBook))} / 卖 ${fmtProb(bestAsk(downBook))}`],
@@ -635,8 +800,7 @@
       $('posUnrealized').textContent = unrealized === null ? '--' : fmtNumber(unrealized, 2);
       $('posUnrealized').style.color = unrealized === null || unrealized >= 0 ? 'var(--green)' : 'var(--red)';
 
-      renderTradeBook(upBook, downBook);
-      drawChart();
+      renderTradeBooks(aggregate.assets || { [asset]: assetSnapshot });
 
       const events = (snapshot.events || []).slice(-45).reverse();
       $('eventCount').textContent = snapshot.events?.length || 0;
@@ -686,8 +850,15 @@
     }
 
     const UI_REFRESH_MS = 100;
-    $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) renderTradeBook(latest.books?.UP, latest.books?.DOWN); });
-    $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) renderTradeBook(latest.books?.UP, latest.books?.DOWN); });
+    function selectAsset(asset) {
+      selectedAsset = asset;
+      if (latest) scheduleRender(latest);
+    }
+    $('assetBTC').addEventListener('click', () => selectAsset('BTC'));
+    $('assetETH').addEventListener('click', () => selectAsset('ETH'));
+    $('assetPAIR').addEventListener('click', () => selectAsset('PAIR'));
+    $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) scheduleRender(latest); });
+    $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) scheduleRender(latest); });
     $('strategyForm').addEventListener('input', () => {
       configFormDirty = true;
       const status = $('configStatus');
@@ -736,6 +907,51 @@
       } catch (error) {
         status.textContent = String(error.message || error).slice(0, 28);
         status.className = 'tag red';
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $('pairForm').addEventListener('input', () => {
+      pairFormDirty = true;
+      $('pairStatus').textContent = '有修改，尚未保存';
+      $('pairStatus').className = 'tag amber';
+    });
+    $('pairForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('savePair');
+      try {
+        button.disabled = true;
+        $('pairStatus').textContent = '保存中';
+        $('pairStatus').className = 'tag amber';
+        const payload = {
+          pair_match: {
+            enabled: $('pairEnabled').checked,
+            leg_quote_usd: runtimeNumber('pairLegQuote'),
+            min_spread_cents: runtimeNumber('pairMinSpread'),
+            start_seconds_after_open: runtimeNumber('pairStartSeconds'),
+            end_seconds_after_open: runtimeNumber('pairEndSeconds'),
+            max_pairs_per_market: runtimeNumber('pairMaxPairs'),
+            alternate_directions: $('pairAlternate').checked,
+          },
+        };
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = {
+          ...(latest || {}),
+          pending_pair_match: config.pending_pair_match,
+          config_status: config.config_status,
+        };
+        pairFormDirty = false;
+        renderPairConfig({ ...latest, pair_match: latest?.pair_match }, true);
+        if (latest) scheduleRender(latest);
+      } catch (error) {
+        $('pairStatus').textContent = String(error.message || error).slice(0, 28);
+        $('pairStatus').className = 'tag red';
       } finally {
         button.disabled = false;
       }

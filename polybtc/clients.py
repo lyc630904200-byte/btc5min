@@ -13,8 +13,8 @@ import httpx
 import websockets
 
 from .config import SourceConfig
-from .market import choose_current_market, market_interval_from_slug, parse_market
-from .models import BookLevel, MarketState, OrderBookSnapshot, PriceTick
+from .market import choose_current_market, market_interval_from_slug, parse_json_list, parse_market
+from .models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceTick
 
 
 CLOB_SUBSCRIPTION_TYPE = "market"
@@ -23,9 +23,20 @@ PROXY_ATTEMPT_TIMEOUT_SECONDS = 1.5
 CLOB_HEARTBEAT_SECONDS = 10
 
 
-def btc_updown_5m_slugs(now: datetime, *, before: int = 3, after: int = 12) -> list[str]:
+def crypto_updown_5m_slugs(
+    now: datetime,
+    *,
+    asset: str = "BTC",
+    before: int = 3,
+    after: int = 12,
+) -> list[str]:
     base = int(now.timestamp()) // 300 * 300
-    return [f"btc-updown-5m-{base + offset * 300}" for offset in range(-before, after + 1)]
+    prefix = asset.strip().lower()
+    return [f"{prefix}-updown-5m-{base + offset * 300}" for offset in range(-before, after + 1)]
+
+
+def btc_updown_5m_slugs(now: datetime, *, before: int = 3, after: int = 12) -> list[str]:
+    return crypto_updown_5m_slugs(now, asset="BTC", before=before, after=after)
 
 
 def direct_websocket_options() -> dict[str, Any]:
@@ -383,7 +394,7 @@ def parse_polymarket_past_results(html: str) -> list[PolymarketPastResult]:
             end = datetime.fromisoformat(match.group("end").replace("Z", "+00:00"))
             open_price = float(match.group("open"))
             close_price = float(match.group("close"))
-            if not all(math.isfinite(value) and 1000 <= value <= 1_000_000 for value in (open_price, close_price)):
+            if not all(math.isfinite(value) and 0 < value <= 1_000_000 for value in (open_price, close_price)):
                 continue
             result = PolymarketPastResult(
                 start_time=start,
@@ -435,13 +446,14 @@ def react_query_objects(html: str) -> list[dict[str, Any]]:
     return objects
 
 
-def parse_polymarket_outcome_prices(html: str) -> list[PolymarketOutcomePrice]:
+def parse_polymarket_outcome_prices(html: str, asset: str = "BTC") -> list[PolymarketOutcomePrice]:
+    asset = asset.upper()
     grouped: dict[str, list[PolymarketOutcomePrice]] = {}
     for item in react_query_objects(html):
         query_key = item.get("queryKey")
         if (
             len(query_key) != 6
-            or query_key[:3] != ["crypto-prices", "price", "BTC"]
+            or query_key[:3] != ["crypto-prices", "price", asset]
             or query_key[4] != "fiveminute"
         ):
             continue
@@ -463,10 +475,10 @@ def parse_polymarket_outcome_prices(html: str) -> list[PolymarketOutcomePrice]:
         numeric_prices = [open_price] + ([] if close_price is None else [close_price])
         if (
             end - start != timedelta(minutes=5)
-            or not all(math.isfinite(value) and 1000 <= value <= 1_000_000 for value in numeric_prices)
+            or not all(math.isfinite(value) and 0 < value <= 1_000_000 for value in numeric_prices)
         ):
             continue
-        slug = f"btc-updown-5m-{int(start.timestamp())}"
+        slug = f"{asset.lower()}-updown-5m-{int(start.timestamp())}"
         grouped.setdefault(slug, []).append(
             PolymarketOutcomePrice(
                 slug=slug,
@@ -490,8 +502,15 @@ def parse_polymarket_outcome_prices(html: str) -> list[PolymarketOutcomePrice]:
 
 
 class BinanceClient:
-    def __init__(self, config: SourceConfig):
+    def __init__(self, config: SourceConfig, asset: str = "BTC"):
         self.config = config
+        self.asset = asset.upper()
+        self.symbol = config.binance_symbol if self.asset == "BTC" else f"{self.asset}USDT"
+        self.ws_url = (
+            config.binance_ws_url
+            if self.asset == "BTC"
+            else f"wss://stream.binance.com:9443/ws/{self.symbol.lower()}@trade"
+        )
 
     async def server_time(self) -> dict[str, Any]:
         response, start, end, used_env_proxy = await get_direct_first(
@@ -514,14 +533,14 @@ class BinanceClient:
         response, _, _, _ = await get_direct_first(
             f"{self.config.binance_rest_url}/api/v3/ticker/price",
             timeout=5,
-            params={"symbol": self.config.binance_symbol},
+            params={"symbol": self.symbol},
             proxy_url=self.config.proxy_url,
         )
         payload = response.json()
         now = datetime.now(timezone.utc)
         return PriceTick(
             source="binance_rest",
-            symbol=str(payload.get("symbol") or self.config.binance_symbol),
+            symbol=str(payload.get("symbol") or self.symbol),
             price=float(payload["price"]),
             exchange_timestamp=now,
             received_at=now,
@@ -534,7 +553,7 @@ class BinanceClient:
                 connected = False
                 try:
                     async with websockets.connect(
-                        self.config.binance_ws_url,
+                        self.ws_url,
                         ping_interval=20,
                         ping_timeout=20,
                         close_timeout=5,
@@ -549,7 +568,7 @@ class BinanceClient:
                             exchange_ts = datetime.fromtimestamp(event_time / 1000, tz=timezone.utc) if event_time else None
                             yield PriceTick(
                                 source="binance",
-                                symbol=self.config.binance_symbol,
+                                symbol=self.symbol,
                                 price=price,
                                 exchange_timestamp=exchange_ts,
                                 received_at=datetime.now(timezone.utc),
@@ -569,8 +588,10 @@ class BinanceClient:
 
 
 class PolymarketClient:
-    def __init__(self, config: SourceConfig):
+    def __init__(self, config: SourceConfig, asset: str = "BTC"):
         self.config = config
+        self.asset = asset.upper()
+        self.rtds_symbol = f"{self.asset.lower()}/usd"
 
     async def _discover_from_requests(
         self,
@@ -593,7 +614,7 @@ class PolymarketClient:
             for item in items or []:
                 candidates = item.get("markets") if isinstance(item, dict) and item.get("markets") else [item]
                 for candidate in candidates:
-                    market = parse_market(candidate, self.config, now=now)
+                    market = parse_market(candidate, self.config, now=now, asset=self.asset)
                     if market and market.condition_id not in seen:
                         seen.add(market.condition_id)
                         markets.append(market)
@@ -611,7 +632,7 @@ class PolymarketClient:
             )
         priority_requests.extend(
             (f"{self.config.gamma_url}/markets", {"slug": slug})
-            for slug in btc_updown_5m_slugs(now)
+            for slug in crypto_updown_5m_slugs(now, asset=self.asset)
         )
         markets = await self._discover_from_requests(priority_requests, now=now, timeout=3)
         if markets:
@@ -630,7 +651,7 @@ class PolymarketClient:
                 f"{self.config.gamma_url}/markets",
                 {"limit": 100, "active": "true", "closed": "false", "search": query},
             )
-            for query in ("Bitcoin", "BTC", "up-or-down")
+            for query in (("Bitcoin", "BTC", "up-or-down") if self.asset == "BTC" else ("Ethereum", "ETH", "up-or-down"))
         )
         return await self._discover_from_requests(fallback_requests, now=now, timeout=6)
 
@@ -652,8 +673,42 @@ class PolymarketClient:
                 threshold = float(metadata.get("priceToBeat"))
             except (TypeError, ValueError):
                 continue
-            if threshold >= 1000:
+            if 0 < threshold <= 1_000_000:
                 return threshold
+        return None
+
+    async def resolved_outcome(self, market_slug: str) -> Direction | None:
+        """Return the strict official Up/Down winner after Gamma marks a market resolved."""
+        response, _, _, _ = await get_direct_first(
+            f"{self.config.gamma_url}/markets",
+            timeout=self.config.threshold_page_timeout_seconds,
+            params={"slug": market_slug, "closed": "true"},
+            proxy_url=self.config.proxy_url,
+        )
+        payload = response.json()
+        markets = payload if isinstance(payload, list) else [payload]
+        for market in markets:
+            if not isinstance(market, dict) or market.get("slug") != market_slug:
+                continue
+            if market.get("closed") is not True or str(market.get("umaResolutionStatus") or "").lower() != "resolved":
+                continue
+            outcomes = [str(value) for value in parse_json_list(market.get("outcomes"))]
+            prices = parse_json_list(market.get("outcomePrices"))
+            if len(outcomes) != len(prices) or len(outcomes) < 2:
+                continue
+            try:
+                numeric_prices = [float(value) for value in prices]
+            except (TypeError, ValueError):
+                continue
+            winners = [index for index, price in enumerate(numeric_prices) if price == 1.0]
+            losers = [index for index, price in enumerate(numeric_prices) if price == 0.0]
+            if len(winners) != 1 or len(losers) != len(outcomes) - 1:
+                continue
+            winner = outcomes[winners[0]].strip().lower()
+            if winner in {"up", "yes", "higher", "above"}:
+                return Direction.UP
+            if winner in {"down", "no", "lower", "below"}:
+                return Direction.DOWN
         return None
 
     async def current_market(self) -> MarketState | None:
@@ -690,7 +745,8 @@ class PolymarketClient:
         )
         return {"ok": True, "latency_ms": (end - start).total_seconds() * 1000, "used_env_proxy": used_env_proxy, "payload": response.json()}
 
-    async def rtds_crypto_price_ticks(self, symbol: str = "btc/usd") -> AsyncIterator[PriceTick]:
+    async def rtds_crypto_price_ticks(self, symbol: str | None = None) -> AsyncIterator[PriceTick]:
+        symbol = symbol or self.rtds_symbol
         subscription = {
             "action": "subscribe",
             "subscriptions": [
@@ -758,7 +814,7 @@ class PolymarketClient:
         requests = [self.event_page_text(market_slug, self.config.threshold_page_timeout_seconds)]
         if interval is not None:
             previous_start = interval[0] - timedelta(minutes=5)
-            previous_slug = f"btc-updown-5m-{int(previous_start.timestamp())}"
+            previous_slug = f"{self.asset.lower()}-updown-5m-{int(previous_start.timestamp())}"
             requests.append(self.event_page_text(previous_slug, self.config.threshold_page_timeout_seconds))
         responses = await asyncio.gather(*requests, return_exceptions=True)
         if isinstance(responses[0], Exception):
@@ -766,7 +822,7 @@ class PolymarketClient:
         current_text = responses[0]
         assert isinstance(current_text, str)
         outcome_price = next(
-            (price for price in parse_polymarket_outcome_prices(current_text) if price.slug == market_slug),
+            (price for price in parse_polymarket_outcome_prices(current_text, self.asset) if price.slug == market_slug),
             None,
         )
         results = parse_polymarket_past_results(current_text)
@@ -784,7 +840,7 @@ class PolymarketClient:
             ]
         if previous_slug is not None and len(responses) > 1 and isinstance(responses[1], str):
             previous_outcome = next(
-                (price for price in parse_polymarket_outcome_prices(responses[1]) if price.slug == previous_slug),
+                (price for price in parse_polymarket_outcome_prices(responses[1], self.asset) if price.slug == previous_slug),
                 None,
             )
             if (
@@ -807,7 +863,7 @@ class PolymarketClient:
         return parse_polymarket_past_results(await self.event_page_text(market_slug))
 
     async def outcome_price(self, market_slug: str) -> PolymarketOutcomePrice | None:
-        for price in parse_polymarket_outcome_prices(await self.event_page_text(market_slug)):
+        for price in parse_polymarket_outcome_prices(await self.event_page_text(market_slug), self.asset):
             if price.slug == market_slug:
                 return price
         return None
@@ -861,7 +917,7 @@ async def send_clob_heartbeats(websocket: Any) -> None:
 
 
 def expand_market_slugs(slug: str) -> list[str]:
-    match = re.fullmatch(r"(btc-updown-5m-)(\d+)", slug)
+    match = re.fullmatch(r"((?:btc|bitcoin|eth|ethereum)-updown-5m-)(\d+)", slug)
     if not match:
         return [slug]
     now_ts = int(datetime.now(timezone.utc).timestamp())
