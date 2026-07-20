@@ -56,6 +56,7 @@ risk:
 
 pair_match:
   enabled: false
+  # Total quote target is 2x this value; both legs receive exactly the same shares.
   leg_quote_usd: 10
   min_spread_cents: 0
   start_seconds_after_open: 20

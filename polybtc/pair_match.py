@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from .config import AppConfig
 from .market import market_is_active
 from .models import Direction, MarketState, OrderBookSnapshot
-from .orderbook import ExecutionResult, simulate_buy
+from .orderbook import ExecutionResult, simulate_buy_quantity
 
 if TYPE_CHECKING:
     from .engine import PaperEngine
@@ -101,6 +101,64 @@ def spread_cents(btc_fill: ExecutionResult, eth_fill: ExecutionResult) -> float 
     return 100.0 * (
         1.0 - btc_fill.avg_price - eth_fill.avg_price - btc_fee_per_share - eth_fee_per_share
     )
+
+
+def simulate_equal_quantity_buys(
+    btc_book: OrderBookSnapshot,
+    eth_book: OrderBookSnapshot,
+    total_quote_usd: float,
+    fee_rate: float,
+) -> tuple[ExecutionResult, ExecutionResult]:
+    """Spend a combined quote budget while buying exactly the same shares on both legs."""
+    btc_asks = sorted(
+        [level for level in btc_book.asks if level.price > 0 and level.size > 0],
+        key=lambda level: level.price,
+    )
+    eth_asks = sorted(
+        [level for level in eth_book.asks if level.price > 0 and level.size > 0],
+        key=lambda level: level.price,
+    )
+    if total_quote_usd <= 0 or not btc_asks or not eth_asks:
+        return (
+            simulate_buy_quantity(btc_book, 0, fee_rate),
+            simulate_buy_quantity(eth_book, 0, fee_rate),
+        )
+
+    btc_index = 0
+    eth_index = 0
+    btc_remaining = btc_asks[0].size
+    eth_remaining = eth_asks[0].size
+    remaining_quote = total_quote_usd
+    quantity = 0.0
+    while remaining_quote > 1e-9 and btc_index < len(btc_asks) and eth_index < len(eth_asks):
+        unit_quote = btc_asks[btc_index].price + eth_asks[eth_index].price
+        available_quantity = min(btc_remaining, eth_remaining)
+        take_quantity = min(available_quantity, remaining_quote / unit_quote)
+        quantity += take_quantity
+        remaining_quote -= take_quantity * unit_quote
+        btc_remaining -= take_quantity
+        eth_remaining -= take_quantity
+        if btc_remaining <= 1e-12:
+            btc_index += 1
+            if btc_index < len(btc_asks):
+                btc_remaining = btc_asks[btc_index].size
+        if eth_remaining <= 1e-12:
+            eth_index += 1
+            if eth_index < len(eth_asks):
+                eth_remaining = eth_asks[eth_index].size
+
+    btc_fill = simulate_buy_quantity(btc_book, quantity, fee_rate)
+    eth_fill = simulate_buy_quantity(eth_book, quantity, fee_rate)
+    complete = bool(
+        remaining_quote <= 1e-7
+        and btc_fill.complete
+        and eth_fill.complete
+        and abs(btc_fill.quote + eth_fill.quote - total_quote_usd) <= 1e-6
+        and abs(btc_fill.quantity - eth_fill.quantity) <= 1e-9
+    )
+    btc_fill.complete = complete
+    eth_fill.complete = complete
+    return btc_fill, eth_fill
 
 
 class PairMatchRegistry:
@@ -378,7 +436,7 @@ class PairMatchEngine:
         payload = [
             {
                 "token_id": book.token_id,
-                "asks": [(level.price, level.size) for level in book.asks],
+                "asks": sorted((level.price, level.size) for level in book.asks),
             }
             for book in books
         ]
@@ -400,8 +458,12 @@ class PairMatchEngine:
                 return PairCandidate(direction=direction, available=False, reason="book_stale")
             if not book.depth_trusted:
                 return PairCandidate(direction=direction, available=False, reason="book_depth_untrusted")
-        btc_fill = simulate_buy(btc_book, self.config.pair_match.leg_quote_usd, self.config.strategy.taker_fee_rate)
-        eth_fill = simulate_buy(eth_book, self.config.pair_match.leg_quote_usd, self.config.strategy.taker_fee_rate)
+        btc_fill, eth_fill = simulate_equal_quantity_buys(
+            btc_book,
+            eth_book,
+            self.config.pair_match.leg_quote_usd * 2.0,
+            self.config.strategy.taker_fee_rate,
+        )
         if not btc_fill.complete or not eth_fill.complete:
             return PairCandidate(direction=direction, available=False, reason="insufficient_depth")
         if btc_fill.quantity < btc_market.min_order_size or eth_fill.quantity < eth_market.min_order_size:

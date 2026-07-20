@@ -7,8 +7,13 @@ from polybtc.clients import PolymarketClient
 from polybtc.config import AppConfig, PairMatchConfig, SourceConfig
 from polybtc.engine import PaperEngine
 from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot
-from polybtc.pair_match import PairDirection, PairMatchEngine, PairMatchRegistry, spread_cents
-from polybtc.orderbook import simulate_buy
+from polybtc.pair_match import (
+    PairDirection,
+    PairMatchEngine,
+    PairMatchRegistry,
+    simulate_equal_quantity_buys,
+    spread_cents,
+)
 
 
 def market(asset: str, start: datetime) -> MarketState:
@@ -55,7 +60,7 @@ def engines(config: AppConfig, start: datetime, now: datetime) -> dict[str, Pape
     return result
 
 
-def test_pair_spread_uses_multilevel_execution_and_per_share_fees() -> None:
+def test_pair_spread_uses_equal_shares_multilevel_execution_and_per_share_fees() -> None:
     now = datetime(2026, 7, 20, 9, 0, 30, tzinfo=timezone.utc)
     btc_book = OrderBookSnapshot(
         token_id="btc", timestamp=now, received_at=now, depth_trusted=True,
@@ -66,8 +71,9 @@ def test_pair_spread_uses_multilevel_execution_and_per_share_fees() -> None:
         asks=[BookLevel(price=0.30, size=10), BookLevel(price=0.35, size=30)],
     )
 
-    btc_fill = simulate_buy(btc_book, 10, fee_rate=0.07)
-    eth_fill = simulate_buy(eth_book, 10, fee_rate=0.07)
+    btc_fill, eth_fill = simulate_equal_quantity_buys(
+        btc_book, eth_book, total_quote_usd=20, fee_rate=0.07
+    )
     value = spread_cents(btc_fill, eth_fill)
 
     expected = 100 * (
@@ -78,9 +84,28 @@ def test_pair_spread_uses_multilevel_execution_and_per_share_fees() -> None:
         - eth_fill.fee_usd / eth_fill.quantity
     )
     assert value == expected
-    assert btc_fill.quote == 10
-    assert eth_fill.quote == 10
-    assert btc_fill.quantity != eth_fill.quantity
+    assert btc_fill.complete is True
+    assert eth_fill.complete is True
+    assert btc_fill.quantity == pytest.approx(eth_fill.quantity)
+    assert btc_fill.quote + eth_fill.quote == pytest.approx(20)
+    assert btc_fill.quote != pytest.approx(eth_fill.quote)
+    assert btc_fill.levels_used == 2
+    assert eth_fill.levels_used == 2
+
+
+def test_equal_share_execution_rejects_insufficient_combined_depth() -> None:
+    now = datetime(2026, 7, 20, 9, 0, 30, tzinfo=timezone.utc)
+    btc_book = book("btc", "btc-market", 0.40, now, size=5)
+    eth_book = book("eth", "eth-market", 0.50, now, size=5)
+
+    btc_fill, eth_fill = simulate_equal_quantity_buys(
+        btc_book, eth_book, total_quote_usd=20, fee_rate=0.07
+    )
+
+    assert btc_fill.complete is False
+    assert eth_fill.complete is False
+    assert btc_fill.quantity == pytest.approx(eth_fill.quantity)
+    assert btc_fill.quote + eth_fill.quote < 20
 
 
 def test_pair_engine_opens_once_per_quote_and_strictly_alternates(tmp_path) -> None:
@@ -101,8 +126,9 @@ def test_pair_engine_opens_once_per_quote_and_strictly_alternates(tmp_path) -> N
 
     first = matcher.evaluate(states, now)
     assert first is not None
-    assert first.btc_leg.quote == 10
-    assert first.eth_leg.quote == 10
+    assert first.btc_leg.quantity == pytest.approx(first.eth_leg.quantity)
+    assert first.btc_leg.quote + first.eth_leg.quote == pytest.approx(20)
+    assert first.scenario_pnl["btc_only_wins"] == pytest.approx(first.scenario_pnl["eth_only_wins"])
     assert matcher.evaluate(states, now) is None
 
     states["ETH"].books[Direction.UP].asks[0].size += 1

@@ -77,6 +77,52 @@ def simulate_buy(book: OrderBookSnapshot, quote_usd: float, fee_rate: float = 0.
     )
 
 
+def simulate_buy_quantity(book: OrderBookSnapshot, quantity: float, fee_rate: float = 0.0) -> ExecutionResult:
+    """Simulate buying an exact share quantity across the complete ask ladder."""
+    book = normalize_book(book)
+    best = book.best_ask
+    if best is None or quantity <= 0:
+        return ExecutionResult(
+            complete=False,
+            avg_price=0.0,
+            quantity=0.0,
+            quote=0.0,
+            slippage=0.0,
+            best_price=best,
+            available_depth_quote=0.0,
+            levels_used=0,
+        )
+
+    remaining_qty = quantity
+    filled_qty = 0.0
+    quote = 0.0
+    levels_used = 0
+    fee_usd = 0.0
+    available_depth_quote = sum(level.price * level.size for level in book.asks)
+    for level in book.asks:
+        if remaining_qty <= 1e-12:
+            break
+        take_qty = min(remaining_qty, level.size)
+        filled_qty += take_qty
+        quote += take_qty * level.price
+        fee_usd += taker_fee_usd(take_qty, level.price, fee_rate)
+        remaining_qty -= take_qty
+        levels_used += 1
+
+    avg_price = quote / filled_qty if filled_qty else 0.0
+    return ExecutionResult(
+        complete=remaining_qty <= 1e-9,
+        avg_price=avg_price,
+        quantity=filled_qty,
+        quote=quote,
+        slippage=avg_price - best if filled_qty else 0.0,
+        best_price=best,
+        available_depth_quote=available_depth_quote,
+        levels_used=levels_used,
+        fee_usd=fee_usd,
+    )
+
+
 def simulate_sell(book: OrderBookSnapshot, quantity: float, fee_rate: float = 0.0) -> ExecutionResult:
     book = normalize_book(book)
     best = book.best_bid

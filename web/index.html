@@ -268,7 +268,20 @@
 
         <div class="panel pair-only">
           <div class="panel-head"><div class="panel-title">BTC/ETH 配对市场</div><div class="tag blue" id="pairMarketAlignment">等待对齐</div></div>
-          <div class="panel-body"><div class="pair-market-list" id="pairMarketList"></div></div>
+          <div class="panel-body"><div class="pair-market-list" id="pairMarketList">
+            <div class="pair-market-card" id="pairBTCMarketCard">
+              <div class="pair-market-head"><span class="pair-market-name">BTC 5 分钟市场</span><span class="tag amber" id="pairBTCMarketStatus">未发现市场</span></div>
+              <div class="pair-market-slug" id="pairBTCMarketSlug">--</div>
+              <div class="pair-line"><span>时间窗口</span><strong id="pairBTCMarketWindow">--</strong></div>
+              <div class="pair-line"><span>剩余时间</span><strong id="pairBTCMarketLeft">--</strong></div>
+            </div>
+            <div class="pair-market-card" id="pairETHMarketCard">
+              <div class="pair-market-head"><span class="pair-market-name">ETH 5 分钟市场</span><span class="tag amber" id="pairETHMarketStatus">未发现市场</span></div>
+              <div class="pair-market-slug" id="pairETHMarketSlug">--</div>
+              <div class="pair-line"><span>时间窗口</span><strong id="pairETHMarketWindow">--</strong></div>
+              <div class="pair-line"><span>剩余时间</span><strong id="pairETHMarketLeft">--</strong></div>
+            </div>
+          </div></div>
         </div>
       </section>
 
@@ -307,7 +320,17 @@
               <div class="signal-big" id="signalText">观察</div>
               <div class="small" id="signalMeta">--</div>
             </div>
-            <div class="reason-list" id="reasonList"></div>
+            <div class="reason-list" id="reasonList">
+              <div class="reason"><strong>阈值</strong><span class="mono" id="reasonThreshold">--</span></div>
+              <div class="reason"><strong>价格偏离</strong><span class="mono" id="reasonEdge">--</span></div>
+              <div class="reason"><strong>有效偏离</strong><span class="mono" id="reasonEffectiveEdge">--</span></div>
+              <div class="reason"><strong>修正</strong><span class="mono" id="reasonCorrection">--</span></div>
+              <div class="reason"><strong id="reasonPolyLabel">Polymarket</strong><span class="mono" id="reasonPolyPrice">--</span></div>
+              <div class="reason"><strong>反买模式</strong><span class="mono" id="reasonReverse">--</span></div>
+              <div class="reason"><strong>UP 盘口</strong><span class="mono" id="reasonUpBook">--</span></div>
+              <div class="reason"><strong>DOWN 盘口</strong><span class="mono" id="reasonDownBook">--</span></div>
+              <div class="reason"><strong>最近拒绝</strong><span class="mono" id="reasonLastRejection">--</span></div>
+            </div>
           </div>
         </div>
 
@@ -318,21 +341,50 @@
               <div class="settings-grid">
                 <label class="setting"><span class="setting-label">自动匹配</span><span class="setting-toggle"><input id="pairEnabled" type="checkbox">启用后停止单币新入场</span></label>
                 <label class="setting"><span class="setting-label">严格交替</span><span class="setting-toggle"><input id="pairAlternate" type="checkbox">A/B 严格轮换</span></label>
-                <label class="setting"><span class="setting-label">每腿金额（USD）</span><input class="setting-input" id="pairLegQuote" type="number" min="0.01" step="0.01" required></label>
+                <label class="setting"><span class="setting-label">等份基准（USD/腿）</span><input class="setting-input" id="pairLegQuote" type="number" min="0.01" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">最低价差（美分）</span><input class="setting-input" id="pairMinSpread" type="number" min="-100" max="100" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">开盘后开始秒数</span><input class="setting-input" id="pairStartSeconds" type="number" min="0" max="299" step="1" required></label>
                 <label class="setting"><span class="setting-label">开盘后结束秒数（不含）</span><input class="setting-input" id="pairEndSeconds" type="number" min="1" max="300" step="1" required></label>
                 <label class="setting"><span class="setting-label">每场配对上限</span><input class="setting-input" id="pairMaxPairs" type="number" min="1" step="1" required></label>
               </div>
-              <div class="settings-actions"><span class="settings-note">保存后在下一组起止时间完全一致的 BTC/ETH 场次原子生效。</span><button class="settings-save" id="savePair" type="submit">保存匹配参数</button></div>
+              <div class="settings-actions"><span class="settings-note">两腿购买相同份数，总成交额按 2 × 等份基准计算，手续费额外计入；保存后在下一组对齐场次原子生效。</span><button class="settings-save" id="savePair" type="submit">保存匹配参数</button></div>
             </form>
             <div class="subhead">实时组合 · <span id="pairRuntime">--</span></div>
-            <div class="pair-grid" id="pairCandidates"></div>
-            <div class="subhead">累计 · <span id="pairSummary">--</span></div>
+            <div class="pair-grid" id="pairCandidates">
+              <div class="pair-card" id="pairACard">
+                <div class="pair-card-head"><span>A · BTC YES + ETH NO</span><span class="tag blue" id="pairAStatus">等待盘口</span></div>
+                <div class="pair-line"><span>BTC 腿</span><strong id="pairABtcLeg">--</strong></div>
+                <div class="pair-line"><span>ETH 腿</span><strong id="pairAEthLeg">--</strong></div>
+                <div class="pair-line"><span>入场价差</span><strong id="pairASpread">--</strong></div>
+                <div class="pair-line"><span>总成本（含费）</span><strong id="pairACost">--</strong></div>
+                <div class="pair-line"><span>拒绝原因</span><strong id="pairAReason">--</strong></div>
+                <div class="scenario-grid">
+                  <div class="scenario"><span>全输</span><strong id="pairABothLose">--</strong></div>
+                  <div class="scenario"><span>仅 BTC 赢</span><strong id="pairABtcWins">--</strong></div>
+                  <div class="scenario"><span>仅 ETH 赢</span><strong id="pairAEthWins">--</strong></div>
+                  <div class="scenario"><span>两腿全赢</span><strong id="pairABothWin">--</strong></div>
+                </div>
+              </div>
+              <div class="pair-card" id="pairBCard">
+                <div class="pair-card-head"><span>B · BTC NO + ETH YES</span><span class="tag blue" id="pairBStatus">等待盘口</span></div>
+                <div class="pair-line"><span>BTC 腿</span><strong id="pairBBtcLeg">--</strong></div>
+                <div class="pair-line"><span>ETH 腿</span><strong id="pairBEthLeg">--</strong></div>
+                <div class="pair-line"><span>入场价差</span><strong id="pairBSpread">--</strong></div>
+                <div class="pair-line"><span>总成本（含费）</span><strong id="pairBCost">--</strong></div>
+                <div class="pair-line"><span>拒绝原因</span><strong id="pairBReason">--</strong></div>
+                <div class="scenario-grid">
+                  <div class="scenario"><span>全输</span><strong id="pairBBothLose">--</strong></div>
+                  <div class="scenario"><span>仅 BTC 赢</span><strong id="pairBBtcWins">--</strong></div>
+                  <div class="scenario"><span>仅 ETH 赢</span><strong id="pairBEthWins">--</strong></div>
+                  <div class="scenario"><span>两腿全赢</span><strong id="pairBBothWin">--</strong></div>
+                </div>
+              </div>
+            </div>
+            <div class="subhead">累计 · <span id="pairSummaryCounts">--</span> · 净盈亏 <strong id="pairSummaryPnl">--</strong></div>
             <div class="subhead">最近 20 场</div>
-            <div class="table-wrap"><table class="data-table"><thead><tr><th>场次</th><th>官方结果</th><th>A/B 数量</th><th>成本</th><th>手续费</th><th>兑付</th><th>净盈亏</th><th>状态</th></tr></thead><tbody id="pairMarkets"></tbody></table></div>
+            <div class="table-wrap" id="pairMarketsWrap"><table class="data-table"><thead><tr><th>场次</th><th>订单编号</th><th>官方结果</th><th>A/B 数量</th><th>成本</th><th>手续费</th><th>兑付</th><th>净盈亏</th><th>状态</th></tr></thead><tbody id="pairMarkets"></tbody></table></div>
             <div class="subhead">最近 100 单</div>
-            <div class="table-wrap"><table class="data-table"><thead><tr><th>时间/方向</th><th>BTC 方向 / 均价 / 份数 / 金额 / 费</th><th>ETH 方向 / 均价 / 份数 / 金额 / 费</th><th>价差</th><th>官方结果</th><th>实际盈亏</th><th>状态</th></tr></thead><tbody id="pairOrders"></tbody></table></div>
+            <div class="table-wrap" id="pairOrdersWrap"><table class="data-table"><thead><tr><th>订单编号</th><th>时间/方向</th><th>BTC 方向 / 均价 / 份数 / 金额 / 费</th><th>ETH 方向 / 均价 / 份数 / 金额 / 费</th><th>价差</th><th>官方结果</th><th>实际盈亏</th><th>状态</th></tr></thead><tbody id="pairOrders"></tbody></table></div>
           </div>
         </div>
       </section>
@@ -415,6 +467,55 @@
       max_pairs_per_market: 'pairMaxPairs',
       alternate_directions: 'pairAlternate',
     };
+    const renderCache = {
+      pairMarkets: '',
+      pairOrders: '',
+      reasons: '',
+      timeline: '',
+    };
+
+    function setText(id, value) {
+      const element = $(id);
+      if (!element) return;
+      const next = String(value ?? '');
+      if (element.textContent !== next) element.textContent = next;
+    }
+
+    function setClass(id, value) {
+      const element = $(id);
+      if (element && element.className !== value) element.className = value;
+    }
+
+    function setColor(id, value) {
+      const element = $(id);
+      if (element && element.style.color !== value) element.style.color = value;
+    }
+
+    function setPnl(id, value, digits = 3) {
+      if (value === null || value === undefined) {
+        setText(id, '--');
+        setColor(id, '');
+        return;
+      }
+      const number = Number(value);
+      setText(id, fmtSigned(number, digits));
+      setColor(id, number >= 0 ? 'var(--green)' : 'var(--red)');
+    }
+
+    function updateHtmlWhenChanged(id, cacheKey, signature, html) {
+      if (renderCache[cacheKey] === signature) return;
+      const target = $(id);
+      if (!target) return;
+      const scrollContainer = target.closest('.table-wrap, .timeline');
+      const scrollTop = scrollContainer?.scrollTop || 0;
+      const scrollLeft = scrollContainer?.scrollLeft || 0;
+      target.innerHTML = html;
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollTop;
+        scrollContainer.scrollLeft = scrollLeft;
+      }
+      renderCache[cacheKey] = signature;
+    }
 
     function scheduleRender(snapshot) {
       latest = snapshot;
@@ -508,55 +609,83 @@
       return `${leg.direction} · 均 ${fmtProb(leg.avg_price)} · ${fmtNumber(leg.quantity, 3)} 份 · $${fmtNumber(leg.quote, 2)} · 费 $${fmtNumber(leg.fee_usd, 4)}`;
     }
 
+    function shortOrderNumber(orderId) {
+      if (!orderId) return '--';
+      return `#${String(orderId).slice(0, 8).toUpperCase()}`;
+    }
+
+    function renderPairCandidate(prefix, candidate) {
+      if (!candidate) {
+        setClass(`pair${prefix}Card`, 'pair-card');
+        setText(`pair${prefix}Status`, '等待盘口');
+        setClass(`pair${prefix}Status`, 'tag blue');
+        ['BtcLeg', 'EthLeg', 'Spread', 'Cost', 'Reason'].forEach((field) => setText(`pair${prefix}${field}`, '--'));
+        ['BothLose', 'BtcWins', 'EthWins', 'BothWin'].forEach((field) => setPnl(`pair${prefix}${field}`, null));
+        return;
+      }
+      const eligible = candidate.available && candidate.meets_spread;
+      setClass(`pair${prefix}Card`, `pair-card ${eligible ? 'eligible' : 'rejected'}`);
+      setText(`pair${prefix}Status`, eligible ? '达标' : candidate.available ? '未达标' : '不可用');
+      setClass(`pair${prefix}Status`, `tag ${eligible ? 'green' : 'amber'}`);
+      setText(`pair${prefix}BtcLeg`, pairLegText(candidate.btc_leg));
+      setText(`pair${prefix}EthLeg`, pairLegText(candidate.eth_leg));
+      setText(`pair${prefix}Spread`, candidate.spread_cents == null ? '--' : `${fmtNumber(candidate.spread_cents, 3)}¢`);
+      setText(`pair${prefix}Cost`, candidate.total_cost_usd == null ? '--' : `$${fmtNumber(candidate.total_cost_usd, 4)}`);
+      setText(`pair${prefix}Reason`, candidate.reason || '--');
+      const scenarios = candidate.scenario_pnl || {};
+      setPnl(`pair${prefix}BothLose`, scenarios.both_lose);
+      setPnl(`pair${prefix}BtcWins`, scenarios.btc_only_wins);
+      setPnl(`pair${prefix}EthWins`, scenarios.eth_only_wins);
+      setPnl(`pair${prefix}BothWin`, scenarios.both_win);
+    }
+
     function renderPairMatch(pair, configStatus) {
       pair = pair || {};
       const candidates = pair.candidates || {};
-      const directionRows = [
-        ['BTC_UP_ETH_DOWN', 'A · BTC YES + ETH NO'],
-        ['BTC_DOWN_ETH_UP', 'B · BTC NO + ETH YES'],
-      ];
-      $('pairCandidates').innerHTML = directionRows.map(([key, label]) => {
-        const candidate = candidates[key];
-        if (!candidate) return `<div class="pair-card"><div class="pair-card-head"><span>${label}</span><span class="tag blue">等待盘口</span></div></div>`;
-        const css = candidate.meets_spread ? 'eligible' : 'rejected';
-        const scenarios = candidate.scenario_pnl || {};
-        return `<div class="pair-card ${css}">
-          <div class="pair-card-head"><span>${label}</span><span class="tag ${candidate.meets_spread ? 'green' : 'amber'}">${candidate.meets_spread ? '达标' : '未达标'}</span></div>
-          <div class="pair-line"><span>BTC 腿</span><strong>${pairLegText(candidate.btc_leg)}</strong></div>
-          <div class="pair-line"><span>ETH 腿</span><strong>${pairLegText(candidate.eth_leg)}</strong></div>
-          <div class="pair-line"><span>入场价差</span><strong>${candidate.spread_cents == null ? '--' : `${fmtNumber(candidate.spread_cents, 3)}¢`}</strong></div>
-          <div class="pair-line"><span>总成本（含费）</span><strong>$${fmtNumber(candidate.total_cost_usd, 4)}</strong></div>
-          <div class="pair-line"><span>拒绝原因</span><strong>${candidate.reason || '--'}</strong></div>
-          <div class="scenario-grid">
-            <div class="scenario"><span>全输</span>${pnlHtml(scenarios.both_lose)}</div>
-            <div class="scenario"><span>仅 BTC 赢</span>${pnlHtml(scenarios.btc_only_wins)}</div>
-            <div class="scenario"><span>仅 ETH 赢</span>${pnlHtml(scenarios.eth_only_wins)}</div>
-            <div class="scenario"><span>两腿全赢</span>${pnlHtml(scenarios.both_win)}</div>
-          </div>
-        </div>`;
-      }).join('');
+      renderPairCandidate('A', candidates.BTC_UP_ETH_DOWN);
+      renderPairCandidate('B', candidates.BTC_DOWN_ETH_UP);
 
       const status = pairFormDirty ? '有修改，尚未保存' : configStatus === 'pending_next_market' ? '已保存，下组生效' : (pair.status || '等待');
-      $('pairStatus').textContent = status;
-      $('pairStatus').className = `tag ${pairFormDirty || configStatus === 'pending_next_market' ? 'amber' : pair.status === 'pair_opened' ? 'green' : 'blue'}`;
-      $('pairRuntime').textContent = `状态 ${pair.status || '--'} · 下一方向 ${pair.next_direction || '首单择优'} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`;
+      setText('pairStatus', status);
+      setClass('pairStatus', `tag ${pairFormDirty || configStatus === 'pending_next_market' ? 'amber' : pair.status === 'pair_opened' ? 'green' : 'blue'}`);
+      setText('pairRuntime', `状态 ${pair.status || '--'} · 下一方向 ${pair.next_direction || '首单择优'} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`);
       const summary = pair.summary || {};
-      $('pairSummary').innerHTML = `${summary.orders || 0} 单 / ${summary.settled_orders || 0} 已结算 / ${summary.pending_orders || 0} 待结算 · 胜率 ${fmtNumber((summary.win_rate || 0) * 100, 1)}% · 净盈亏 ${pnlHtml(summary.realized_pnl || 0)}`;
+      setText('pairSummaryCounts', `${summary.orders || 0} 单 / ${summary.settled_orders || 0} 已结算 / ${summary.pending_orders || 0} 待结算 · 胜率 ${fmtNumber((summary.win_rate || 0) * 100, 1)}%`);
+      setPnl('pairSummaryPnl', summary.realized_pnl || 0);
 
-      $('pairMarkets').innerHTML = (pair.recent_markets || []).map((market) => `<tr>
-        <td>${fmtTime(market.start_time)}</td><td>${market.btc_outcome || '--'} / ${market.eth_outcome || '--'}</td>
-        <td>${market.btc_up_eth_down_orders || 0} / ${market.btc_down_eth_up_orders || 0}</td>
-        <td>$${fmtNumber(market.total_cost_usd, 3)}</td><td>$${fmtNumber(market.fees_usd, 4)}</td>
-        <td>$${fmtNumber(market.payout_usd, 3)}</td><td>${pnlHtml(market.realized_pnl)}</td><td>${market.status || '--'}</td>
-      </tr>`).join('') || '<tr><td colspan="8">暂无配对场次</td></tr>';
+      const orders = pair.recent_orders || [];
+      const orderNumbersByInterval = new Map();
+      orders.forEach((order) => {
+        const numbers = orderNumbersByInterval.get(order.interval_key) || [];
+        numbers.push(shortOrderNumber(order.order_id));
+        orderNumbersByInterval.set(order.interval_key, numbers);
+      });
+      const markets = pair.recent_markets || [];
+      updateHtmlWhenChanged(
+        'pairMarkets',
+        'pairMarkets',
+        JSON.stringify([markets, Array.from(orderNumbersByInterval.entries())]),
+        markets.map((market) => `<tr>
+          <td>${fmtTime(market.start_time)}</td><td>${(orderNumbersByInterval.get(market.interval_key) || ['--']).join(' / ')}</td>
+          <td>${market.btc_outcome || '--'} / ${market.eth_outcome || '--'}</td>
+          <td>${market.btc_up_eth_down_orders || 0} / ${market.btc_down_eth_up_orders || 0}</td>
+          <td>$${fmtNumber(market.total_cost_usd, 3)}</td><td>$${fmtNumber(market.fees_usd, 4)}</td>
+          <td>$${fmtNumber(market.payout_usd, 3)}</td><td>${pnlHtml(market.realized_pnl)}</td><td>${market.status || '--'}</td>
+        </tr>`).join('') || '<tr><td colspan="9">暂无配对场次</td></tr>',
+      );
 
-      $('pairOrders').innerHTML = (pair.recent_orders || []).map((order) => `<tr>
-        <td>${fmtTime(order.opened_at)} · ${order.direction || '--'}</td>
-        <td>${pairLegText(order.btc_leg)}</td>
-        <td>${pairLegText(order.eth_leg)}</td>
-        <td>${fmtNumber(order.spread_cents, 3)}¢</td><td>${order.btc_outcome || '--'} / ${order.eth_outcome || '--'}</td>
-        <td>${order.realized_pnl == null ? '--' : pnlHtml(order.realized_pnl)}</td><td>${order.status || '--'}</td>
-      </tr>`).join('') || '<tr><td colspan="7">暂无配对订单</td></tr>';
+      updateHtmlWhenChanged(
+        'pairOrders',
+        'pairOrders',
+        JSON.stringify(orders),
+        orders.map((order) => `<tr>
+          <td>${shortOrderNumber(order.order_id)}</td><td>${fmtTime(order.opened_at)} · ${order.direction || '--'}</td>
+          <td>${pairLegText(order.btc_leg)}</td>
+          <td>${pairLegText(order.eth_leg)}</td>
+          <td>${fmtNumber(order.spread_cents, 3)}¢</td><td>${order.btc_outcome || '--'} / ${order.eth_outcome || '--'}</td>
+          <td>${order.realized_pnl == null ? '--' : pnlHtml(order.realized_pnl)}</td><td>${order.status || '--'}</td>
+        </tr>`).join('') || '<tr><td colspan="8">暂无配对订单</td></tr>',
+      );
     }
 
     function runtimeNumber(id) {
@@ -637,20 +766,25 @@
         && btc.start_time === eth.start_time
         && btc.end_time === eth.end_time
       );
-      const alignment = $('pairMarketAlignment');
-      alignment.textContent = aligned ? '场次已对齐' : '等待对齐';
-      alignment.className = `tag ${aligned ? 'green' : 'amber'}`;
-      $('pairMarketList').innerHTML = [['BTC', btc], ['ETH', eth]].map(([asset, market]) => {
-        if (!market) return `<div class="pair-market-card"><div class="pair-market-head"><span class="pair-market-name">${asset}</span><span class="tag amber">未发现市场</span></div></div>`;
-        const left = secondsLeft(market);
+      setText('pairMarketAlignment', aligned ? '场次已对齐' : '等待对齐');
+      setClass('pairMarketAlignment', `tag ${aligned ? 'green' : 'amber'}`);
+      [['BTC', btc], ['ETH', eth]].forEach(([asset, market]) => {
+        if (!market) {
+          setText(`pair${asset}MarketStatus`, '未发现市场');
+          setClass(`pair${asset}MarketStatus`, 'tag amber');
+          setText(`pair${asset}MarketSlug`, '--');
+          setText(`pair${asset}MarketWindow`, '--');
+          setText(`pair${asset}MarketLeft`, '--');
+          return;
+        }
         const accepting = market.accepting_orders !== false;
-        return `<div class="pair-market-card">
-          <div class="pair-market-head"><span class="pair-market-name">${asset} 5 分钟市场</span><span class="tag ${accepting ? 'green' : 'red'}">${accepting ? '可接单' : '停止接单'}</span></div>
-          <div class="pair-market-slug">${market.slug || '--'}</div>
-          <div class="pair-line"><span>时间窗口</span><strong>${fmtTime(market.start_time)} - ${fmtTime(market.end_time)}</strong></div>
-          <div class="pair-line"><span>剩余时间</span><strong>${left == null ? '--' : `${left}s`}</strong></div>
-        </div>`;
-      }).join('');
+        setText(`pair${asset}MarketStatus`, accepting ? '可接单' : '停止接单');
+        setClass(`pair${asset}MarketStatus`, `tag ${accepting ? 'green' : 'red'}`);
+        setText(`pair${asset}MarketSlug`, market.slug || '--');
+        setText(`pair${asset}MarketWindow`, `${fmtTime(market.start_time)} - ${fmtTime(market.end_time)}`);
+        const left = secondsLeft(market);
+        setText(`pair${asset}MarketLeft`, left == null ? '--' : `${left}s`);
+      });
     }
 
     function describeEvent(event) {
@@ -699,13 +833,16 @@
       const downBook = snapshot.books?.DOWN;
       const summary = snapshot.summary || {};
       const position = snapshot.open_position;
+      setText('runPath', snapshot.output_dir || '等待运行数据');
+      setText('updatedAt', fmtTime(snapshot.created_at));
+      if (pairPage) {
+        renderPairConfig(snapshot);
+        renderPairMatch(snapshot.pair_match, snapshot.config_status);
+        renderPairMarkets(aggregate.assets || {});
+        renderTradeBooks(aggregate.assets || { [asset]: assetSnapshot });
+        return;
+      }
       renderRuntimeConfig(snapshot);
-      renderPairConfig(snapshot);
-      renderPairMatch(snapshot.pair_match, snapshot.config_status);
-      renderPairMarkets(aggregate.assets || {});
-
-      $('runPath').textContent = snapshot.output_dir || '等待运行数据';
-      $('updatedAt').textContent = fmtTime(snapshot.created_at);
       const thresholdReady = market?.threshold_verified === true && market?.threshold_price != null;
       $('marketState').textContent = market ? (thresholdReady ? '阈值已核验' : '待核验·禁止下单') : '未发现';
       $('marketState').className = 'tag ' + (thresholdReady ? 'green' : market ? 'amber' : 'red');
@@ -770,18 +907,32 @@
       $('signalMeta').textContent = meta;
       $('decisionTag').textContent = position ? '持仓' : lastRejection ? '拒绝' : '等待';
       $('decisionTag').className = 'tag ' + (position ? 'green' : lastRejection ? 'amber' : 'blue');
-      const reasons = [
-        ['阈值', market?.threshold_price ? fmtPrice(market.threshold_price) : '等待开盘'],
-        ['价格偏离', fmtSigned(marketEdge, 2)],
-        ['有效偏离', fmtSigned(effectiveEdge, 2)],
-        ['修正', fmtSigned(correction, 2)],
-        [`Polymarket ${asset}`, fmtPrice(polymarketPrice)],
-        ['反买模式', (snapshot.pending_strategy || snapshot.strategy || {}).reverse_entry_enabled ? '开启' : '关闭'],
-        ['UP 盘口', `买 ${fmtProb(bestBid(upBook))} / 卖 ${fmtProb(bestAsk(upBook))}`],
-        ['DOWN 盘口', `买 ${fmtProb(bestBid(downBook))} / 卖 ${fmtProb(bestAsk(downBook))}`],
-        ['最近拒绝', lastRejection || '--']
-      ];
-      $('reasonList').innerHTML = reasons.map(([k, v]) => `<div class="reason"><strong>${k}</strong><span class="mono">${v}</span></div>`).join('');
+      const reasonValues = {
+        asset,
+        threshold: market?.threshold_price ? fmtPrice(market.threshold_price) : '等待开盘',
+        edge: fmtSigned(marketEdge, 2),
+        effectiveEdge: fmtSigned(effectiveEdge, 2),
+        correction: fmtSigned(correction, 2),
+        polymarket: fmtPrice(polymarketPrice),
+        reverse: (snapshot.pending_strategy || snapshot.strategy || {}).reverse_entry_enabled ? '开启' : '关闭',
+        upBook: `买 ${fmtProb(bestBid(upBook))} / 卖 ${fmtProb(bestAsk(upBook))}`,
+        downBook: `买 ${fmtProb(bestBid(downBook))} / 卖 ${fmtProb(bestAsk(downBook))}`,
+        rejection: lastRejection || '--',
+      };
+      const reasonSignature = JSON.stringify(reasonValues);
+      if (renderCache.reasons !== reasonSignature) {
+        setText('reasonThreshold', reasonValues.threshold);
+        setText('reasonEdge', reasonValues.edge);
+        setText('reasonEffectiveEdge', reasonValues.effectiveEdge);
+        setText('reasonCorrection', reasonValues.correction);
+        setText('reasonPolyLabel', `Polymarket ${asset}`);
+        setText('reasonPolyPrice', reasonValues.polymarket);
+        setText('reasonReverse', reasonValues.reverse);
+        setText('reasonUpBook', reasonValues.upBook);
+        setText('reasonDownBook', reasonValues.downBook);
+        setText('reasonLastRejection', reasonValues.rejection);
+        renderCache.reasons = reasonSignature;
+      }
 
       $('positionState').textContent = position ? '持仓' : '空仓';
       $('positionState').className = 'tag ' + (position ? 'green' : 'blue');
@@ -803,11 +954,11 @@
       renderTradeBooks(aggregate.assets || { [asset]: assetSnapshot });
 
       const events = (snapshot.events || []).slice(-45).reverse();
-      $('eventCount').textContent = snapshot.events?.length || 0;
-      $('timeline').innerHTML = events.map((event) => {
+      setText('eventCount', snapshot.events?.length || 0);
+      updateHtmlWhenChanged('timeline', 'timeline', JSON.stringify(events), events.map((event) => {
         const [type, text, color] = describeEvent(event);
         return `<div class="event-row"><span class="tag ${color}">${type}</span><span>${text}</span></div>`;
-      }).join('') || '<div class="event-row"><span class="tag amber">暂无</span><span>还没有买入/卖出</span></div>';
+      }).join('') || '<div class="event-row"><span class="tag amber">暂无</span><span>还没有买入/卖出</span></div>');
     }
 
     async function loadInitial() {
@@ -849,7 +1000,20 @@
       ws.onerror = () => { setConnection('off'); ws.close(); };
     }
 
-    const UI_REFRESH_MS = 100;
+    function refreshCountdowns() {
+      if (!latest) return;
+      if (selectedAsset === 'PAIR') {
+        [['BTC', latest.assets?.BTC?.market], ['ETH', latest.assets?.ETH?.market]].forEach(([asset, market]) => {
+          const left = secondsLeft(market);
+          setText(`pair${asset}MarketLeft`, left == null ? '--' : `${left}s`);
+        });
+        return;
+      }
+      const market = latest.assets?.[selectedAsset]?.market || latest.market;
+      const left = secondsLeft(market);
+      setText('timeLeft', left == null ? '--' : `${left}s`);
+    }
+
     function selectAsset(asset) {
       selectedAsset = asset;
       if (latest) scheduleRender(latest);
@@ -956,7 +1120,7 @@
         button.disabled = false;
       }
     });
-    setInterval(() => { if (latest) scheduleRender(latest); }, UI_REFRESH_MS);
+    setInterval(refreshCountdowns, 1000);
     loadInitial();
   </script>
 </body>
