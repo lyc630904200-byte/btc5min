@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -195,6 +196,14 @@ class PairMatchRegistry:
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS pair_orders_status_idx ON pair_orders(status, end_time)"
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pair_match_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         self.connection.commit()
 
     def close(self) -> None:
@@ -213,7 +222,33 @@ class PairMatchRegistry:
         ).fetchone()
         return PairDirection(row["direction"]) if row else None
 
-    def record(self, order: PairOrder, max_pairs: int) -> bool:
+    def continuous_next_direction(self) -> PairDirection | None:
+        row = self.connection.execute(
+            "SELECT value FROM pair_match_state WHERE key = 'continuous_next_direction'"
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            return PairDirection(row["value"])
+        except ValueError:
+            return None
+
+    def set_continuous_next_direction(self, direction: PairDirection) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO pair_match_state(key, value) VALUES ('continuous_next_direction', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (direction.value,),
+            )
+
+    def record(
+        self,
+        order: PairOrder,
+        max_pairs: int,
+        continuous_next_direction: PairDirection | None = None,
+    ) -> bool:
         payload = order.model_dump(mode="json")
         try:
             self.connection.execute("BEGIN IMMEDIATE")
@@ -242,6 +277,14 @@ class PairMatchRegistry:
                     payload["realized_pnl"], payload["settled_at"],
                 ),
             )
+            if continuous_next_direction is not None:
+                self.connection.execute(
+                    """
+                    INSERT INTO pair_match_state(key, value) VALUES ('continuous_next_direction', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (continuous_next_direction.value,),
+                )
             self.connection.commit()
             return True
         except sqlite3.IntegrityError:
@@ -500,6 +543,18 @@ class PairMatchEngine:
             scenario_pnl=scenarios,
         )
 
+    def _alternation_target(self, interval_key: str) -> PairDirection | None:
+        if not self.config.pair_match.alternate_directions:
+            return None
+        if self.config.pair_match.alternation_mode == "continuous_abab":
+            target = self.registry.continuous_next_direction()
+            if target is None:
+                target = secrets.choice(list(PairDirection))
+                self.registry.set_continuous_next_direction(target)
+            return target
+        last_direction = self.registry.last_direction(interval_key)
+        return last_direction.opposite if last_direction else None
+
     def evaluate(self, engines: dict[str, "PaperEngine"], now: datetime | None = None) -> PairOrder | None:
         now = now or datetime.now(timezone.utc)
         aligned = self._aligned_markets(engines)
@@ -511,8 +566,7 @@ class PairMatchEngine:
         interval_key = pair_interval_key(btc_market, eth_market)
         self.current_interval_key = interval_key
         self.current_count = self.registry.count(interval_key)
-        last_direction = self.registry.last_direction(interval_key)
-        self.next_direction = last_direction.opposite if last_direction else None
+        self.next_direction = self._alternation_target(interval_key)
         btc_engine, eth_engine = engines["BTC"], engines["ETH"]
         required = [
             btc_engine.books.get(Direction.UP), btc_engine.books.get(Direction.DOWN),
@@ -575,8 +629,8 @@ class PairMatchEngine:
             self.last_reason = self.status
             return None
         selected: PairCandidate | None
-        if self.config.pair_match.alternate_directions and last_direction is not None:
-            selected = self.candidates.get(last_direction.opposite)
+        if self.config.pair_match.alternate_directions and self.next_direction is not None:
+            selected = self.candidates.get(self.next_direction)
             if selected is None or not selected.available or not selected.meets_spread:
                 self.status = "waiting_for_alternating_direction"
                 self.last_reason = self.status
@@ -604,7 +658,17 @@ class PairMatchEngine:
             total_cost_usd=selected.total_cost_usd or 0.0,
             scenario_pnl=selected.scenario_pnl,
         )
-        if not self.registry.record(order, self.config.pair_match.max_pairs_per_market):
+        continuous_next = (
+            selected.direction.opposite
+            if self.config.pair_match.alternate_directions
+            and self.config.pair_match.alternation_mode == "continuous_abab"
+            else None
+        )
+        if not self.registry.record(
+            order,
+            self.config.pair_match.max_pairs_per_market,
+            continuous_next_direction=continuous_next,
+        ):
             self.status = "market_pair_limit_or_duplicate"
             self.last_reason = self.status
             self.current_count = self.registry.count(interval_key)

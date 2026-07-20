@@ -1,4 +1,14 @@
-from polybtc.clients import update_books_from_market_message, websocket_option_attempts
+import asyncio
+import json
+
+from polybtc.clients import (
+    PolymarketClient,
+    ProxySafeClientConnection,
+    http_option_attempts,
+    update_books_from_market_message,
+    websocket_option_attempts,
+)
+from polybtc.config import SourceConfig
 
 
 def test_clob_market_book_and_price_change_update_local_depth() -> None:
@@ -252,10 +262,20 @@ def test_clob_best_bid_ask_can_seed_a_book_and_reject_stale_update() -> None:
     assert books["up"].best_ask == 0.51
 
 
-def test_websocket_connections_try_direct_before_env_proxy() -> None:
+def test_connections_prefer_system_proxy_before_configured_proxy_and_direct() -> None:
     attempts = websocket_option_attempts()
     if "proxy" in attempts[0]:
-        assert attempts == [{"proxy": None}, {}]
+        assert attempts == [{}, {"proxy": None}]
+        assert websocket_option_attempts("http://127.0.0.1:10808") == [
+            {},
+            {"proxy": "http://127.0.0.1:10808"},
+            {"proxy": None},
+        ]
+    assert http_option_attempts("http://127.0.0.1:10808") == [
+        (None, True),
+        ("http://127.0.0.1:10808", False),
+        (None, False),
+    ]
 
 
 def test_clob_parser_ignores_plain_text_heartbeat() -> None:
@@ -263,3 +283,148 @@ def test_clob_parser_ignores_plain_text_heartbeat() -> None:
 
     assert update_books_from_market_message("PONG", books) == []
     assert books == {}
+
+
+def test_clob_stream_reconnects_preferred_route_without_ending(monkeypatch) -> None:
+    payloads = [
+        {
+            "event_type": "book",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739400000,
+            "bids": [{"price": "0.48", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "12"}],
+        },
+        {
+            "event_type": "price_change",
+            "market": "m1",
+            "timestamp": 1783739401000,
+            "price_changes": [
+                {"asset_id": "up", "price": "0.51", "size": "8", "side": "SELL"}
+            ],
+        },
+    ]
+    connect_calls = []
+
+    class Socket:
+        def __init__(self, payload):
+            self.payload = payload
+            self.sent = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def send(self, message):
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return json.dumps(self.payload)
+
+    def connect(*args, **kwargs):
+        connect_calls.append(kwargs)
+        return Socket(payloads[len(connect_calls) - 1])
+
+    monkeypatch.setattr("polybtc.clients.websockets.connect", connect)
+    monkeypatch.setattr("polybtc.clients.websocket_option_attempts", lambda proxy: [{"route": "system"}])
+    monkeypatch.setattr("polybtc.clients.CLOB_RECONNECT_DELAY_SECONDS", 0)
+
+    async def receive_two_updates() -> None:
+        stream = PolymarketClient(SourceConfig(proxy_url=None)).book_stream(["up"])
+        try:
+            first = await anext(stream)
+            second = await anext(stream)
+        finally:
+            await stream.aclose()
+        assert first[1].best_ask == 0.52
+        assert second[1].best_ask == 0.51
+
+    asyncio.run(receive_two_updates())
+
+    assert len(connect_calls) == 2
+    assert all(call["route"] == "system" for call in connect_calls)
+    assert all(call["compression"] is None for call in connect_calls)
+    assert all(call["max_queue"] == 256 for call in connect_calls)
+    assert all(call["create_connection"] is ProxySafeClientConnection for call in connect_calls)
+
+
+def test_proxy_safe_connection_handles_reset_before_connection_made() -> None:
+    class Protocol:
+        def __init__(self) -> None:
+            self.eof_received = False
+
+        def receive_eof(self) -> None:
+            self.eof_received = True
+
+    async def lose_early_connection() -> None:
+        loop = asyncio.get_running_loop()
+        connection = object.__new__(ProxySafeClientConnection)
+        connection.protocol = Protocol()
+        connection.recv_exc = None
+        connection.keepalive_task = None
+        connection.connection_lost_waiter = loop.create_future()
+        connection.paused = False
+        connection.drain_waiters = []
+        reset = ConnectionResetError("proxy reset")
+
+        connection.connection_lost(reset)
+
+        assert connection.protocol.eof_received is True
+        assert connection.recv_exc is reset
+        assert connection.connection_lost_waiter.done()
+
+    asyncio.run(lose_early_connection())
+
+
+def test_book_http_requests_reuse_successful_system_proxy_session(monkeypatch) -> None:
+    clients = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "asset_id": "up",
+                "market": "m1",
+                "timestamp": "1783739400000",
+                "bids": [{"price": "0.48", "size": "10"}],
+                "asks": [{"price": "0.52", "size": "12"}],
+            }
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.calls = 0
+            self.closed = False
+            clients.append(self)
+
+        async def get(self, *args, **kwargs):
+            self.calls += 1
+            return Response()
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr("polybtc.clients.httpx.AsyncClient", Client)
+    polymarket = PolymarketClient(SourceConfig(proxy_url="http://127.0.0.1:10808"))
+
+    async def fetch_twice() -> None:
+        await polymarket.book("up")
+        await polymarket.book("up")
+        await polymarket.aclose()
+
+    asyncio.run(fetch_twice())
+
+    assert len(clients) == 1
+    assert clients[0].kwargs["trust_env"] is True
+    assert clients[0].calls == 2
+    assert clients[0].closed is True

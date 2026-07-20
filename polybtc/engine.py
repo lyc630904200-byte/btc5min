@@ -122,7 +122,7 @@ class PaperEngine:
     def set_tick(self, tick: PriceTick) -> None:
         self.tick = tick
         self.capture_dynamic_threshold(tick)
-        self.evaluate(tick.received_at)
+        self.evaluate_after_market_data(tick.received_at)
 
     def set_polymarket_tick(self, tick: PriceTick) -> None:
         if tick.symbol.upper() != f"{self.asset}/USD":
@@ -130,7 +130,7 @@ class PaperEngine:
         self.remember_polymarket_tick(tick)
         self.polymarket_tick = tick
         self.apply_polymarket_start_threshold_candidate()
-        self.evaluate(tick.received_at)
+        self.evaluate_after_market_data(tick.received_at)
 
     def remember_polymarket_tick(self, tick: PriceTick) -> None:
         if (
@@ -270,7 +270,15 @@ class PaperEngine:
         elif existing and book.timestamp == existing.timestamp and book.received_at < existing.received_at:
             return
         self.books[direction] = book
-        self.evaluate(book.received_at)
+        self.evaluate_after_market_data(book.received_at)
+
+    def evaluate_after_market_data(self, now: datetime) -> None:
+        if not self.entry_enabled and self.open_position is None:
+            if self.ready():
+                self.reset_entry_confirmation()
+                self.record_rejection("pair_match_replaces_single_strategy", now)
+            return
+        self.evaluate(now)
 
     def ready(self) -> bool:
         return self.market is not None and self.tick is not None and Direction.UP in self.books and Direction.DOWN in self.books

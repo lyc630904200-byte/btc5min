@@ -115,6 +115,7 @@
     .setting-label { color: var(--muted); font-size: 12px; }
     .setting-input { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); padding: 0 8px; text-align: right; font: inherit; font-variant-numeric: tabular-nums; }
     .setting-input:focus { outline: 2px solid var(--blue-soft); border-color: var(--blue); }
+    .setting-input:disabled { cursor: not-allowed; opacity: .55; background: var(--panel-soft); color: var(--muted); }
     .setting-toggle { min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); cursor: pointer; font-size: 12px; }
     .setting-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
     .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
@@ -341,6 +342,7 @@
               <div class="settings-grid">
                 <label class="setting"><span class="setting-label">自动匹配</span><span class="setting-toggle"><input id="pairEnabled" type="checkbox">启用后停止单币新入场</span></label>
                 <label class="setting"><span class="setting-label">严格交替</span><span class="setting-toggle"><input id="pairAlternate" type="checkbox">A/B 严格轮换</span></label>
+                <label class="setting"><span class="setting-label">交替模式</span><select class="setting-input" id="pairAlternationMode"><option value="per_market">每场重新开始</option><option value="continuous_abab">ABAB 连续循环（首单随机）</option></select></label>
                 <label class="setting"><span class="setting-label">等份基准（USD/腿）</span><input class="setting-input" id="pairLegQuote" type="number" min="0.01" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">最低价差（美分）</span><input class="setting-input" id="pairMinSpread" type="number" min="-100" max="100" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">开盘后开始秒数</span><input class="setting-input" id="pairStartSeconds" type="number" min="0" max="299" step="1" required></label>
@@ -466,6 +468,7 @@
       end_seconds_after_open: 'pairEndSeconds',
       max_pairs_per_market: 'pairMaxPairs',
       alternate_directions: 'pairAlternate',
+      alternation_mode: 'pairAlternationMode',
     };
     const renderCache = {
       pairMarkets: '',
@@ -554,8 +557,19 @@
         input.checked = Boolean(value);
         return;
       }
+      if (input.tagName === 'SELECT') {
+        input.value = String(value ?? '');
+        return;
+      }
       if (!Number.isFinite(Number(value))) return;
       input.value = String(value);
+    }
+
+    function syncPairAlternationModeState() {
+      const enabled = $('pairAlternate').checked;
+      const mode = $('pairAlternationMode');
+      mode.disabled = !enabled;
+      mode.title = enabled ? '选择严格交替的运行范围' : '请先开启严格交替';
     }
 
     function renderRuntimeConfig(snapshot, force = false) {
@@ -592,6 +606,7 @@
       const configKey = JSON.stringify(Object.fromEntries(Object.keys(pairInputs).map((field) => [field, pair[field]])));
       if (force || !pairFormInitialized || (!pairFormDirty && configKey !== renderedPairConfigKey)) {
         Object.entries(pairInputs).forEach(([field, id]) => setRuntimeInput(id, pair[field]));
+        syncPairAlternationModeState();
         renderedPairConfigKey = configKey;
         pairFormInitialized = true;
       }
@@ -648,7 +663,9 @@
       const status = pairFormDirty ? '有修改，尚未保存' : configStatus === 'pending_next_market' ? '已保存，下组生效' : (pair.status || '等待');
       setText('pairStatus', status);
       setClass('pairStatus', `tag ${pairFormDirty || configStatus === 'pending_next_market' ? 'amber' : pair.status === 'pair_opened' ? 'green' : 'blue'}`);
-      setText('pairRuntime', `状态 ${pair.status || '--'} · 下一方向 ${pair.next_direction || '首单择优'} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`);
+      const nextDirection = pair.next_direction === 'BTC_UP_ETH_DOWN' ? 'A' : pair.next_direction === 'BTC_DOWN_ETH_UP' ? 'B' : '首单择优';
+      const alternationMode = pair.config?.alternation_mode === 'continuous_abab' ? 'ABAB 连续' : '每场重置';
+      setText('pairRuntime', `状态 ${pair.status || '--'} · 交替 ${alternationMode} · 下一方向 ${nextDirection} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`);
       const summary = pair.summary || {};
       setText('pairSummaryCounts', `${summary.orders || 0} 单 / ${summary.settled_orders || 0} 已结算 / ${summary.pending_orders || 0} 待结算 · 胜率 ${fmtNumber((summary.win_rate || 0) * 100, 1)}%`);
       setPnl('pairSummaryPnl', summary.realized_pnl || 0);
@@ -1077,6 +1094,7 @@
     });
     $('pairForm').addEventListener('input', () => {
       pairFormDirty = true;
+      syncPairAlternationModeState();
       $('pairStatus').textContent = '有修改，尚未保存';
       $('pairStatus').className = 'tag amber';
     });
@@ -1096,6 +1114,7 @@
             end_seconds_after_open: runtimeNumber('pairEndSeconds'),
             max_pairs_per_market: runtimeNumber('pairMaxPairs'),
             alternate_directions: $('pairAlternate').checked,
+            alternation_mode: $('pairAlternationMode').value,
           },
         };
         const response = await fetch('/api/config', {

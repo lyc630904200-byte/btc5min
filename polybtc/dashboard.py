@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import traceback
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -10,10 +11,16 @@ from pathlib import Path
 from threading import Thread
 from typing import Any, Callable
 
+import orjson
 import websockets
 
 from .config import AppConfig
 from .runner import run_live
+
+
+DASHBOARD_SEND_TIMEOUT_SECONDS = 1.0
+DASHBOARD_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+LIVE_RESTART_DELAY_SECONDS = 1.0
 
 
 class DashboardHub:
@@ -62,6 +69,7 @@ class DashboardHub:
         self.lock = asyncio.Lock()
         self.last_push_at = datetime.min.replace(tzinfo=timezone.utc)
         self.push_interval = timedelta(milliseconds=50)
+        self.pair_state_push_interval = timedelta(milliseconds=100)
 
     @property
     def ws_url(self) -> str:
@@ -358,6 +366,7 @@ class DashboardHub:
             "end_seconds_after_open",
             "max_pairs_per_market",
             "alternate_directions",
+            "alternation_mode",
         }
         unexpected_strategy = set(strategy_update or {}) - strategy_fields
         unexpected_risk = set(risk_update or {}) - risk_fields
@@ -443,20 +452,36 @@ class DashboardHub:
             self.latest = combined
             now = datetime.now(timezone.utc)
             event_type = event.get("type") if isinstance(event, dict) else None
-            should_push = event_type not in {"tick", "polymarket_tick"} or now - self.last_push_at >= self.push_interval
+            minimum_interval = (
+                self.push_interval
+                if event_type in {"tick", "polymarket_tick"}
+                else self.pair_state_push_interval
+                if event_type == "pair_state"
+                else None
+            )
+            should_push = minimum_interval is None or now - self.last_push_at >= minimum_interval
             if not should_push:
                 return
             self.last_push_at = now
-            message = json.dumps(combined, ensure_ascii=False)
+            message = orjson.dumps(combined).decode("utf-8")
             clients = set(self.clients)
         if clients:
-            await asyncio.gather(*(client.send(message) for client in clients), return_exceptions=True)
+            results = await asyncio.gather(
+                *(
+                    asyncio.wait_for(client.send(message), timeout=DASHBOARD_SEND_TIMEOUT_SECONDS)
+                    for client in clients
+                ),
+                return_exceptions=True,
+            )
+            for client, result in zip(clients, results):
+                if isinstance(result, BaseException):
+                    self.clients.discard(client)
 
     async def ws_handler(self, websocket: Any) -> None:
         self.clients.add(websocket)
         try:
             async with self.lock:
-                latest = json.dumps(self.latest, ensure_ascii=False)
+                latest = orjson.dumps(self.latest).decode("utf-8")
             await websocket.send(latest)
             async for _ in websocket:
                 pass
@@ -470,14 +495,14 @@ class DashboardHub:
         payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
         payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}
         payload.update(self.config_status_json())
-        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return orjson.dumps(payload)
 
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     hub: DashboardHub
 
     def send_json(self, status: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = orjson.dumps(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -567,10 +592,34 @@ async def run_dashboard(
     if on_started:
         on_started(started)
     try:
-        output_dir = await run_live(config, max_seconds=max_seconds, on_update=hub.publish)
-        return {**started, "output_dir": str(output_dir)}
+        while True:
+            try:
+                output_dir = await run_live(config, max_seconds=max_seconds, on_update=hub.publish)
+                return {**started, "output_dir": str(output_dir)}
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if max_seconds is not None:
+                    raise
+                traceback.print_exc()
+                async with hub.lock:
+                    hub.latest["status"] = "restarting"
+                    hub.latest["restart_error"] = f"{type(exc).__name__}: {exc}"
+                await asyncio.sleep(LIVE_RESTART_DELAY_SECONDS)
     finally:
         ws_server.close()
-        await ws_server.wait_closed()
-        http_server.shutdown()
+        try:
+            await asyncio.wait_for(
+                ws_server.wait_closed(),
+                timeout=DASHBOARD_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(http_server.shutdown),
+                timeout=DASHBOARD_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass
         http_server.server_close()

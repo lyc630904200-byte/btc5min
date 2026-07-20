@@ -28,6 +28,7 @@ BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
 # Keep a sub-second REST safety net when the CLOB WebSocket is quiet.  The
 # strategy freshness limit is one second, so a two-second fallback was too slow.
 BOOK_REST_FALLBACK_AFTER = timedelta(milliseconds=500)
+BOOK_REST_RECONCILE_AFTER = timedelta(seconds=2)
 LIVE_EVENT_COALESCE_SECONDS = 0.02
 BOOK_PUBLISH_HEARTBEAT = timedelta(milliseconds=250)
 THRESHOLD_MATCH_TOLERANCE_USD = 0.01
@@ -86,6 +87,22 @@ def model_payload(value: Any) -> Any:
     return value
 
 
+def live_book_payload(book: OrderBookSnapshot) -> dict[str, Any]:
+    best_bid = max(book.bids, key=lambda level: level.price, default=None)
+    best_ask = min(book.asks, key=lambda level: level.price, default=None)
+    return {
+        "token_id": book.token_id,
+        "market_id": book.market_id,
+        "timestamp": book.timestamp.isoformat(),
+        "received_at": book.received_at.isoformat(),
+        "bids": [best_bid.model_dump(mode="json")] if best_bid is not None else [],
+        "asks": [best_ask.model_dump(mode="json")] if best_ask is not None else [],
+        "depth_trusted": book.depth_trusted,
+        "min_order_size": book.min_order_size,
+        "tick_size": book.tick_size,
+    }
+
+
 def live_snapshot(
     engine: PaperEngine,
     output_dir: Path,
@@ -93,11 +110,11 @@ def live_snapshot(
     payload: Any,
     pair_match: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    books = {direction.value: book.model_dump(mode="json") for direction, book in engine.books.items()}
+    books = {direction.value: live_book_payload(book) for direction, book in engine.books.items()}
     event_payload: Any
     if event_type == "book" and isinstance(payload, tuple):
         direction, book = payload
-        event_payload = {"direction": direction.value, **book.model_dump(mode="json")}
+        event_payload = {"direction": direction.value, **live_book_payload(book)}
     else:
         event_payload = model_payload(payload)
     return {
@@ -542,8 +559,6 @@ def books_need_rest_refresh(
     # Delayed WebSocket frames can keep received_at fresh while carrying an
     # older price.  Periodically reconcile against a complete REST snapshot
     # even while the WebSocket appears active.
-    if last_rest_refresh_at is not None and now - last_rest_refresh_at >= BOOK_REST_FALLBACK_AFTER:
-        return True
     for direction in (Direction.UP, Direction.DOWN):
         book = engine.books.get(direction)
         if not book or not book_matches_market(market, direction, book):
@@ -552,7 +567,10 @@ def books_need_rest_refresh(
             return True
         if now - book.received_at >= BOOK_REST_FALLBACK_AFTER:
             return True
-    return False
+    return bool(
+        last_rest_refresh_at is not None
+        and now - last_rest_refresh_at >= BOOK_REST_RECONCILE_AFTER
+    )
 
 
 async def book_rest_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
@@ -785,6 +803,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
     journal = RunJournal(output_dir)
     entry_registry = SqliteMarketEntryRegistry(config.data_dir / "market-entry-ledger.sqlite3")
     pair_registry = PairMatchRegistry(config.data_dir / "pair-match-ledger.sqlite3")
+    clients: dict[str, PolymarketClient] = {}
     try:
         entry_registry.seed(historical_market_entry_counts(config.data_dir))
         assets = config.sources.enabled_assets
@@ -805,6 +824,13 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
             )
         )
     except BaseException:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(client.aclose() for client in clients.values()), return_exceptions=True),
+                timeout=5,
+            )
+        except asyncio.TimeoutError:
+            pass
         entry_registry.close()
         pair_registry.close()
         raise
@@ -966,7 +992,13 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
         try:
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=5,
+                )
+            except asyncio.TimeoutError:
+                pass
             for asset, engine in engines.items():
                 for position in engine.positions:
                     journal.position(position)
@@ -985,6 +1017,13 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
             )
             journal.summary(summary)
         finally:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(client.aclose() for client in clients.values()), return_exceptions=True),
+                    timeout=5,
+                )
+            except asyncio.TimeoutError:
+                pass
             entry_registry.close()
             pair_registry.close()
     return output_dir

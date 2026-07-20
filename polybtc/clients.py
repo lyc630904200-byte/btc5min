@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import httpx
 import websockets
+from websockets.asyncio.client import ClientConnection
 
 from .config import SourceConfig
 from .market import choose_current_market, market_interval_from_slug, parse_json_list, parse_market
@@ -21,6 +22,40 @@ CLOB_SUBSCRIPTION_TYPE = "market"
 POLYMARKET_RTDS_CRYPTO_TOPIC = "crypto_prices_chainlink"
 PROXY_ATTEMPT_TIMEOUT_SECONDS = 1.5
 CLOB_HEARTBEAT_SECONDS = 10
+CLOB_RECONNECT_DELAY_SECONDS = 0.25
+
+
+class ProxySafeClientConnection(ClientConnection):
+    """Handle a proxy reset that arrives before connection_made initializes reads."""
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if hasattr(self, "recv_messages"):
+            super().connection_lost(exc)
+            return
+
+        # websockets 15 may hand this protocol to start_tls() while connecting
+        # through a proxy. If the proxy resets at that exact point, asyncio can
+        # call connection_lost() before connection_made(), and the upstream
+        # implementation tries to close an assembler that doesn't exist yet.
+        self.protocol.receive_eof()
+        self.set_recv_exc(exc)
+        if self.keepalive_task is not None:
+            self.keepalive_task.cancel()
+        if not self.connection_lost_waiter.done():
+            self.connection_lost_waiter.set_result(None)
+        if self.paused:  # pragma: no cover - impossible before connection_made
+            self.paused = False
+            for waiter in self.drain_waiters:
+                if not waiter.done():
+                    if exc is None:
+                        waiter.set_result(None)
+                    else:
+                        waiter.set_exception(exc)
+
+
+def connect_websocket(*args: Any, **kwargs: Any) -> Any:
+    kwargs.setdefault("create_connection", ProxySafeClientConnection)
+    return websockets.connect(*args, **kwargs)
 
 
 def crypto_updown_5m_slugs(
@@ -48,10 +83,22 @@ def direct_websocket_options() -> dict[str, Any]:
 def websocket_option_attempts(proxy_url: str | None = None) -> list[dict[str, Any]]:
     direct_options = direct_websocket_options()
     if proxy_url and "proxy" in direct_options:
-        return [{"proxy": proxy_url}, direct_options, {}]
+        # Prefer the operating-system proxy.  It reflects live Windows proxy
+        # changes even when a configured local proxy port has gone stale.
+        return [{}, {"proxy": proxy_url}, direct_options]
     if "proxy" in direct_options:
-        return [direct_options, {}]
+        return [{}, direct_options]
     return [{}]
+
+
+def http_option_attempts(proxy_url: str | None = None) -> list[tuple[str | None, bool]]:
+    # Use the live OS proxy first, then an explicitly configured proxy, and
+    # only then direct networking.
+    attempts = [(None, True)]
+    if proxy_url:
+        attempts.append((proxy_url, False))
+    attempts.append((None, False))
+    return attempts
 
 
 def should_retry_with_env_proxy(exc: Exception) -> bool:
@@ -67,8 +114,7 @@ async def get_direct_first(
     params: dict[str, Any] | None = None,
     proxy_url: str | None = None,
 ) -> tuple[httpx.Response, datetime, datetime, bool]:
-    attempts = [(proxy_url, False)] if proxy_url else []
-    attempts.extend([(None, False), (None, True)])
+    attempts = http_option_attempts(proxy_url)
     for index, (proxy, trust_env) in enumerate(attempts):
         start = datetime.now(timezone.utc)
         try:
@@ -552,7 +598,7 @@ class BinanceClient:
             for options in options_list:
                 connected = False
                 try:
-                    async with websockets.connect(
+                    async with connect_websocket(
                         self.ws_url,
                         ping_interval=20,
                         ping_timeout=20,
@@ -592,6 +638,53 @@ class PolymarketClient:
         self.config = config
         self.asset = asset.upper()
         self.rtds_symbol = f"{self.asset.lower()}/usd"
+        self._book_http_clients: dict[tuple[str | None, bool], httpx.AsyncClient] = {}
+        self._book_http_route: tuple[str | None, bool] | None = None
+        self._clob_ws_options: dict[str, Any] | None = None
+
+    def _book_route_attempts(self) -> list[tuple[str | None, bool]]:
+        attempts = http_option_attempts(self.config.proxy_url)
+        if self._book_http_route is None:
+            return attempts
+        return [self._book_http_route, *(route for route in attempts if route != self._book_http_route)]
+
+    async def _book_response(
+        self, token_id: str
+    ) -> tuple[httpx.Response, datetime, datetime, bool]:
+        attempts = self._book_route_attempts()
+        for index, route in enumerate(attempts):
+            proxy, trust_env = route
+            client = self._book_http_clients.get(route)
+            if client is None:
+                options: dict[str, Any] = {"proxy": proxy} if proxy else {}
+                client = httpx.AsyncClient(trust_env=trust_env, **options)
+                self._book_http_clients[route] = client
+            start = datetime.now(timezone.utc)
+            timeout = PROXY_ATTEMPT_TIMEOUT_SECONDS if proxy else 8
+            try:
+                response = await client.get(
+                    f"{self.config.clob_url}/book",
+                    params={"token_id": token_id},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                stale_client = self._book_http_clients.pop(route, None)
+                if stale_client is not None:
+                    await stale_client.aclose()
+                if index == len(attempts) - 1 or not should_retry_with_env_proxy(exc):
+                    raise
+                continue
+            end = datetime.now(timezone.utc)
+            self._book_http_route = route
+            return response, start, end, trust_env
+        raise RuntimeError("unreachable book HTTP retry state")
+
+    async def aclose(self) -> None:
+        clients = list(self._book_http_clients.values())
+        self._book_http_clients.clear()
+        if clients:
+            await asyncio.gather(*(client.aclose() for client in clients), return_exceptions=True)
 
     async def _discover_from_requests(
         self,
@@ -718,12 +811,7 @@ class PolymarketClient:
         )
 
     async def book(self, token_id: str) -> OrderBookSnapshot:
-        response, start, end, _ = await get_direct_first(
-            f"{self.config.clob_url}/book",
-            timeout=8,
-            params={"token_id": token_id},
-            proxy_url=self.config.proxy_url,
-        )
+        response, start, end, _ = await self._book_response(token_id)
         book = parse_clob_book(response.json())
         # Preserve the CLOB timestamp for ordering against WebSocket updates.
         # Using the request end time here made every following WebSocket update
@@ -761,7 +849,7 @@ class PolymarketClient:
         for options in options_list:
             connected = False
             try:
-                async with websockets.connect(
+                async with connect_websocket(
                     self.config.rtds_ws_url,
                     origin="https://polymarket.com",
                     ping_interval=10,
@@ -878,17 +966,27 @@ class PolymarketClient:
             "assets_ids": ids,
             "custom_feature_enabled": True,
         }
-        try:
+        while True:
             options_list = websocket_option_attempts(self.config.proxy_url)
+            if self._clob_ws_options is not None:
+                options_list = [
+                    self._clob_ws_options,
+                    *(options for options in options_list if options != self._clob_ws_options),
+                ]
+            restart_preferred = False
+            last_error: Exception | None = None
             for options in options_list:
                 connected = False
+                received_message = False
                 try:
-                    async with websockets.connect(
+                    async with connect_websocket(
                         self.config.clob_ws_url,
                         ping_interval=20,
                         ping_timeout=20,
                         close_timeout=5,
                         open_timeout=10,
+                        compression=None,
+                        max_queue=256,
                         **options,
                     ) as websocket:
                         connected = True
@@ -896,18 +994,34 @@ class PolymarketClient:
                         heartbeat = asyncio.create_task(send_clob_heartbeats(websocket))
                         try:
                             async for message in websocket:
+                                received_message = True
+                                self._clob_ws_options = dict(options)
                                 for token_id, book in update_books_from_market_message(message, books):
                                     if token_id in ids:
                                         yield token_id, book
                         finally:
                             heartbeat.cancel()
                             await asyncio.gather(heartbeat, return_exceptions=True)
-                except Exception:
-                    if connected or options == options_list[-1]:
-                        raise
+                    if connected and received_message:
+                        restart_preferred = True
+                        await asyncio.sleep(CLOB_RECONNECT_DELAY_SECONDS)
+                        break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    if connected and received_message:
+                        restart_preferred = True
+                        await asyncio.sleep(CLOB_RECONNECT_DELAY_SECONDS)
+                        break
                     continue
-        except websockets.ConnectionClosed as exc:
-            raise ConnectionError("polymarket websocket disconnected") from exc
+            if restart_preferred:
+                continue
+            if isinstance(last_error, websockets.ConnectionClosed):
+                raise ConnectionError("polymarket websocket disconnected") from last_error
+            if last_error is not None:
+                raise last_error
+            return
 
 
 async def send_clob_heartbeats(websocket: Any) -> None:

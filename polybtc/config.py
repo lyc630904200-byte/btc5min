@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -141,6 +141,7 @@ class PairMatchConfig(BaseModel):
     end_seconds_after_open: float = 280.0
     max_pairs_per_market: int = 1
     alternate_directions: bool = True
+    alternation_mode: Literal["per_market", "continuous_abab"] = "per_market"
 
     @field_validator("leg_quote_usd")
     @classmethod

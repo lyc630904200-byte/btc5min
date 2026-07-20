@@ -230,6 +230,7 @@ def test_old_runtime_settings_gain_new_risk_defaults(tmp_path) -> None:
         "end_seconds_after_open": 280,
         "max_pairs_per_market": 1,
         "alternate_directions": True,
+        "alternation_mode": "per_market",
     }
 
 
@@ -246,6 +247,7 @@ def test_pair_config_is_pending_and_persists_after_activation(tmp_path) -> None:
                 "end_seconds_after_open": 270,
                 "max_pairs_per_market": 3,
                 "alternate_directions": False,
+                "alternation_mode": "continuous_abab",
             }
         }
     )
@@ -260,6 +262,7 @@ def test_pair_config_is_pending_and_persists_after_activation(tmp_path) -> None:
     assert reloaded.config.pair_match.leg_quote_usd == 25.0
     assert reloaded.config.pair_match.max_pairs_per_market == 3
     assert reloaded.config.pair_match.alternate_directions is False
+    assert reloaded.config.pair_match.alternation_mode == "continuous_abab"
 
 
 def test_pending_config_waits_for_new_aligned_btc_and_eth_markets(tmp_path) -> None:

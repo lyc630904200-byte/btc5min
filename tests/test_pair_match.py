@@ -143,6 +143,83 @@ def test_pair_engine_opens_once_per_quote_and_strictly_alternates(tmp_path) -> N
     registry.close()
 
 
+def test_continuous_abab_starts_randomly_then_crosses_markets_and_restart(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "polybtc.pair_match.secrets.choice",
+        lambda choices: PairDirection.BTC_UP_ETH_DOWN,
+    )
+    config = AppConfig(
+        pair_match={
+            "enabled": True,
+            "min_spread_cents": -100,
+            "max_pairs_per_market": 1,
+            "alternate_directions": True,
+            "alternation_mode": "continuous_abab",
+        }
+    )
+    path = tmp_path / "pairs.sqlite3"
+    start = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+    registry = PairMatchRegistry(path)
+    matcher = PairMatchEngine(config, registry)
+
+    first_now = start + timedelta(seconds=30)
+    first = matcher.evaluate(engines(config, start, first_now), first_now)
+    assert first is not None
+    assert first.direction == PairDirection.BTC_UP_ETH_DOWN
+    assert matcher.next_direction == PairDirection.BTC_DOWN_ETH_UP
+
+    second_start = start + timedelta(minutes=5)
+    second_now = second_start + timedelta(seconds=30)
+    second = matcher.evaluate(engines(config, second_start, second_now), second_now)
+    assert second is not None
+    assert second.direction == PairDirection.BTC_DOWN_ETH_UP
+    assert matcher.next_direction == PairDirection.BTC_UP_ETH_DOWN
+    registry.close()
+
+    reopened = PairMatchRegistry(path)
+    restored_matcher = PairMatchEngine(config, reopened)
+    third_start = start + timedelta(minutes=10)
+    third_now = third_start + timedelta(seconds=30)
+    third = restored_matcher.evaluate(engines(config, third_start, third_now), third_now)
+    assert third is not None
+    assert third.direction == PairDirection.BTC_UP_ETH_DOWN
+    assert restored_matcher.next_direction == PairDirection.BTC_DOWN_ETH_UP
+    reopened.close()
+
+
+def test_continuous_abab_waits_for_randomly_chosen_first_direction(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "polybtc.pair_match.secrets.choice",
+        lambda choices: PairDirection.BTC_UP_ETH_DOWN,
+    )
+    start = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+    now = start + timedelta(seconds=30)
+    config = AppConfig(
+        pair_match={
+            "enabled": True,
+            "min_spread_cents": 0,
+            "alternate_directions": True,
+            "alternation_mode": "continuous_abab",
+        }
+    )
+    registry = PairMatchRegistry(tmp_path / "pairs.sqlite3")
+    matcher = PairMatchEngine(config, registry)
+    states = engines(config, start, now)
+    states["BTC"].books[Direction.UP].asks[0].price = 0.70
+
+    assert matcher.evaluate(states, now) is None
+    assert matcher.status == "waiting_for_alternating_direction"
+    assert matcher.next_direction == PairDirection.BTC_UP_ETH_DOWN
+
+    states["BTC"].books[Direction.UP].asks[0].price = 0.40
+    opened = matcher.evaluate(states, now + timedelta(milliseconds=100))
+    assert opened is not None
+    assert opened.direction == PairDirection.BTC_UP_ETH_DOWN
+    registry.close()
+
+
 @pytest.mark.parametrize(
     ("btc_outcome", "eth_outcome"),
     [

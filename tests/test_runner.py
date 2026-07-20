@@ -8,6 +8,7 @@ from polybtc.runner import (
     books_need_rest_refresh,
     coalesce_live_events,
     current_market_with_page_threshold,
+    live_book_payload,
     prefetch_next_market_threshold,
     should_keep_current_market,
     should_retry_threshold,
@@ -621,6 +622,27 @@ def test_book_publication_is_immediate_on_top_change_and_rate_limited_otherwise(
     assert should_publish_book_update(previous, heartbeat, now) is True
 
 
+def test_live_book_payload_keeps_only_top_levels_without_raw_depth() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    snapshot = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now,
+        bids=[BookLevel(price=0.39, size=5), BookLevel(price=0.40, size=10)],
+        asks=[BookLevel(price=0.42, size=7), BookLevel(price=0.41, size=8)],
+        depth_trusted=True,
+        raw={"large": ["unused"] * 100},
+    )
+
+    payload = live_book_payload(snapshot)
+
+    assert payload["bids"] == [{"price": 0.40, "size": 10.0}]
+    assert payload["asks"] == [{"price": 0.41, "size": 8.0}]
+    assert payload["depth_trusted"] is True
+    assert "raw" not in payload
+
+
 def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     engine = PaperEngine(AppConfig())
@@ -679,5 +701,11 @@ def test_rest_book_reconciliation_runs_even_when_websocket_arrivals_are_fresh() 
         engine,
         current_market,
         now + timedelta(milliseconds=500),
+        last_rest_refresh_at=now,
+    ) is False
+    assert books_need_rest_refresh(
+        engine,
+        current_market,
+        now + timedelta(seconds=2),
         last_rest_refresh_at=now,
     ) is True

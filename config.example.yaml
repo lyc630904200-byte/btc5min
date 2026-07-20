@@ -7,6 +7,7 @@ sources:
   enabled_assets:
     - BTC
     - ETH
+  # Windows system proxy is tried first; this explicit proxy is the fallback.
   proxy_url: http://127.0.0.1:10808
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
@@ -63,3 +64,5 @@ pair_match:
   end_seconds_after_open: 280
   max_pairs_per_market: 1
   alternate_directions: true
+  # per_market: each 5-minute market starts over; continuous_abab: first order is random, then A/B alternates forever.
+  alternation_mode: per_market
