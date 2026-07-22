@@ -111,7 +111,7 @@ class RunJournal:
             ],
         )
         pair_fields = [
-            "order_id", "interval_key", "direction", "opened_at", "start_time", "end_time",
+            "order_number", "order_id", "interval_key", "direction", "opened_at", "start_time", "end_time",
             "btc_slug", "btc_token_id", "btc_direction", "btc_avg_price", "btc_quantity",
             "btc_quote", "btc_fee_usd", "eth_slug", "eth_token_id", "eth_direction",
             "eth_avg_price", "eth_quantity", "eth_quote", "eth_fee_usd", "spread_cents",
@@ -169,7 +169,8 @@ class RunJournal:
         btc = payload["btc_leg"]
         eth = payload["eth_leg"]
         return {
-            "order_id": payload["order_id"], "interval_key": payload["interval_key"],
+            "order_number": payload["order_number"], "order_id": payload["order_id"],
+            "interval_key": payload["interval_key"],
             "direction": payload["direction"], "opened_at": payload["opened_at"],
             "start_time": payload["start_time"], "end_time": payload["end_time"],
             "btc_slug": btc["market_slug"], "btc_token_id": btc["token_id"],

@@ -60,9 +60,13 @@ pair_match:
   # Total quote target is 2x this value; both legs receive exactly the same shares.
   leg_quote_usd: 10
   min_spread_cents: 0
+  # Absolute difference between the two simulated execution averages.
+  min_leg_price_gap_cents: 0
   start_seconds_after_open: 20
   end_seconds_after_open: 280
   max_pairs_per_market: 1
   alternate_directions: true
-  # per_market: each 5-minute market starts over; continuous_abab: first order is random, then A/B alternates forever.
+  # per_market: best first; per_market_ab/per_market_ba: fixed first direction, then alternate.
+  # Sequence modes default max_pairs_per_market to 2 when that field is omitted.
+  # continuous_abab: alternate forever; always_a/always_b: fixed direction.
   alternation_mode: per_market

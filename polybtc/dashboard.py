@@ -362,6 +362,7 @@ class DashboardHub:
             "enabled",
             "leg_quote_usd",
             "min_spread_cents",
+            "min_leg_price_gap_cents",
             "start_seconds_after_open",
             "end_seconds_after_open",
             "max_pairs_per_market",
@@ -382,6 +383,12 @@ class DashboardHub:
         risk_payload.update(risk_update or {})
         pair_payload = dict(pending.get("pair_match") or self.config.pair_match.model_dump())
         pair_payload.update(pair_update or {})
+        if (
+            pair_update
+            and pair_update.get("alternation_mode") in {"per_market_ab", "per_market_ba"}
+            and "max_pairs_per_market" not in pair_update
+        ):
+            pair_payload["max_pairs_per_market"] = 2
         strategy = type(self.config.strategy).model_validate(strategy_payload)
         risk = type(self.config.risk).model_validate(risk_payload)
         pair_match = type(self.config.pair_match).model_validate(pair_payload)

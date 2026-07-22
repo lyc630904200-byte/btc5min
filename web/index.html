@@ -342,9 +342,10 @@
               <div class="settings-grid">
                 <label class="setting"><span class="setting-label">自动匹配</span><span class="setting-toggle"><input id="pairEnabled" type="checkbox">启用后停止单币新入场</span></label>
                 <label class="setting"><span class="setting-label">严格交替</span><span class="setting-toggle"><input id="pairAlternate" type="checkbox">A/B 严格轮换</span></label>
-                <label class="setting"><span class="setting-label">交替模式</span><select class="setting-input" id="pairAlternationMode"><option value="per_market">每场重新开始</option><option value="continuous_abab">ABAB 连续循环（首单随机）</option></select></label>
+                <label class="setting"><span class="setting-label">交替模式</span><select class="setting-input" id="pairAlternationMode"><option value="per_market">每场重新开始</option><option value="per_market_ab">每场先 A 后 B</option><option value="per_market_ba">每场先 B 后 A</option><option value="continuous_abab">ABAB 连续循环（首单随机）</option><option value="always_a">一直选 A</option><option value="always_b">一直选 B</option></select></label>
                 <label class="setting"><span class="setting-label">等份基准（USD/腿）</span><input class="setting-input" id="pairLegQuote" type="number" min="0.01" step="0.01" required></label>
-                <label class="setting"><span class="setting-label">最低价差（美分）</span><input class="setting-input" id="pairMinSpread" type="number" min="-100" max="100" step="0.01" required></label>
+                <label class="setting"><span class="setting-label">最低盈利价差（美分）</span><input class="setting-input" id="pairMinSpread" type="number" min="-100" max="100" step="0.01" required></label>
+                <label class="setting"><span class="setting-label">UP/DOWN 最小差值（美分）</span><input class="setting-input" id="pairMinLegPriceGap" type="number" min="0" max="100" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">开盘后开始秒数</span><input class="setting-input" id="pairStartSeconds" type="number" min="0" max="299" step="1" required></label>
                 <label class="setting"><span class="setting-label">开盘后结束秒数（不含）</span><input class="setting-input" id="pairEndSeconds" type="number" min="1" max="300" step="1" required></label>
                 <label class="setting"><span class="setting-label">每场配对上限</span><input class="setting-input" id="pairMaxPairs" type="number" min="1" step="1" required></label>
@@ -357,7 +358,8 @@
                 <div class="pair-card-head"><span>A · BTC YES + ETH NO</span><span class="tag blue" id="pairAStatus">等待盘口</span></div>
                 <div class="pair-line"><span>BTC 腿</span><strong id="pairABtcLeg">--</strong></div>
                 <div class="pair-line"><span>ETH 腿</span><strong id="pairAEthLeg">--</strong></div>
-                <div class="pair-line"><span>入场价差</span><strong id="pairASpread">--</strong></div>
+                <div class="pair-line"><span>盈利价差</span><strong id="pairASpread">--</strong></div>
+                <div class="pair-line"><span>UP/DOWN 差值</span><strong id="pairALegPriceGap">--</strong></div>
                 <div class="pair-line"><span>总成本（含费）</span><strong id="pairACost">--</strong></div>
                 <div class="pair-line"><span>拒绝原因</span><strong id="pairAReason">--</strong></div>
                 <div class="scenario-grid">
@@ -371,7 +373,8 @@
                 <div class="pair-card-head"><span>B · BTC NO + ETH YES</span><span class="tag blue" id="pairBStatus">等待盘口</span></div>
                 <div class="pair-line"><span>BTC 腿</span><strong id="pairBBtcLeg">--</strong></div>
                 <div class="pair-line"><span>ETH 腿</span><strong id="pairBEthLeg">--</strong></div>
-                <div class="pair-line"><span>入场价差</span><strong id="pairBSpread">--</strong></div>
+                <div class="pair-line"><span>盈利价差</span><strong id="pairBSpread">--</strong></div>
+                <div class="pair-line"><span>UP/DOWN 差值</span><strong id="pairBLegPriceGap">--</strong></div>
                 <div class="pair-line"><span>总成本（含费）</span><strong id="pairBCost">--</strong></div>
                 <div class="pair-line"><span>拒绝原因</span><strong id="pairBReason">--</strong></div>
                 <div class="scenario-grid">
@@ -464,6 +467,7 @@
       enabled: 'pairEnabled',
       leg_quote_usd: 'pairLegQuote',
       min_spread_cents: 'pairMinSpread',
+      min_leg_price_gap_cents: 'pairMinLegPriceGap',
       start_seconds_after_open: 'pairStartSeconds',
       end_seconds_after_open: 'pairEndSeconds',
       max_pairs_per_market: 'pairMaxPairs',
@@ -569,7 +573,7 @@
       const enabled = $('pairAlternate').checked;
       const mode = $('pairAlternationMode');
       mode.disabled = !enabled;
-      mode.title = enabled ? '选择严格交替的运行范围' : '请先开启严格交替';
+      mode.title = enabled ? '选择严格交替、固定起始顺序或固定下单方向' : '请先开启严格交替';
     }
 
     function renderRuntimeConfig(snapshot, force = false) {
@@ -624,9 +628,11 @@
       return `${leg.direction} · 均 ${fmtProb(leg.avg_price)} · ${fmtNumber(leg.quantity, 3)} 份 · $${fmtNumber(leg.quote, 2)} · 费 $${fmtNumber(leg.fee_usd, 4)}`;
     }
 
-    function shortOrderNumber(orderId) {
-      if (!orderId) return '--';
-      return `#${String(orderId).slice(0, 8).toUpperCase()}`;
+    function displayOrderNumber(order) {
+      const number = Number(order?.order_number);
+      if (Number.isInteger(number) && number > 0) return `#${String(number).padStart(6, '0')}`;
+      if (!order?.order_id) return '--';
+      return `#${String(order.order_id).slice(0, 8).toUpperCase()}`;
     }
 
     function renderPairCandidate(prefix, candidate) {
@@ -634,17 +640,18 @@
         setClass(`pair${prefix}Card`, 'pair-card');
         setText(`pair${prefix}Status`, '等待盘口');
         setClass(`pair${prefix}Status`, 'tag blue');
-        ['BtcLeg', 'EthLeg', 'Spread', 'Cost', 'Reason'].forEach((field) => setText(`pair${prefix}${field}`, '--'));
+        ['BtcLeg', 'EthLeg', 'Spread', 'LegPriceGap', 'Cost', 'Reason'].forEach((field) => setText(`pair${prefix}${field}`, '--'));
         ['BothLose', 'BtcWins', 'EthWins', 'BothWin'].forEach((field) => setPnl(`pair${prefix}${field}`, null));
         return;
       }
-      const eligible = candidate.available && candidate.meets_spread;
+      const eligible = candidate.available && candidate.meets_spread && candidate.meets_leg_price_gap;
       setClass(`pair${prefix}Card`, `pair-card ${eligible ? 'eligible' : 'rejected'}`);
       setText(`pair${prefix}Status`, eligible ? '达标' : candidate.available ? '未达标' : '不可用');
       setClass(`pair${prefix}Status`, `tag ${eligible ? 'green' : 'amber'}`);
       setText(`pair${prefix}BtcLeg`, pairLegText(candidate.btc_leg));
       setText(`pair${prefix}EthLeg`, pairLegText(candidate.eth_leg));
       setText(`pair${prefix}Spread`, candidate.spread_cents == null ? '--' : `${fmtNumber(candidate.spread_cents, 3)}¢`);
+      setText(`pair${prefix}LegPriceGap`, candidate.leg_price_gap_cents == null ? '--' : `${fmtNumber(candidate.leg_price_gap_cents, 3)}¢`);
       setText(`pair${prefix}Cost`, candidate.total_cost_usd == null ? '--' : `$${fmtNumber(candidate.total_cost_usd, 4)}`);
       setText(`pair${prefix}Reason`, candidate.reason || '--');
       const scenarios = candidate.scenario_pnl || {};
@@ -664,7 +671,15 @@
       setText('pairStatus', status);
       setClass('pairStatus', `tag ${pairFormDirty || configStatus === 'pending_next_market' ? 'amber' : pair.status === 'pair_opened' ? 'green' : 'blue'}`);
       const nextDirection = pair.next_direction === 'BTC_UP_ETH_DOWN' ? 'A' : pair.next_direction === 'BTC_DOWN_ETH_UP' ? 'B' : '首单择优';
-      const alternationMode = pair.config?.alternation_mode === 'continuous_abab' ? 'ABAB 连续' : '每场重置';
+      const alternationModes = {
+        per_market: '每场重置',
+        per_market_ab: '每场先 A 后 B',
+        per_market_ba: '每场先 B 后 A',
+        continuous_abab: 'ABAB 连续',
+        always_a: '一直选 A',
+        always_b: '一直选 B',
+      };
+      const alternationMode = alternationModes[pair.config?.alternation_mode] || '每场重置';
       setText('pairRuntime', `状态 ${pair.status || '--'} · 交替 ${alternationMode} · 下一方向 ${nextDirection} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`);
       const summary = pair.summary || {};
       setText('pairSummaryCounts', `${summary.orders || 0} 单 / ${summary.settled_orders || 0} 已结算 / ${summary.pending_orders || 0} 待结算 · 胜率 ${fmtNumber((summary.win_rate || 0) * 100, 1)}%`);
@@ -674,7 +689,7 @@
       const orderNumbersByInterval = new Map();
       orders.forEach((order) => {
         const numbers = orderNumbersByInterval.get(order.interval_key) || [];
-        numbers.push(shortOrderNumber(order.order_id));
+        numbers.push(displayOrderNumber(order));
         orderNumbersByInterval.set(order.interval_key, numbers);
       });
       const markets = pair.recent_markets || [];
@@ -696,7 +711,7 @@
         'pairOrders',
         JSON.stringify(orders),
         orders.map((order) => `<tr>
-          <td>${shortOrderNumber(order.order_id)}</td><td>${fmtTime(order.opened_at)} · ${order.direction || '--'}</td>
+          <td>${displayOrderNumber(order)}</td><td>${fmtTime(order.opened_at)} · ${order.direction || '--'}</td>
           <td>${pairLegText(order.btc_leg)}</td>
           <td>${pairLegText(order.eth_leg)}</td>
           <td>${fmtNumber(order.spread_cents, 3)}¢</td><td>${order.btc_outcome || '--'} / ${order.eth_outcome || '--'}</td>
@@ -1092,6 +1107,11 @@
         button.disabled = false;
       }
     });
+    $('pairAlternationMode').addEventListener('change', () => {
+      if (['per_market_ab', 'per_market_ba'].includes($('pairAlternationMode').value)) {
+        $('pairMaxPairs').value = '2';
+      }
+    });
     $('pairForm').addEventListener('input', () => {
       pairFormDirty = true;
       syncPairAlternationModeState();
@@ -1110,6 +1130,7 @@
             enabled: $('pairEnabled').checked,
             leg_quote_usd: runtimeNumber('pairLegQuote'),
             min_spread_cents: runtimeNumber('pairMinSpread'),
+            min_leg_price_gap_cents: runtimeNumber('pairMinLegPriceGap'),
             start_seconds_after_open: runtimeNumber('pairStartSeconds'),
             end_seconds_after_open: runtimeNumber('pairEndSeconds'),
             max_pairs_per_market: runtimeNumber('pairMaxPairs'),

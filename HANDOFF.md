@@ -1,6 +1,6 @@
 # polybtc 交接文档
 
-更新时间：2026-07-21（Asia/Shanghai）
+更新时间：2026-07-22（Asia/Shanghai）
 
 ## 项目目标
 
@@ -12,43 +12,32 @@
 
 - 工作目录：`D:\Users\Administrator\Documents\btc5fenzhong`
 - 当前分支：`jiaoyi02`
-- HEAD：`081e2f6 大改之前`
+- HEAD：`84e2f62 goodv1`
 - 跟踪分支：`origin/jiaoyi02`
 - `jiaoyi02` 与 `origin/jiaoyi02` 位于同一提交。
-- 工作区有删除价格偏离折线图、接入 ETH 双资产运行链路、BTC/ETH 配对模块以及本交接文档更新，交接后不要 reset 或覆盖。
+- BTC/ETH 双资产、配对模块和 Dashboard 主体已包含在 `84e2f62`。当前工作区另有固定 A/B 模式、订单序号、UP/DOWN 最小价格差及对应前端/测试修改，交接后不要 reset 或覆盖。
 - Dashboard 正在运行：`http://127.0.0.1:8765/`
 - WebSocket：`ws://127.0.0.1:8766/ws`
-- 更新文档时进程 PID：`28160`
-- 当前运行输出目录：`data\20260720T161551Z`
-- 更新文档时 BTC、ETH 均无持仓。
-- 更新文档时 BTC 市场为 `btc-updown-5m-1784564100`，ETH 市场为 `eth-updown-5m-1784564100`，两者起止时间完全一致；账本已有 66 组历史订单，更新时已全部完成官方结算。
+- 更新文档时进程 PID：`20376`
+- 当前运行输出目录：`data\20260722T111509Z`
+- 更新文档时 BTC 市场为 `btc-updown-5m-1784718900`，ETH 市场为 `eth-updown-5m-1784718900`，两者起止时间完全一致。
+- 配对账本共有 435 组订单、338 个去重市场，订单号连续为 `1..435`；更新时 431 组已结算、4 组待结算。
 - 实际联网验证已确认：BTC/ETH 当前市场、各自 UP/DOWN token、两套 CLOB 盘口、`BTCUSDT`/`ETHUSDT` 和 `BTC/USD`/`ETH/USD` 实时 tick 均正常。
-- 配对模块当前已由用户开启；等份基准 10 USD/腿（单组目标成交额 20 USD）、最低价差 10 美分、开盘后 `[10, 290)` 秒、每场上限 4、严格交替开启，模式为跨场连续 ABAB。
-- 最近完整测试：`174 passed`
+- 配对模块当前已开启；`leg_quote_usd=20`（单组报价预算 40 USD，手续费另计）、最低盈利价差 5 美分、UP/DOWN 最小价格差 0 美分、开盘后 `[10, 290)` 秒、每场上限 2、严格方向控制开启，模式为每场重新开始（`per_market`）。当前无待生效配置。
+- 最近完整测试：`198 passed`
 
 当前工作区主要变更：
 
 ```text
 M  HANDOFF.md
 M  config.example.yaml
-M  polybtc/cli.py
-M  polybtc/clients.py
 M  polybtc/config.py
 M  polybtc/dashboard.py
-M  polybtc/engine.py
 M  polybtc/journal.py
-M  polybtc/market.py
-M  polybtc/models.py
-M  polybtc/runner.py
-M  pyproject.toml
+M  polybtc/pair_match.py
 M  tests/test_dashboard.py
-M  tests/test_market.py
-M  tests/test_polymarket_page.py
-M  tests/test_rtds.py
-M  tests/test_strategy.py
+M  tests/test_pair_match.py
 M  web/index.html
-?? polybtc/pair_match.py
-?? tests/test_pair_match.py
 ```
 
 ## Git 与代理
@@ -66,7 +55,7 @@ http.proxy  = http://127.0.0.1:10808
 https.proxy = http://127.0.0.1:10808
 ```
 
-当前主线 `master` 位于 `03e1c80`，该提交为 `Merge branch 'codex/jiaoyi' into master`。当前开发分支 `jiaoyi02` 位于 `081e2f6` 并已推送到 `origin/jiaoyi02`。提交 `081e2f6` 包含自动清理默认开启、对应测试和上一版交接文档。
+当前主线 `master` 位于 `03e1c80`，该提交为 `Merge branch 'codex/jiaoyi' into master`。当前开发分支 `jiaoyi02` 位于 `84e2f62`，并与 `origin/jiaoyi02` 一致。
 
 程序持久配置仍为 `http://127.0.0.1:10808`，但该端口没有监听；运行时网络现按“Windows 系统代理 → 手工配置代理 → 直连”的顺序尝试，并记住成功路径、复用 CLOB REST 连接。Windows 系统代理当前指向 Clash Verge mixed 入口 `127.0.0.1:7897`。仓库 Git 代理仍是 10808；最近一次推送使用单次命令参数走 Clash，未修改 Git 持久配置：
 
@@ -103,13 +92,17 @@ $runtimePython = 'C:\Users\Administrator\.cache\codex-runtimes\codex-primary-run
 ```powershell
 $stdoutPath = Join-Path (Get-Location) 'data\dashboard-live.stdout.log'
 $stderrPath = Join-Path (Get-Location) 'data\dashboard-live.stderr.log'
-Start-Process -FilePath $runtimePython `
-  -ArgumentList @('-m', 'polybtc', 'dashboard') `
+$commandLine = "set SystemRoot=C:\WINDOWS&& set USERPROFILE=C:\Users\Administrator&& set APPDATA=C:\Users\Administrator\AppData\Roaming&& set LOCALAPPDATA=C:\Users\Administrator\AppData\Local&& $runtimePython -m polybtc dashboard --host 127.0.0.1 --port 8765 --ws-port 8766"
+Start-Process -FilePath 'C:\Windows\System32\cmd.exe' `
+  -ArgumentList @('/d', '/c', $commandLine) `
   -WorkingDirectory (Get-Location) `
   -RedirectStandardOutput $stdoutPath `
   -RedirectStandardError $stderrPath `
-  -WindowStyle Hidden
+  -WindowStyle Hidden `
+  -UseNewEnvironment
 ```
+
+这里使用 `cmd.exe` 并显式补齐 Windows 用户环境，是为了规避当前 Codex 会话中重复 `Path/PATH` 导致 `Start-Process` 启动失败的问题。
 
 停止程序：
 
@@ -144,10 +137,10 @@ Invoke-RestMethod http://127.0.0.1:8765/api/config
 - `polybtc/strategy.py`：入场、退出、手续费、滑点和结算规则。
 - `polybtc/orderbook.py`：按多档盘口模拟买卖成交。
 - `polybtc/entry_registry.py`：每市场入场次数的 SQLite 持久化注册表。
-- `polybtc/pair_match.py`：跨市场组合评估、每场严格交替或跨场 ABAB 连续交替、SQLite 配对账本、结算与汇总。
+- `polybtc/pair_match.py`：跨市场组合评估、每场交替、跨场 ABAB、固定 A/B、SQLite 配对账本、顺序订单号、结算与汇总。
 - `polybtc/dashboard.py`：HTTP/WebSocket 服务和“保存后下一把生效”的运行时参数管理。
 - `web/index.html`：Dashboard 前端。
-- `tests/`：当前完整测试集，共 174 项。
+- `tests/`：当前完整测试集，共 189 项。
 
 ## 市场与阈值机制
 
@@ -230,6 +223,16 @@ taker 费率参数                0.07
 盘口冲突退出延迟              10 秒
 最大持仓时间                  120 秒
 临近到期强制退出              5 秒
+
+配对开关                      开启
+配对基准金额                  20 USD
+单组报价预算                  40 USD（手续费另计）
+最低配对盈利价差              5 美分
+UP/DOWN 最小价格差            0 美分（旧配置兼容默认）
+配对入场窗口                  开盘后 [10, 290) 秒
+每场配对上限                  2 组
+严格方向控制                  开启
+方向模式                      per_market
 ```
 
 入场持续确认已做成前端按钮：
@@ -250,11 +253,46 @@ taker 费率参数                0.07
 价差（美分） = 100 × [1 - BTC均价 - ETH均价 - BTC手续费/份数 - ETH手续费/份数]
 ```
 
-相同四腿卖盘组合快照最多开一组。等份数使“仅 BTC 腿赢”和“仅 ETH 腿赢”的兑付相同，单边净盈亏等于相同份数乘以入场价差。严格交替支持两种模式：`per_market` 的首单选达标组合中价差较高者、随后只等待相反方向，并在每个对齐场次重新开始；`continuous_abab` 在账本首次启用时随机确定 A/B 首单，之后跨场、跨重启持续 ABAB 循环并只等待指定方向。关闭严格交替时，每次选择当前达标组合中价差较高者。模块启用后，BTC/ETH 单币引擎停止新入场，但已经存在的单币仓位仍按原规则退出和结算；配对条件不足时不会恢复单币入场。
+配对还支持独立的 `min_leg_price_gap_cents` 门槛，按两腿多档等份数模拟成交均价计算：
+
+```text
+UP/DOWN 价格差（美分） = 100 × |BTC 腿均价 - ETH 腿均价|
+```
+
+A 比较 `BTC UP` 与 `ETH DOWN`，B 比较 `BTC DOWN` 与 `ETH UP`。候选必须同时满足最低盈利价差和最低 UP/DOWN 价格差；盈利价差先失败时原因为 `spread_below_threshold`，仅价格差失败时为 `leg_price_gap_below_threshold`。价格差不含手续费，手续费仍由盈利价差公式处理。新字段范围为 `0..100`，旧配置缺失时默认 `0`，因此升级本身不改变交易行为。
+
+相同四腿卖盘组合快照最多开一组。快照指纹包含 BTC/ETH 的 UP/DOWN 四套完整卖盘价格和数量；数据库还有 `UNIQUE(interval_key, fingerprint)`，所以重启也不能在同一场重复记录完全相同的快照。等份数使“仅 BTC 腿赢”和“仅 ETH 腿赢”的兑付相同，单边净盈亏等于相同份数乘以入场价差。
+
+严格方向控制支持六种模式：
+
+- `per_market`：本场没有历史订单时选择当前达标方向中价差较高者，之后只等待相反方向；每个新对齐场次重新开始。
+- `per_market_ab`：每个新场次固定从 A 开始，之后按 A→B→A→B 循环。
+- `per_market_ba`：每个新场次固定从 B 开始，之后按 B→A→B→A 循环。
+- `continuous_abab`：账本首次启用时随机确定 A/B 首单，之后跨场、跨重启持续 ABAB，只等待指定方向。
+- `always_a`：始终只等待 A，即 `BTC UP + ETH DOWN`；B 即使价差更高也不成交。
+- `always_b`：始终只等待 B，即 `BTC DOWN + ETH UP`；A 即使价差更高也不成交。
+
+固定 A/B 模式允许同一市场重复相同方向，直到 `max_pairs_per_market`。第二组不要求价差先跌破门槛再重新穿越，也没有冷却时间；四套卖盘中任意一套发生变化形成新指纹后，只要目标方向仍达标，就可能在下一次约 20ms 合并批次中再次成交。固定模式不会修改 SQLite 中 `continuous_abab` 的持久方向。关闭严格方向控制时，固定模式值被忽略，每次仍选择当前达标方向中价差较高者。
+
+`per_market_ab` 和 `per_market_ba` 在省略 `max_pairs_per_market` 时条件默认上限为 2；其他模式及全局默认仍为 1。Dashboard 手动选择这两个模式时会把上限预填为 2，之后仍可修改；加载已保存配置不会覆盖其显式上限。
+
+无论选择哪种模式，引擎仍要求四个盘口都可信、未过期且可执行。模块启用后，BTC/ETH 单币引擎停止新入场，但已经存在的单币仓位仍按原规则退出和结算；配对条件不足时不会恢复单币入场。
 
 配对订单不做中途止盈止损，市场到期后每 2 秒查询 Gamma。只有 `closed=true`、`umaResolutionStatus=resolved` 且一一对应的 `outcomes`/`outcomePrices` 严格出现一个 `1`、其余为 `0` 时才结算；否则保持待结算并重试。净盈亏为中奖腿份数之和减去两腿成交额和两腿买入手续费。
 
-完整配对订单保存在 `data/pair-match-ledger.sqlite3`，重启后会恢复待结算订单、场次计数和交替方向，重复结算不会重复记账。当前开关已由用户开启，程序正在按保存的门槛运行。
+完整配对订单保存在 `data/pair-match-ledger.sqlite3`，重启后会恢复待结算订单、场次计数和交替方向，重复结算不会重复记账。每组订单同时保存内部 UUID `order_id` 和面向用户的连续整数 `order_number`；旧账本启动时按 `opened_at, order_id` 自动补号，无需手工迁移。API、WebSocket、CSV 和 Dashboard 均返回或显示订单号，前端格式为 `#000001`，缺失时才回退到 UUID 片段。
+
+截至 2026-07-22 本次文档更新，已结算账本结果为：
+
+```text
+BTC UP   + ETH UP      186 单 / 142 场
+BTC UP   + ETH DOWN     43 单 /  37 场
+BTC DOWN + ETH UP       46 单 /  36 场
+BTC DOWN + ETH DOWN    156 单 / 121 场
+合计                    431 单 / 336 场，另有 4 单待结算
+```
+
+另一次官方 Gamma 全市场严格核验覆盖北京时间 `2026-07-14 20:10` 至 `2026-07-21 20:10` 的 2016 组完整市场：`UP+DOWN=186`、`DOWN+UP=186`，反向结果合计 372 组（18.45%）。这组数据是固定历史窗口，不应在后续文档中误写成滚动“当前过去一周”。
 
 ## 入场规则
 
@@ -326,8 +364,8 @@ taker 费率参数                0.07
 接口：
 
 - `GET /api/state`：最新市场、行情、盘口、持仓、统计和配置状态。
-- `GET /api/config`：当前实际生效参数以及待下一期生效参数。
-- `POST /api/config`：保存前端允许修改的策略和风控参数。
+- `GET /api/config`：当前实际生效参数以及待下一期生效参数；`pair_match` 包含 `min_leg_price_gap_cents`，`alternation_mode` 可返回六种配对模式。
+- `POST /api/config`：保存前端允许修改的策略和风控参数；配对配置接受 `min_leg_price_gap_cents` 及六种方向模式。
 - `ws://127.0.0.1:8766/ws`：实时状态推送。
 
 可在前端修改：
@@ -337,11 +375,11 @@ taker 费率参数                0.07
 - 入场时间窗；
 - 单笔模拟金额、最大净亏损、每市场最多交易数；
 - 入场持续确认开关、反买开关。
-- 配对开关、每腿金额、价差门槛、开盘后运行区间、每场组数上限和严格交替。
+- 配对开关、每腿金额、最低盈利价差、UP/DOWN 最小价格差、开盘后运行区间、每场组数上限、严格方向控制及六种方向模式。
 
 保存后不会改变当前市场使用中的参数，而是在检测到下一个市场后原子切换；保存值会持久化，重启后不会恢复成代码默认值。
 
-Dashboard 已删除价格偏离折线图，并增加 BTC/ETH 页签。切换页签会显示对应资产的市场、阈值、Binance/RTDS 行情、持仓、统计和成交事件；盘口区域则在两个页面都固定同时显示两套盘口，BTC 在上、ETH 在下，各自包含 UP/DOWN 买入或卖出报价及更新时间。两个页签都显示同一个“BTC/ETH 自动匹配”面板，包括 A/B 实时成交均价、份数、金额、手续费、价差、拒绝原因、四种结果预估 PnL、最近 20 场、最近 100 单和累计统计。两套单币状态不会互相覆盖。阈值核验文案已改为“阈值双通道一致”。这些修改当前尚未提交。
+Dashboard 已删除价格偏离折线图，并增加 BTC/ETH 页签。切换页签会显示对应资产的市场、阈值、Binance/RTDS 行情、持仓、统计和成交事件；盘口区域则在两个页面都固定同时显示两套盘口，BTC 在上、ETH 在下，各自包含 UP/DOWN 买入或卖出报价及更新时间。两个页签都显示同一个“BTC/ETH 自动匹配”面板，包括 A/B 实时成交均价、份数、金额、手续费、盈利价差、UP/DOWN 价格差、拒绝原因、四种结果预估 PnL、最近 20 场、最近 100 单和累计统计。模式下拉框包含每场择优、每场先 A 后 B、每场先 B 后 A、连续 ABAB、一直选 A 和一直选 B；实时状态显示下一方向，订单列表优先显示连续订单号。两套单币状态不会互相覆盖。
 
 ## 日志与数据
 
@@ -375,17 +413,17 @@ data/YYYYMMDDTHHMMSSZ/
 - `latency.csv`：连接、超时和异常。
 - `summary.json`：运行汇总。
 - `data/market-entry-ledger.sqlite3`：跨进程每市场入场次数。
-- `pair_orders.csv`：本次进程中新开的配对订单。
+- `pair_orders.csv`：本次进程中新开的配对订单，包含 `order_number` 和内部 `order_id`。
 - `pair_results.csv`：本次进程中完成的配对结算。
 - `pair_markets.jsonl`：配对场次结算汇总。
-- `data/pair-match-ledger.sqlite3`：配对订单、场次上限、交替方向和官方结算的完整持久账本。
+- `data/pair-match-ledger.sqlite3`：配对订单、连续订单号、场次上限、交替方向和官方结算的完整持久账本。
 
 ## 测试覆盖
 
 最近完整结果：
 
 ```text
-174 passed
+198 passed
 ```
 
 重点覆盖：
@@ -403,7 +441,9 @@ data/YYYYMMDDTHHMMSSZ/
 - SQLite 每市场最多一笔及历史成交补种。
 - Dashboard 保存后下一期生效和旧设置迁移。
 - Dashboard BTC/ETH 状态隔离、ETH 官网价格结构、ETH Binance/RTDS symbol 路由。
-- 配对多档等额成交、逐档手续费、价差边界、时间窗、四盘口完整性、相同快照防重、每场严格交替、连续 ABAB 跨场/跨重启、关闭交替择优和跨重启场次上限。
+- 配对多档等额成交、逐档手续费、价差边界、时间窗、四盘口完整性、相同快照防重、每场严格交替、固定 A/B 起始顺序、连续 ABAB 跨场/跨重启、固定 A/B 重复同方向、关闭交替择优和跨重启场次上限。
+- UP/DOWN 价格差使用多档模拟成交均价、绝对差边界、A/B 对称性、严格方向不回退、关闭严格方向后的合格方向择优，以及 Dashboard 配置持久化。
+- 配对订单号自动迁移、连续分配、API/事件/CSV 序列化和 Dashboard 显示。
 - BTC/ETH 四种官方结果、非严格 0/1 拒绝、幂等结算、配对账本恢复和 Dashboard 下一组对齐市场原子配置。
 - replay、日志、自动清理启用/禁用与过期目录保护。
 
@@ -414,12 +454,14 @@ data/YYYYMMDDTHHMMSSZ/
 - 前端若仍显示旧页面或价格偏离折线图，强制刷新浏览器缓存；服务端当前会返回 `entry_confirmation_enabled`。
 - Dashboard 默认显示 BTC，可用顶部 BTC/ETH 页签切换；`GET /api/state` 的 `assets.BTC` 和 `assets.ETH` 保存完整的独立快照。
 - 根级 `pair_match` 是两个资产和独立“BTC/ETH 匹配”页签共享的配对状态；`GET /api/config` 同时返回 active `pair_match` 和 `pending_pair_match`。独立匹配页集中显示 BTC/ETH 两个市场、双盘口和完整配对模块。
+- Dashboard 的“每腿金额”目前在代码中实际作为 `leg_quote_usd` 基准，并以 `2 × leg_quote_usd` 形成两腿合计报价预算；两腿为保持份数相同，实际各自成交额通常不相等，手续费在预算之外。
+- 固定 A/B 的“每场配对上限 2”表示同场最多两组相同方向配对，即四条腿；它不是 A、B 各一组。盘口持续变化且目标价差持续达标时，两组可能几乎连续产生。
 - `config.example.yaml` 是默认示例；真实运行优先加载 `data/dashboard-settings.json` 保存的 active/pending 参数。
 - 当前程序仅模拟交易。接入真实订单前必须单独设计私钥隔离、订单状态同步、限价与撤单、异常恢复及真实仓位风控。
 
 ## 建议后续顺序
 
-1. 用户要求时提交当前全部 BTC/ETH 与配对模块修改；提交前不要 reset，以免丢失折线图删除、ETH 接入、配对账本和本次交接更新。
+1. 用户要求时提交当前固定 A/B、订单编号及交接文档修改；提交前不要 reset。当前涉及 `config.example.yaml`、`polybtc/config.py`、`polybtc/journal.py`、`polybtc/pair_match.py`、`tests/test_dashboard.py`、`tests/test_pair_match.py`、`web/index.html` 和 `HANDOFF.md`。
 2. 增加独立阈值审计事件，按资产记录页面 open、上一期 close、RTDS candidate、差值和验证耗时。
 3. 使用现有日志做按资产只读回放分析，分别统计 BTC/ETH、普通/反买、手续费占比和各退出原因 PnL。
 4. 连续运行多个完整窗口后，再分别评估 BTC 与 ETH 是否需要独立的入场偏离、价格范围和止损参数。

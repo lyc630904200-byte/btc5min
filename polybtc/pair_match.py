@@ -50,8 +50,10 @@ class PairCandidate(BaseModel):
     direction: PairDirection
     available: bool
     meets_spread: bool = False
+    meets_leg_price_gap: bool = False
     reason: str
     spread_cents: float | None = None
+    leg_price_gap_cents: float | None = None
     btc_leg: PairLeg | None = None
     eth_leg: PairLeg | None = None
     total_cost_usd: float | None = None
@@ -60,6 +62,7 @@ class PairCandidate(BaseModel):
 
 class PairOrder(BaseModel):
     order_id: str
+    order_number: int | None = None
     interval_key: str
     start_time: datetime
     end_time: datetime
@@ -172,6 +175,7 @@ class PairMatchRegistry:
             """
             CREATE TABLE IF NOT EXISTS pair_orders (
                 order_id TEXT PRIMARY KEY,
+                order_number INTEGER,
                 interval_key TEXT NOT NULL,
                 start_time TEXT NOT NULL,
                 end_time TEXT NOT NULL,
@@ -196,6 +200,7 @@ class PairMatchRegistry:
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS pair_orders_status_idx ON pair_orders(status, end_time)"
         )
+        self._ensure_order_numbers()
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS pair_match_state (
@@ -205,6 +210,30 @@ class PairMatchRegistry:
             """
         )
         self.connection.commit()
+
+    def _ensure_order_numbers(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute("PRAGMA table_info(pair_orders)").fetchall()
+        }
+        if "order_number" not in columns:
+            self.connection.execute("ALTER TABLE pair_orders ADD COLUMN order_number INTEGER")
+        maximum = self.connection.execute(
+            "SELECT COALESCE(MAX(order_number), 0) AS value FROM pair_orders"
+        ).fetchone()
+        next_number = int(maximum["value"] if maximum else 0) + 1
+        missing = self.connection.execute(
+            "SELECT order_id FROM pair_orders WHERE order_number IS NULL ORDER BY opened_at, order_id"
+        ).fetchall()
+        for row in missing:
+            self.connection.execute(
+                "UPDATE pair_orders SET order_number = ? WHERE order_id = ?",
+                (next_number, row["order_id"]),
+            )
+            next_number += 1
+        self.connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS pair_orders_order_number_idx ON pair_orders(order_number)"
+        )
 
     def close(self) -> None:
         self.connection.close()
@@ -217,7 +246,7 @@ class PairMatchRegistry:
 
     def last_direction(self, interval_key: str) -> PairDirection | None:
         row = self.connection.execute(
-            "SELECT direction FROM pair_orders WHERE interval_key = ? ORDER BY opened_at DESC, order_id DESC LIMIT 1",
+            "SELECT direction FROM pair_orders WHERE interval_key = ? ORDER BY order_number DESC LIMIT 1",
             (interval_key,),
         ).fetchone()
         return PairDirection(row["direction"]) if row else None
@@ -249,7 +278,6 @@ class PairMatchRegistry:
         max_pairs: int,
         continuous_next_direction: PairDirection | None = None,
     ) -> bool:
-        payload = order.model_dump(mode="json")
         try:
             self.connection.execute("BEGIN IMMEDIATE")
             row = self.connection.execute(
@@ -258,16 +286,22 @@ class PairMatchRegistry:
             if int(row["count"] if row else 0) >= max_pairs:
                 self.connection.rollback()
                 return False
+            sequence = self.connection.execute(
+                "SELECT COALESCE(MAX(order_number), 0) + 1 AS value FROM pair_orders"
+            ).fetchone()
+            order.order_number = int(sequence["value"] if sequence else 1)
+            payload = order.model_dump(mode="json")
             self.connection.execute(
                 """
                 INSERT INTO pair_orders (
-                    order_id, interval_key, start_time, end_time, direction, fingerprint, opened_at,
+                    order_id, order_number, interval_key, start_time, end_time, direction, fingerprint, opened_at,
                     btc_leg_json, eth_leg_json, spread_cents, total_cost_usd, scenario_pnl_json,
                     status, btc_outcome, eth_outcome, payout_usd, realized_pnl, settled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    payload["order_id"], payload["interval_key"], payload["start_time"], payload["end_time"],
+                    payload["order_id"], payload["order_number"], payload["interval_key"],
+                    payload["start_time"], payload["end_time"],
                     payload["direction"], payload["fingerprint"], payload["opened_at"],
                     json.dumps(payload["btc_leg"], separators=(",", ":")),
                     json.dumps(payload["eth_leg"], separators=(",", ":")),
@@ -297,6 +331,7 @@ class PairMatchRegistry:
     def _row_to_order(self, row: sqlite3.Row) -> PairOrder:
         return PairOrder(
             order_id=row["order_id"],
+            order_number=row["order_number"],
             interval_key=row["interval_key"],
             start_time=row["start_time"],
             end_time=row["end_time"],
@@ -318,7 +353,7 @@ class PairMatchRegistry:
 
     def recent_orders(self, limit: int = 100) -> list[PairOrder]:
         rows = self.connection.execute(
-            "SELECT * FROM pair_orders ORDER BY opened_at DESC, order_id DESC LIMIT ?", (limit,)
+            "SELECT * FROM pair_orders ORDER BY order_number DESC LIMIT ?", (limit,)
         ).fetchall()
         return [self._row_to_order(row) for row in rows]
 
@@ -405,7 +440,7 @@ class PairMatchRegistry:
 
     def recent_markets(self, limit: int = 20) -> list[dict[str, Any]]:
         intervals = self.connection.execute(
-            "SELECT interval_key, MAX(opened_at) AS latest FROM pair_orders GROUP BY interval_key ORDER BY latest DESC LIMIT ?",
+            "SELECT interval_key, MAX(order_number) AS latest FROM pair_orders GROUP BY interval_key ORDER BY latest DESC LIMIT ?",
             (limit,),
         ).fetchall()
         result: list[dict[str, Any]] = []
@@ -413,7 +448,7 @@ class PairMatchRegistry:
             orders = [
                 self._row_to_order(row)
                 for row in self.connection.execute(
-                    "SELECT * FROM pair_orders WHERE interval_key = ? ORDER BY opened_at",
+                    "SELECT * FROM pair_orders WHERE interval_key = ? ORDER BY order_number",
                     (interval["interval_key"],),
                 ).fetchall()
             ]
@@ -530,13 +565,25 @@ class PairMatchEngine:
         )
         scenarios = pair_scenario_pnl(btc_leg, eth_leg)
         total_cost = btc_leg.quote + btc_leg.fee_usd + eth_leg.quote + eth_leg.fee_usd
-        meets = spread >= self.config.pair_match.min_spread_cents
+        leg_price_gap = 100.0 * abs(btc_fill.avg_price - eth_fill.avg_price)
+        meets_spread = spread >= self.config.pair_match.min_spread_cents
+        meets_leg_price_gap = (
+            leg_price_gap >= self.config.pair_match.min_leg_price_gap_cents
+        )
+        if not meets_spread:
+            reason = "spread_below_threshold"
+        elif not meets_leg_price_gap:
+            reason = "leg_price_gap_below_threshold"
+        else:
+            reason = "eligible"
         return PairCandidate(
             direction=direction,
             available=True,
-            meets_spread=meets,
-            reason="eligible" if meets else "spread_below_threshold",
+            meets_spread=meets_spread,
+            meets_leg_price_gap=meets_leg_price_gap,
+            reason=reason,
             spread_cents=spread,
+            leg_price_gap_cents=leg_price_gap,
             btc_leg=btc_leg,
             eth_leg=eth_leg,
             total_cost_usd=total_cost,
@@ -546,7 +593,19 @@ class PairMatchEngine:
     def _alternation_target(self, interval_key: str) -> PairDirection | None:
         if not self.config.pair_match.alternate_directions:
             return None
-        if self.config.pair_match.alternation_mode == "continuous_abab":
+        mode = self.config.pair_match.alternation_mode
+        if mode == "always_a":
+            return PairDirection.BTC_UP_ETH_DOWN
+        if mode == "always_b":
+            return PairDirection.BTC_DOWN_ETH_UP
+        if mode in {"per_market_ab", "per_market_ba"}:
+            last_direction = self.registry.last_direction(interval_key)
+            if last_direction is not None:
+                return last_direction.opposite
+            if mode == "per_market_ab":
+                return PairDirection.BTC_UP_ETH_DOWN
+            return PairDirection.BTC_DOWN_ETH_UP
+        if mode == "continuous_abab":
             target = self.registry.continuous_next_direction()
             if target is None:
                 target = secrets.choice(list(PairDirection))
@@ -623,7 +682,13 @@ class PairMatchEngine:
             self.last_reason = self.status
             return None
         self.last_evaluated_fingerprint[interval_key] = fingerprint
-        eligible = [candidate for candidate in self.candidates.values() if candidate.available and candidate.meets_spread]
+        eligible = [
+            candidate
+            for candidate in self.candidates.values()
+            if candidate.available
+            and candidate.meets_spread
+            and candidate.meets_leg_price_gap
+        ]
         if not eligible:
             self.status = "no_eligible_pair"
             self.last_reason = self.status
@@ -631,7 +696,12 @@ class PairMatchEngine:
         selected: PairCandidate | None
         if self.config.pair_match.alternate_directions and self.next_direction is not None:
             selected = self.candidates.get(self.next_direction)
-            if selected is None or not selected.available or not selected.meets_spread:
+            if (
+                selected is None
+                or not selected.available
+                or not selected.meets_spread
+                or not selected.meets_leg_price_gap
+            ):
                 self.status = "waiting_for_alternating_direction"
                 self.last_reason = self.status
                 return None
@@ -676,7 +746,7 @@ class PairMatchEngine:
         self.status = "pair_opened"
         self.last_reason = self.status
         self.current_count += 1
-        self.next_direction = selected.direction.opposite if self.config.pair_match.alternate_directions else None
+        self.next_direction = self._alternation_target(interval_key)
         self.refresh_history()
         return order
 
