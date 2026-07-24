@@ -362,6 +362,7 @@ class DashboardHub:
             "enabled",
             "leg_quote_usd",
             "min_spread_cents",
+            "second_order_min_spread_cents",
             "min_leg_price_gap_cents",
             "start_seconds_after_open",
             "end_seconds_after_open",
@@ -383,7 +384,10 @@ class DashboardHub:
         risk_payload.update(risk_update or {})
         pair_payload = dict(pending.get("pair_match") or self.config.pair_match.model_dump())
         pair_payload.update(pair_update or {})
-        if (
+        if pair_payload.get("alternation_mode") == "per_market_two_stage":
+            pair_payload["alternate_directions"] = True
+            pair_payload["max_pairs_per_market"] = 2
+        elif (
             pair_update
             and pair_update.get("alternation_mode") in {"per_market_ab", "per_market_ba"}
             and "max_pairs_per_market" not in pair_update

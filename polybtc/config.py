@@ -137,6 +137,7 @@ class PairMatchConfig(BaseModel):
     enabled: bool = False
     leg_quote_usd: float = 10.0
     min_spread_cents: float = 0.0
+    second_order_min_spread_cents: float = 0.0
     min_leg_price_gap_cents: float = 0.0
     start_seconds_after_open: float = 20.0
     end_seconds_after_open: float = 280.0
@@ -149,14 +150,23 @@ class PairMatchConfig(BaseModel):
         "always_b",
         "per_market_ab",
         "per_market_ba",
+        "per_market_two_stage",
     ] = "per_market"
 
     @model_validator(mode="before")
     @classmethod
     def default_sequence_mode_pair_limit(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        mode = value.get("alternation_mode")
+        if mode == "per_market_two_stage":
+            return {
+                **value,
+                "alternate_directions": True,
+                "max_pairs_per_market": 2,
+            }
         if (
-            isinstance(value, dict)
-            and value.get("alternation_mode") in {"per_market_ab", "per_market_ba"}
+            mode in {"per_market_ab", "per_market_ba"}
             and "max_pairs_per_market" not in value
         ):
             return {**value, "max_pairs_per_market": 2}
@@ -174,6 +184,13 @@ class PairMatchConfig(BaseModel):
     def valid_spread_cents(cls, value: float) -> float:
         if not -100 <= value <= 100:
             raise ValueError("min_spread_cents must be between -100 and 100")
+        return value
+
+    @field_validator("second_order_min_spread_cents")
+    @classmethod
+    def valid_second_order_spread_cents(cls, value: float) -> float:
+        if not -100 <= value <= 100:
+            raise ValueError("second_order_min_spread_cents must be between -100 and 100")
         return value
 
     @field_validator("min_leg_price_gap_cents")

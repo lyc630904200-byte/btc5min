@@ -528,6 +528,8 @@ class PairMatchEngine:
         btc_book: OrderBookSnapshot,
         eth_book: OrderBookSnapshot,
         now: datetime,
+        min_spread_cents: float,
+        min_leg_price_gap_cents: float | None,
     ) -> PairCandidate:
         max_age_seconds = self.config.risk.max_data_age_ms / 1000
         for book in (btc_book, eth_book):
@@ -566,9 +568,9 @@ class PairMatchEngine:
         scenarios = pair_scenario_pnl(btc_leg, eth_leg)
         total_cost = btc_leg.quote + btc_leg.fee_usd + eth_leg.quote + eth_leg.fee_usd
         leg_price_gap = 100.0 * abs(btc_fill.avg_price - eth_fill.avg_price)
-        meets_spread = spread >= self.config.pair_match.min_spread_cents
+        meets_spread = spread >= min_spread_cents
         meets_leg_price_gap = (
-            leg_price_gap >= self.config.pair_match.min_leg_price_gap_cents
+            min_leg_price_gap_cents is None or leg_price_gap >= min_leg_price_gap_cents
         )
         if not meets_spread:
             reason = "spread_below_threshold"
@@ -614,6 +616,12 @@ class PairMatchEngine:
         last_direction = self.registry.last_direction(interval_key)
         return last_direction.opposite if last_direction else None
 
+    def _fingerprint_for_stage(self, fingerprint: str, second_order_stage: bool) -> str:
+        if self.config.pair_match.alternation_mode != "per_market_two_stage":
+            return fingerprint
+        stage = "second" if second_order_stage else "first"
+        return hashlib.sha256(f"two-stage:{stage}:{fingerprint}".encode()).hexdigest()
+
     def evaluate(self, engines: dict[str, "PaperEngine"], now: datetime | None = None) -> PairOrder | None:
         now = now or datetime.now(timezone.utc)
         aligned = self._aligned_markets(engines)
@@ -626,6 +634,20 @@ class PairMatchEngine:
         self.current_interval_key = interval_key
         self.current_count = self.registry.count(interval_key)
         self.next_direction = self._alternation_target(interval_key)
+        second_order_stage = (
+            self.config.pair_match.alternation_mode == "per_market_two_stage"
+            and self.current_count >= 1
+        )
+        effective_min_spread = (
+            self.config.pair_match.second_order_min_spread_cents
+            if second_order_stage
+            else self.config.pair_match.min_spread_cents
+        )
+        effective_min_leg_price_gap = (
+            None
+            if second_order_stage
+            else self.config.pair_match.min_leg_price_gap_cents
+        )
         btc_engine, eth_engine = engines["BTC"], engines["ETH"]
         required = [
             btc_engine.books.get(Direction.UP), btc_engine.books.get(Direction.DOWN),
@@ -637,15 +659,18 @@ class PairMatchEngine:
             self.last_reason = self.status
             return None
         books = [book for book in required if book is not None]
-        fingerprint = self._book_fingerprint(books)
+        raw_fingerprint = self._book_fingerprint(books)
+        fingerprint = self._fingerprint_for_stage(raw_fingerprint, second_order_stage)
         self.candidates = {
             PairDirection.BTC_UP_ETH_DOWN: self._candidate(
                 PairDirection.BTC_UP_ETH_DOWN, btc_market, eth_market,
                 btc_engine.books[Direction.UP], eth_engine.books[Direction.DOWN], now,
+                effective_min_spread, effective_min_leg_price_gap,
             ),
             PairDirection.BTC_DOWN_ETH_UP: self._candidate(
                 PairDirection.BTC_DOWN_ETH_UP, btc_market, eth_market,
                 btc_engine.books[Direction.DOWN], eth_engine.books[Direction.UP], now,
+                effective_min_spread, effective_min_leg_price_gap,
             ),
         }
         if not self.config.pair_match.enabled:

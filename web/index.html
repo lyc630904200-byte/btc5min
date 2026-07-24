@@ -342,9 +342,10 @@
               <div class="settings-grid">
                 <label class="setting"><span class="setting-label">自动匹配</span><span class="setting-toggle"><input id="pairEnabled" type="checkbox">启用后停止单币新入场</span></label>
                 <label class="setting"><span class="setting-label">严格交替</span><span class="setting-toggle"><input id="pairAlternate" type="checkbox">A/B 严格轮换</span></label>
-                <label class="setting"><span class="setting-label">交替模式</span><select class="setting-input" id="pairAlternationMode"><option value="per_market">每场重新开始</option><option value="per_market_ab">每场先 A 后 B</option><option value="per_market_ba">每场先 B 后 A</option><option value="continuous_abab">ABAB 连续循环（首单随机）</option><option value="always_a">一直选 A</option><option value="always_b">一直选 B</option></select></label>
+                <label class="setting"><span class="setting-label">交替模式</span><select class="setting-input" id="pairAlternationMode"><option value="per_market">每场重新开始</option><option value="per_market_two_stage">每场重新开始（第二单可设）</option><option value="per_market_ab">每场先 A 后 B</option><option value="per_market_ba">每场先 B 后 A</option><option value="continuous_abab">ABAB 连续循环（首单随机）</option><option value="always_a">一直选 A</option><option value="always_b">一直选 B</option></select></label>
                 <label class="setting"><span class="setting-label">等份基准（USD/腿）</span><input class="setting-input" id="pairLegQuote" type="number" min="0.01" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">最低盈利价差（美分）</span><input class="setting-input" id="pairMinSpread" type="number" min="-100" max="100" step="0.01" required></label>
+                <label class="setting"><span class="setting-label">第二单最低盈利价差（美分）</span><input class="setting-input" id="pairSecondMinSpread" type="number" min="-100" max="100" step="0.01" required disabled></label>
                 <label class="setting"><span class="setting-label">UP/DOWN 最小差值（美分）</span><input class="setting-input" id="pairMinLegPriceGap" type="number" min="0" max="100" step="0.01" required></label>
                 <label class="setting"><span class="setting-label">开盘后开始秒数</span><input class="setting-input" id="pairStartSeconds" type="number" min="0" max="299" step="1" required></label>
                 <label class="setting"><span class="setting-label">开盘后结束秒数（不含）</span><input class="setting-input" id="pairEndSeconds" type="number" min="1" max="300" step="1" required></label>
@@ -467,6 +468,7 @@
       enabled: 'pairEnabled',
       leg_quote_usd: 'pairLegQuote',
       min_spread_cents: 'pairMinSpread',
+      second_order_min_spread_cents: 'pairSecondMinSpread',
       min_leg_price_gap_cents: 'pairMinLegPriceGap',
       start_seconds_after_open: 'pairStartSeconds',
       end_seconds_after_open: 'pairEndSeconds',
@@ -570,10 +572,20 @@
     }
 
     function syncPairAlternationModeState() {
-      const enabled = $('pairAlternate').checked;
       const mode = $('pairAlternationMode');
+      const twoStage = mode.value === 'per_market_two_stage';
+      if (twoStage) {
+        $('pairAlternate').checked = true;
+        $('pairMaxPairs').value = '2';
+      }
+      $('pairAlternate').disabled = twoStage;
+      $('pairMaxPairs').disabled = twoStage;
+      $('pairSecondMinSpread').disabled = !twoStage;
+      const enabled = $('pairAlternate').checked;
       mode.disabled = !enabled;
       mode.title = enabled ? '选择严格交替、固定起始顺序或固定下单方向' : '请先开启严格交替';
+      $('pairSecondMinSpread').title = twoStage ? '首单成交后仅使用此盈利价差门槛' : '仅“每场重新开始（第二单可设）”模式可用';
+      $('pairMaxPairs').title = twoStage ? '该模式固定每场两单' : '';
     }
 
     function renderRuntimeConfig(snapshot, force = false) {
@@ -673,6 +685,7 @@
       const nextDirection = pair.next_direction === 'BTC_UP_ETH_DOWN' ? 'A' : pair.next_direction === 'BTC_DOWN_ETH_UP' ? 'B' : '首单择优';
       const alternationModes = {
         per_market: '每场重置',
+        per_market_two_stage: '每场两阶段',
         per_market_ab: '每场先 A 后 B',
         per_market_ba: '每场先 B 后 A',
         continuous_abab: 'ABAB 连续',
@@ -680,7 +693,10 @@
         always_b: '一直选 B',
       };
       const alternationMode = alternationModes[pair.config?.alternation_mode] || '每场重置';
-      setText('pairRuntime', `状态 ${pair.status || '--'} · 交替 ${alternationMode} · 下一方向 ${nextDirection} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`);
+      const stage = pair.config?.alternation_mode === 'per_market_two_stage'
+        ? (Number(pair.current_count || 0) === 0 ? '首单门槛' : Number(pair.current_count || 0) === 1 ? '第二单门槛' : '两单完成')
+        : null;
+      setText('pairRuntime', `状态 ${pair.status || '--'} · 交替 ${alternationMode}${stage ? ` / ${stage}` : ''} · 下一方向 ${nextDirection} · 本场 ${pair.current_count || 0} 组 · 原因 ${pair.last_reason || '--'}`);
       const summary = pair.summary || {};
       setText('pairSummaryCounts', `${summary.orders || 0} 单 / ${summary.settled_orders || 0} 已结算 / ${summary.pending_orders || 0} 待结算 · 胜率 ${fmtNumber((summary.win_rate || 0) * 100, 1)}%`);
       setPnl('pairSummaryPnl', summary.realized_pnl || 0);
@@ -1108,9 +1124,10 @@
       }
     });
     $('pairAlternationMode').addEventListener('change', () => {
-      if (['per_market_ab', 'per_market_ba'].includes($('pairAlternationMode').value)) {
+      if (['per_market_ab', 'per_market_ba', 'per_market_two_stage'].includes($('pairAlternationMode').value)) {
         $('pairMaxPairs').value = '2';
       }
+      syncPairAlternationModeState();
     });
     $('pairForm').addEventListener('input', () => {
       pairFormDirty = true;
@@ -1130,6 +1147,7 @@
             enabled: $('pairEnabled').checked,
             leg_quote_usd: runtimeNumber('pairLegQuote'),
             min_spread_cents: runtimeNumber('pairMinSpread'),
+            second_order_min_spread_cents: runtimeNumber('pairSecondMinSpread'),
             min_leg_price_gap_cents: runtimeNumber('pairMinLegPriceGap'),
             start_seconds_after_open: runtimeNumber('pairStartSeconds'),
             end_seconds_after_open: runtimeNumber('pairEndSeconds'),

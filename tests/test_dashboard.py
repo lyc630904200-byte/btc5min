@@ -226,6 +226,7 @@ def test_old_runtime_settings_gain_new_risk_defaults(tmp_path) -> None:
         "enabled": False,
         "leg_quote_usd": 10.0,
         "min_spread_cents": 0.0,
+        "second_order_min_spread_cents": 0.0,
         "min_leg_price_gap_cents": 0.0,
         "start_seconds_after_open": 20,
         "end_seconds_after_open": 280,
@@ -244,6 +245,7 @@ def test_pair_config_is_pending_and_persists_after_activation(tmp_path) -> None:
                 "enabled": True,
                 "leg_quote_usd": 25,
                 "min_spread_cents": 2,
+                "second_order_min_spread_cents": 7.5,
                 "min_leg_price_gap_cents": 12.5,
                 "start_seconds_after_open": 30,
                 "end_seconds_after_open": 270,
@@ -257,12 +259,14 @@ def test_pair_config_is_pending_and_persists_after_activation(tmp_path) -> None:
     assert response["pair_match"]["enabled"] is False
     assert response["pending_pair_match"]["enabled"] is True
     assert response["pending_pair_match"]["min_spread_cents"] == 2.0
+    assert response["pending_pair_match"]["second_order_min_spread_cents"] == 7.5
     assert response["pending_pair_match"]["min_leg_price_gap_cents"] == 12.5
     assert hub.apply_pending_config_for_market("aligned-1") is True
 
     reloaded = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path))
     assert reloaded.config.pair_match.enabled is True
     assert reloaded.config.pair_match.leg_quote_usd == 25.0
+    assert reloaded.config.pair_match.second_order_min_spread_cents == 7.5
     assert reloaded.config.pair_match.min_leg_price_gap_cents == 12.5
     assert reloaded.config.pair_match.max_pairs_per_market == 3
     assert reloaded.config.pair_match.alternate_directions is False
@@ -324,6 +328,36 @@ def test_sequence_pair_modes_default_to_two_and_preserve_explicit_limit(tmp_path
         )
         assert reloaded.config.pair_match.alternation_mode == mode
         assert reloaded.config.pair_match.max_pairs_per_market == 4
+
+
+def test_two_stage_mode_forces_pair_limit_and_strict_direction_and_persists(tmp_path) -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path))
+
+    response = hub.set_runtime_config(
+        {
+            "pair_match": {
+                "alternation_mode": "per_market_two_stage",
+                "second_order_min_spread_cents": 6.5,
+                "max_pairs_per_market": 9,
+                "alternate_directions": False,
+            }
+        }
+    )
+
+    pending = response["pending_pair_match"]
+    assert pending["alternation_mode"] == "per_market_two_stage"
+    assert pending["second_order_min_spread_cents"] == 6.5
+    assert pending["max_pairs_per_market"] == 2
+    assert pending["alternate_directions"] is True
+    assert hub.apply_pending_config_for_market("aligned-1") is True
+
+    reloaded = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert reloaded.config.pair_match.alternation_mode == "per_market_two_stage"
+    assert reloaded.config.pair_match.second_order_min_spread_cents == 6.5
+    assert reloaded.config.pair_match.max_pairs_per_market == 2
+    assert reloaded.config.pair_match.alternate_directions is True
 
 
 def test_pending_config_waits_for_new_aligned_btc_and_eth_markets(tmp_path) -> None:

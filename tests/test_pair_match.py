@@ -62,6 +62,17 @@ def engines(config: AppConfig, start: datetime, now: datetime) -> dict[str, Pape
     return result
 
 
+def two_stage_engines(
+    config: AppConfig, start: datetime, now: datetime
+) -> dict[str, PaperEngine]:
+    result = engines(config, start, now)
+    result["BTC"].books[Direction.UP].asks[0].price = 0.10
+    result["ETH"].books[Direction.DOWN].asks[0].price = 0.50
+    result["BTC"].books[Direction.DOWN].asks[0].price = 0.40
+    result["ETH"].books[Direction.UP].asks[0].price = 0.50
+    return result
+
+
 def test_pair_spread_uses_equal_shares_multilevel_execution_and_per_share_fees() -> None:
     now = datetime(2026, 7, 20, 9, 0, 30, tzinfo=timezone.utc)
     btc_book = OrderBookSnapshot(
@@ -274,10 +285,15 @@ def test_pair_engine_opens_once_per_quote_and_strictly_alternates(tmp_path) -> N
 
 def test_sequence_modes_default_to_two_without_changing_existing_mode_defaults() -> None:
     assert PairMatchConfig().min_leg_price_gap_cents == 0
+    assert PairMatchConfig().second_order_min_spread_cents == 0
     with pytest.raises(ValueError, match="min_leg_price_gap_cents"):
         PairMatchConfig(min_leg_price_gap_cents=-0.01)
     with pytest.raises(ValueError, match="min_leg_price_gap_cents"):
         PairMatchConfig(min_leg_price_gap_cents=100.01)
+    with pytest.raises(ValueError, match="second_order_min_spread_cents"):
+        PairMatchConfig(second_order_min_spread_cents=-100.01)
+    with pytest.raises(ValueError, match="second_order_min_spread_cents"):
+        PairMatchConfig(second_order_min_spread_cents=100.01)
 
     for mode in ("per_market", "continuous_abab", "always_a", "always_b"):
         assert PairMatchConfig(alternation_mode=mode).max_pairs_per_market == 1
@@ -287,6 +303,14 @@ def test_sequence_modes_default_to_two_without_changing_existing_mode_defaults()
         assert PairMatchConfig(
             alternation_mode=mode, max_pairs_per_market=4
         ).max_pairs_per_market == 4
+
+    two_stage = PairMatchConfig(
+        alternation_mode="per_market_two_stage",
+        max_pairs_per_market=4,
+        alternate_directions=False,
+    )
+    assert two_stage.max_pairs_per_market == 2
+    assert two_stage.alternate_directions is True
 
 
 @pytest.mark.parametrize(
@@ -592,6 +616,130 @@ def test_fixed_mode_is_ignored_when_strict_direction_control_is_disabled(
     assert opened is not None
     assert opened.direction == PairDirection.BTC_DOWN_ETH_UP
     assert matcher.next_direction is None
+    registry.close()
+
+
+def two_stage_config(second_min_spread: float = 0) -> AppConfig:
+    return AppConfig(
+        pair_match={
+            "enabled": True,
+            "min_spread_cents": 20,
+            "second_order_min_spread_cents": second_min_spread,
+            "min_leg_price_gap_cents": 30,
+            "max_pairs_per_market": 9,
+            "alternate_directions": False,
+            "alternation_mode": "per_market_two_stage",
+        }
+    )
+
+
+def test_two_stage_mode_switches_thresholds_and_reuses_the_same_snapshot(tmp_path) -> None:
+    start = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+    now = start + timedelta(seconds=30)
+    config = two_stage_config()
+    states = two_stage_engines(config, start, now)
+    registry = PairMatchRegistry(tmp_path / "pairs.sqlite3")
+    matcher = PairMatchEngine(config, registry)
+
+    first = matcher.evaluate(states, now)
+
+    assert first is not None
+    assert first.direction == PairDirection.BTC_UP_ETH_DOWN
+    first_stage_b = matcher.candidates[PairDirection.BTC_DOWN_ETH_UP]
+    assert first_stage_b.meets_spread is False
+    assert first_stage_b.meets_leg_price_gap is False
+    assert matcher.next_direction == PairDirection.BTC_DOWN_ETH_UP
+
+    second = matcher.evaluate(states, now + timedelta(milliseconds=1))
+
+    assert second is not None
+    assert second.direction == PairDirection.BTC_DOWN_ETH_UP
+    second_stage_b = matcher.candidates[PairDirection.BTC_DOWN_ETH_UP]
+    assert second_stage_b.meets_spread is True
+    assert second_stage_b.meets_leg_price_gap is True
+    assert second_stage_b.reason == "eligible"
+    assert first.fingerprint != second.fingerprint
+    assert registry.count(first.interval_key) == 2
+
+    assert matcher.evaluate(states, now + timedelta(milliseconds=2)) is None
+    assert matcher.status == "market_pair_limit"
+    registry.close()
+
+
+@pytest.mark.parametrize(
+    ("threshold_offset", "opens"),
+    [(-0.001, True), (0.0, True), (0.001, False)],
+)
+def test_two_stage_second_order_spread_boundary(
+    tmp_path, threshold_offset: float, opens: bool
+) -> None:
+    start = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+    now = start + timedelta(seconds=30)
+    config = two_stage_config()
+    states = two_stage_engines(config, start, now)
+    registry = PairMatchRegistry(tmp_path / f"boundary-{threshold_offset}.sqlite3")
+    matcher = PairMatchEngine(config, registry)
+
+    assert matcher.evaluate(states, now) is not None
+    second_direction = PairDirection.BTC_DOWN_ETH_UP
+    second_spread = matcher.candidates[second_direction].spread_cents
+    assert second_spread is not None
+    config.pair_match.second_order_min_spread_cents = second_spread + threshold_offset
+
+    second = matcher.evaluate(states, now + timedelta(milliseconds=1))
+
+    assert (second is not None) is opens
+    assert matcher.candidates[second_direction].meets_spread is opens
+    assert matcher.candidates[second_direction].meets_leg_price_gap is True
+    if opens:
+        assert second is not None
+        assert second.direction == second_direction
+    else:
+        assert matcher.status == "waiting_for_alternating_direction"
+    registry.close()
+
+
+def test_two_stage_second_order_restores_after_restart_with_same_snapshot(tmp_path) -> None:
+    start = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+    now = start + timedelta(seconds=30)
+    config = two_stage_config()
+    states = two_stage_engines(config, start, now)
+    path = tmp_path / "pairs.sqlite3"
+    first_registry = PairMatchRegistry(path)
+    first = PairMatchEngine(config, first_registry).evaluate(states, now)
+    assert first is not None
+    first_registry.close()
+
+    second_registry = PairMatchRegistry(path)
+    restored = PairMatchEngine(config, second_registry)
+    second = restored.evaluate(states, now + timedelta(milliseconds=1))
+
+    assert second is not None
+    assert second.direction == first.direction.opposite
+    assert first.fingerprint != second.fingerprint
+    assert second_registry.count(first.interval_key) == 2
+    second_registry.close()
+
+
+def test_two_stage_new_market_resets_to_first_order_thresholds(tmp_path) -> None:
+    start = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+    now = start + timedelta(seconds=30)
+    config = two_stage_config()
+    registry = PairMatchRegistry(tmp_path / "pairs.sqlite3")
+    matcher = PairMatchEngine(config, registry)
+    first = matcher.evaluate(two_stage_engines(config, start, now), now)
+    assert first is not None
+
+    next_start = start + timedelta(minutes=5)
+    next_now = next_start + timedelta(seconds=30)
+    next_order = matcher.evaluate(
+        two_stage_engines(config, next_start, next_now), next_now
+    )
+
+    assert next_order is not None
+    assert next_order.direction == PairDirection.BTC_UP_ETH_DOWN
+    assert matcher.candidates[PairDirection.BTC_DOWN_ETH_UP].meets_spread is False
+    assert matcher.candidates[PairDirection.BTC_DOWN_ETH_UP].meets_leg_price_gap is False
     registry.close()
 
 
