@@ -32,6 +32,7 @@ class DashboardHub:
         self.config = config
         self.runtime_settings_path = self.config.data_dir / "dashboard-settings.json"
         self.pending_config: dict[str, dict[str, Any]] | None = None
+        self.pending_config_scope = "aligned"
         self.pending_after_market_id: str | None = None
         self.pending_after_market_ids: set[str] = set()
         self._load_runtime_settings()
@@ -52,6 +53,16 @@ class DashboardHub:
                 "summary": {},
                 "recent_orders": [],
                 "recent_markets": [],
+            },
+            "btc_recovery": {
+                "status": "starting",
+                "config": self.config.btc_recovery.model_dump(mode="json"),
+                "round": None,
+                "positions": {},
+                "arbitrage_check": {},
+                "summary": {},
+                "recent_orders": [],
+                "recent_rounds": [],
             },
             "events": [],
             "assets": {},
@@ -221,15 +232,23 @@ class DashboardHub:
                 "max_trades_per_market": risk.max_trades_per_market,
             },
             "pair_match": self.config.pair_match.model_dump(mode="json"),
+            "btc_recovery": self.config.btc_recovery.model_dump(mode="json"),
         }
 
     def config_status_json(self) -> dict[str, Any]:
         pending = self.pending_config or {}
         return {
-            "config_status": "pending_next_market" if self.pending_config else "active",
+            "config_status": (
+                "pending_next_btc_market"
+                if self.pending_config and self.pending_config_scope == "btc"
+                else "pending_next_market"
+                if self.pending_config
+                else "active"
+            ),
             "pending_strategy": pending.get("strategy"),
             "pending_risk": pending.get("risk"),
             "pending_pair_match": pending.get("pair_match"),
+            "pending_btc_recovery": pending.get("btc_recovery"),
         }
 
     def _load_runtime_settings(self) -> None:
@@ -249,15 +268,19 @@ class DashboardHub:
                 risk_payload.update(active.get("risk") or {})
                 pair_payload = self.config.pair_match.model_dump()
                 pair_payload.update(active.get("pair_match") or {})
+                recovery_payload = self.config.btc_recovery.model_dump()
+                recovery_payload.update(active.get("btc_recovery") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
                 risk = type(self.config.risk).model_validate(risk_payload)
                 pair_match = type(self.config.pair_match).model_validate(pair_payload)
+                btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
             except (TypeError, ValueError):
                 pass
             else:
                 self.config.strategy = strategy
                 self.config.risk = risk
                 self.config.pair_match = pair_match
+                self.config.btc_recovery = btc_recovery
 
         pending = payload.get("pending")
         if isinstance(pending, dict):
@@ -268,16 +291,22 @@ class DashboardHub:
                 risk_payload.update(pending.get("risk") or {})
                 pair_payload = self.config.pair_match.model_dump()
                 pair_payload.update(pending.get("pair_match") or {})
+                recovery_payload = self.config.btc_recovery.model_dump()
+                recovery_payload.update(pending.get("btc_recovery") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
                 risk = type(self.config.risk).model_validate(risk_payload)
                 pair_match = type(self.config.pair_match).model_validate(pair_payload)
+                btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
             except (TypeError, ValueError):
                 return
             self.pending_config = {
                 "strategy": strategy.model_dump(),
                 "risk": risk.model_dump(),
                 "pair_match": pair_match.model_dump(),
+                "btc_recovery": btc_recovery.model_dump(),
             }
+            scope = payload.get("pending_scope")
+            self.pending_config_scope = "btc" if scope == "btc" else "aligned"
             after_market = payload.get("apply_after_market_id")
             self.pending_after_market_id = str(after_market) if after_market else None
             after_markets = payload.get("apply_after_market_ids")
@@ -292,8 +321,10 @@ class DashboardHub:
                 "strategy": self.config.strategy.model_dump(),
                 "risk": self.config.risk.model_dump(),
                 "pair_match": self.config.pair_match.model_dump(),
+                "btc_recovery": self.config.btc_recovery.model_dump(),
             },
             "pending": self.pending_config,
+            "pending_scope": self.pending_config_scope if self.pending_config else None,
             "apply_after_market_id": self.pending_after_market_id,
             "apply_after_market_ids": sorted(self.pending_after_market_ids),
         }
@@ -318,13 +349,31 @@ class DashboardHub:
             market_ids.add(current)
         return market_ids
 
+    def current_btc_market_id(self) -> str | None:
+        market = (self.asset_snapshots.get("BTC") or {}).get("market") or {}
+        market_id = market.get("condition_id") if isinstance(market, dict) else None
+        if market_id:
+            return str(market_id)
+        latest_market = self.latest.get("market") or {}
+        if (
+            isinstance(latest_market, dict)
+            and str(latest_market.get("asset") or "").upper() == "BTC"
+            and latest_market.get("condition_id")
+        ):
+            return str(latest_market["condition_id"])
+        return None
+
     def apply_pending_config_for_market(self, market_id: str | None) -> bool:
         if not self.pending_config or not market_id or market_id in self.pending_after_market_ids:
             return False
         self.config.strategy = type(self.config.strategy).model_validate(self.pending_config["strategy"])
         self.config.risk = type(self.config.risk).model_validate(self.pending_config["risk"])
         self.config.pair_match = type(self.config.pair_match).model_validate(self.pending_config["pair_match"])
+        self.config.btc_recovery = type(self.config.btc_recovery).model_validate(
+            self.pending_config["btc_recovery"]
+        )
         self.pending_config = None
+        self.pending_config_scope = "aligned"
         self.pending_after_market_id = None
         self.pending_after_market_ids = set()
         self._save_runtime_settings()
@@ -334,14 +383,17 @@ class DashboardHub:
         strategy_update = payload.get("strategy")
         risk_update = payload.get("risk")
         pair_update = payload.get("pair_match")
+        recovery_update = payload.get("btc_recovery")
         if strategy_update is not None and not isinstance(strategy_update, dict):
             raise ValueError("strategy must be an object")
         if risk_update is not None and not isinstance(risk_update, dict):
             raise ValueError("risk must be an object")
         if pair_update is not None and not isinstance(pair_update, dict):
             raise ValueError("pair_match must be an object")
-        if not strategy_update and not risk_update and not pair_update:
-            raise ValueError("strategy, risk, or pair_match settings are required")
+        if recovery_update is not None and not isinstance(recovery_update, dict):
+            raise ValueError("btc_recovery must be an object")
+        if not strategy_update and not risk_update and not pair_update and not recovery_update:
+            raise ValueError("strategy, risk, pair_match, or btc_recovery settings are required")
 
         strategy_fields = {
             "min_entry_edge_usd",
@@ -370,11 +422,28 @@ class DashboardHub:
             "alternate_directions",
             "alternation_mode",
         }
+        recovery_fields = {
+            "enabled",
+            "entry_price_cents",
+            "target_price_cents",
+            "recovery_trigger_cents",
+            "stop_price_cents",
+            "initial_quantity",
+            "recovery_quantity",
+            "entry_seconds_after_open",
+            "exit_seconds_after_open",
+        }
         unexpected_strategy = set(strategy_update or {}) - strategy_fields
         unexpected_risk = set(risk_update or {}) - risk_fields
         unexpected_pair = set(pair_update or {}) - pair_fields
-        if unexpected_strategy or unexpected_risk or unexpected_pair:
-            names = sorted(unexpected_strategy | unexpected_risk | unexpected_pair)
+        unexpected_recovery = set(recovery_update or {}) - recovery_fields
+        if unexpected_strategy or unexpected_risk or unexpected_pair or unexpected_recovery:
+            names = sorted(
+                unexpected_strategy
+                | unexpected_risk
+                | unexpected_pair
+                | unexpected_recovery
+            )
             raise ValueError(f"unsupported runtime settings: {', '.join(names)}")
 
         pending = self.pending_config or {}
@@ -384,6 +453,10 @@ class DashboardHub:
         risk_payload.update(risk_update or {})
         pair_payload = dict(pending.get("pair_match") or self.config.pair_match.model_dump())
         pair_payload.update(pair_update or {})
+        recovery_payload = dict(
+            pending.get("btc_recovery") or self.config.btc_recovery.model_dump()
+        )
+        recovery_payload.update(recovery_update or {})
         if pair_payload.get("alternation_mode") == "per_market_two_stage":
             pair_payload["alternate_directions"] = True
             pair_payload["max_pairs_per_market"] = 2
@@ -396,12 +469,22 @@ class DashboardHub:
         strategy = type(self.config.strategy).model_validate(strategy_payload)
         risk = type(self.config.risk).model_validate(risk_payload)
         pair_match = type(self.config.pair_match).model_validate(pair_payload)
+        btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
         self.pending_config = {
             "strategy": strategy.model_dump(),
             "risk": risk.model_dump(),
             "pair_match": pair_match.model_dump(),
+            "btc_recovery": btc_recovery.model_dump(),
         }
-        self.pending_after_market_ids = self.current_market_ids()
+        recovery_only = bool(recovery_update) and not any(
+            (strategy_update, risk_update, pair_update)
+        )
+        self.pending_config_scope = "btc" if recovery_only else "aligned"
+        if self.pending_config_scope == "btc":
+            current_btc = self.current_btc_market_id()
+            self.pending_after_market_ids = {current_btc} if current_btc else set()
+        else:
+            self.pending_after_market_ids = self.current_market_ids()
         self.pending_after_market_id = next(iter(self.pending_after_market_ids), None)
         self._save_runtime_settings()
         return {**self.config_json(), **self.config_status_json()}
@@ -409,6 +492,13 @@ class DashboardHub:
     def pending_config_ready_for_snapshot(self, snapshot: dict[str, Any], asset: str) -> bool:
         if not self.pending_config:
             return False
+        if self.pending_config_scope == "btc":
+            if asset != "BTC":
+                return False
+            market = snapshot.get("market") or {}
+            if not isinstance(market, dict) or not market.get("condition_id"):
+                return False
+            return str(market["condition_id"]) not in self.pending_after_market_ids
         prospective = dict(self.asset_snapshots)
         prospective[asset] = snapshot
         markets: list[dict[str, Any]] = []

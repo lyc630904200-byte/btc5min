@@ -8,7 +8,23 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .models import ExitEvent, Fill, MarketState, OrderBookSnapshot, Position, PriceTick, Signal
+from .btc_recovery import (
+    RecoveryFill,
+    RecoveryRound,
+    open_quantity,
+    round_fees,
+    round_quote,
+)
+from .models import (
+    Direction,
+    ExitEvent,
+    Fill,
+    MarketState,
+    OrderBookSnapshot,
+    Position,
+    PriceTick,
+    Signal,
+)
 from .pair_match import PairOrder
 
 
@@ -121,6 +137,36 @@ class RunJournal:
         self.pair_orders = CsvTable(run_dir / "pair_orders.csv", pair_fields)
         self.pair_results = CsvTable(run_dir / "pair_results.csv", pair_fields)
         self.pair_markets = JsonlWriter(run_dir / "pair_markets.jsonl")
+        recovery_order_fields = [
+            "order_number", "trade_order_number", "order_id", "round_id",
+            "market_id", "market_slug", "stage", "direction", "side",
+            "avg_price", "quantity", "quote", "fee_usd", "levels_used",
+            "reason", "created_at",
+        ]
+        self.btc_recovery_orders = CsvTable(
+            run_dir / "btc_recovery_orders.csv",
+            recovery_order_fields,
+        )
+        recovery_round_fields = [
+            "round_id", "market_id", "market_slug", "start_time", "end_time",
+            "phase", "locked_direction", "initial_direction", "initial_quantity",
+            "recovery_direction", "recovery_quantity", "up_open_quantity",
+            "down_open_quantity", "close_reason", "official_outcome", "payout_usd",
+            "realized_pnl", "created_at", "updated_at", "closed_at",
+        ]
+        self.btc_recovery_rounds = CsvTable(
+            run_dir / "btc_recovery_rounds.csv",
+            recovery_round_fields,
+        )
+        self.btc_recovery_results = CsvTable(
+            run_dir / "btc_recovery_results.csv",
+            [
+                "round_id", "market_id", "market_slug", "start_time", "end_time",
+                "phase", "locked_direction", "recovery_direction", "close_reason",
+                "official_outcome", "total_quote_usd", "fees_usd", "payout_usd",
+                "realized_pnl", "created_at", "closed_at",
+            ],
+        )
         self.latency = CsvTable(run_dir / "latency.csv", ["created_at", "source", "operation", "ok", "latency_ms", "detail"])
 
     def event(self, event_type: str, payload: Any) -> None:
@@ -197,6 +243,73 @@ class RunJournal:
     def pair_market(self, summary: dict[str, Any]) -> None:
         self.pair_markets.write(summary)
         self.event("pair_market", summary)
+
+    def btc_recovery_order(self, fill: RecoveryFill) -> None:
+        payload = fill.model_dump(mode="json")
+        self.btc_recovery_orders.write(payload)
+        self.event("btc_recovery_fill", payload)
+
+    def btc_recovery_round(self, round_: RecoveryRound) -> None:
+        payload = round_.model_dump(mode="json")
+        self.btc_recovery_rounds.write(
+            {
+                "round_id": payload["round_id"],
+                "market_id": payload["market_id"],
+                "market_slug": payload["market_slug"],
+                "start_time": payload["start_time"],
+                "end_time": payload["end_time"],
+                "phase": payload["phase"],
+                "locked_direction": payload["locked_direction"],
+                "initial_direction": (
+                    round_.initial_fill.direction.value if round_.initial_fill else None
+                ),
+                "initial_quantity": (
+                    round_.initial_fill.quantity if round_.initial_fill else 0
+                ),
+                "recovery_direction": (
+                    round_.recovery_fill.direction.value if round_.recovery_fill else None
+                ),
+                "recovery_quantity": (
+                    round_.recovery_fill.quantity if round_.recovery_fill else 0
+                ),
+                "up_open_quantity": open_quantity(round_, Direction.UP),
+                "down_open_quantity": open_quantity(round_, Direction.DOWN),
+                "close_reason": payload["close_reason"],
+                "official_outcome": payload["official_outcome"],
+                "payout_usd": payload["payout_usd"],
+                "realized_pnl": payload["realized_pnl"],
+                "created_at": payload["created_at"],
+                "updated_at": payload["updated_at"],
+                "closed_at": payload["closed_at"],
+            }
+        )
+        self.event("btc_recovery_round", payload)
+
+    def btc_recovery_result(self, round_: RecoveryRound) -> None:
+        payload = round_.model_dump(mode="json")
+        self.btc_recovery_results.write(
+            {
+                "round_id": payload["round_id"],
+                "market_id": payload["market_id"],
+                "market_slug": payload["market_slug"],
+                "start_time": payload["start_time"],
+                "end_time": payload["end_time"],
+                "phase": payload["phase"],
+                "locked_direction": payload["locked_direction"],
+                "recovery_direction": (
+                    round_.recovery_direction.value if round_.recovery_direction else None
+                ),
+                "close_reason": payload["close_reason"],
+                "official_outcome": payload["official_outcome"],
+                "total_quote_usd": round_quote(round_),
+                "fees_usd": round_fees(round_),
+                "payout_usd": payload["payout_usd"],
+                "realized_pnl": payload["realized_pnl"],
+                "created_at": payload["created_at"],
+                "closed_at": payload["closed_at"],
+            }
+        )
+        self.event("btc_recovery_result", payload)
 
     def latency_row(self, source: str, operation: str, ok: bool, latency_ms: float | None, detail: str = "") -> None:
         self.latency.write(

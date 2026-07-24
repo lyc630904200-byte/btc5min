@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .btc_recovery import BtcRecoveryEngine, BtcRecoveryRegistry
 from .clients import BinanceClient, PolymarketClient
 from .config import AppConfig
 from .engine import PaperEngine
@@ -109,6 +110,7 @@ def live_snapshot(
     event_type: str,
     payload: Any,
     pair_match: dict[str, Any] | None = None,
+    btc_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     books = {direction.value: live_book_payload(book) for direction, book in engine.books.items()}
     event_payload: Any
@@ -135,6 +137,7 @@ def live_snapshot(
         },
         "last_rejection": engine.rejections[-1] if engine.rejections else None,
         "pair_match": pair_match or {},
+        "btc_recovery": btc_recovery or {},
     }
 
 
@@ -532,6 +535,28 @@ async def pair_resolution_loop(
         await asyncio.sleep(2)
 
 
+async def btc_recovery_resolution_loop(
+    btc_client: PolymarketClient,
+    recovery_engine: BtcRecoveryEngine,
+    queue: asyncio.Queue[tuple[str, str, Any]],
+) -> None:
+    while True:
+        for slug in recovery_engine.pending_slugs():
+            try:
+                outcome = await btc_client.resolved_outcome(slug)
+                if outcome is not None:
+                    await queue.put(("BTC_RECOVERY", "btc_recovery_resolution", (slug, outcome)))
+            except Exception as exc:
+                await queue.put(
+                    (
+                        "BTC_RECOVERY",
+                        "btc_recovery_error",
+                        {"source": "gamma_resolution", "error": str(exc)},
+                    )
+                )
+        await asyncio.sleep(2)
+
+
 def book_matches_market(market: MarketState, direction: Direction, book: OrderBookSnapshot) -> bool:
     expected_token = market.up_token_id if direction == Direction.UP else market.down_token_id
     if book.token_id != expected_token:
@@ -803,6 +828,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
     journal = RunJournal(output_dir)
     entry_registry = SqliteMarketEntryRegistry(config.data_dir / "market-entry-ledger.sqlite3")
     pair_registry = PairMatchRegistry(config.data_dir / "pair-match-ledger.sqlite3")
+    recovery_registry = BtcRecoveryRegistry(config.data_dir / "btc-recovery-ledger.sqlite3")
     clients: dict[str, PolymarketClient] = {}
     try:
         entry_registry.seed(historical_market_entry_counts(config.data_dir))
@@ -817,12 +843,16 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
         counters = {asset: {"signals": 0, "fills": 0, "exits": 0} for asset in assets}
         last_published_book_at: dict[tuple[str, Direction], datetime] = {}
         pair_engine = PairMatchEngine(config, pair_registry)
+        recovery_engine = BtcRecoveryEngine(config, recovery_registry)
         await asyncio.gather(
             *(
                 initialize_current_market(clients[asset], engines[asset], journal, output_dir, on_update)
                 for asset in assets
             )
         )
+        btc_engine = engines.get("BTC")
+        if btc_engine and btc_engine.market:
+            recovery_engine.set_market(btc_engine.market)
     except BaseException:
         try:
             await asyncio.wait_for(
@@ -833,7 +863,17 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
             pass
         entry_registry.close()
         pair_registry.close()
+        recovery_registry.close()
         raise
+
+    def recovery_dashboard_state() -> dict[str, Any]:
+        btc_engine = engines.get("BTC")
+        return recovery_engine.dashboard_state(
+            btc_engine.books if btc_engine else {},
+            pair_paused=bool(
+                config.btc_recovery.enabled and config.pair_match.enabled
+            ),
+        )
 
     tasks = [asyncio.create_task(data_cleanup_loop(config, output_dir, journal))]
     for asset in assets:
@@ -853,6 +893,12 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
         tasks.append(
             asyncio.create_task(pair_resolution_loop(clients["BTC"], clients["ETH"], pair_engine, queue))
         )
+    if "BTC" in clients:
+        tasks.append(
+            asyncio.create_task(
+                btc_recovery_resolution_loop(clients["BTC"], recovery_engine, queue)
+            )
+        )
     started = datetime.now(timezone.utc)
     try:
         while True:
@@ -861,24 +907,32 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
             try:
                 pending_events = [await asyncio.wait_for(queue.get(), timeout=1)]
             except asyncio.TimeoutError:
-                continue
+                pending_events = []
+                timer_tick = True
+            else:
+                timer_tick = False
             # Give simultaneous market frames a tiny window to accumulate so
             # hundreds of depth-only deltas collapse to the newest complete
             # UP/DOWN snapshots.  This bounds added latency at 20 ms.
-            await asyncio.sleep(LIVE_EVENT_COALESCE_SECONDS)
-            while not queue.empty() and len(pending_events) < 500:
-                pending_events.append(queue.get_nowait())
+            if pending_events:
+                await asyncio.sleep(LIVE_EVENT_COALESCE_SECONDS)
+                while not queue.empty() and len(pending_events) < 500:
+                    pending_events.append(queue.get_nowait())
             pair_input_changed = False
+            recovery_input_changed = timer_tick
             for asset in assets:
                 asset_events = [(event_type, payload) for event_asset, event_type, payload in pending_events if event_asset == asset]
                 if not asset_events:
                     continue
                 engine = engines[asset]
                 for event_type, payload in coalesce_live_events(asset_events):
-                    engine.entry_enabled = not config.pair_match.enabled
+                    engine.entry_enabled = not (
+                        config.pair_match.enabled or config.btc_recovery.enabled
+                    )
                     publish_update = True
                     if event_type == "market":
                         pair_input_changed = True
+                        recovery_input_changed = recovery_input_changed or asset == "BTC"
                         market: MarketState = payload
                         if not market_is_active(market, datetime.now(timezone.utc)):
                             continue
@@ -895,6 +949,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                         journal.event("polymarket_tick", tick)
                     elif event_type == "book":
                         pair_input_changed = True
+                        recovery_input_changed = recovery_input_changed or asset == "BTC"
                         direction, book = payload
                         assert isinstance(book, OrderBookSnapshot)
                         previous_book = engine.books.get(direction)
@@ -916,13 +971,25 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                         await emit_update(
                             on_update,
                             live_snapshot(
-                                engine, output_dir, live_event_type, live_payload, pair_engine.dashboard_state()
+                                engine,
+                                output_dir,
+                                live_event_type,
+                                live_payload,
+                                pair_engine.dashboard_state(),
+                                recovery_dashboard_state(),
                             ),
                         )
                     if publish_update:
                         await emit_update(
                             on_update,
-                            live_snapshot(engine, output_dir, event_type, payload, pair_engine.dashboard_state()),
+                            live_snapshot(
+                                engine,
+                                output_dir,
+                                event_type,
+                                payload,
+                                pair_engine.dashboard_state(),
+                                recovery_dashboard_state(),
+                            ),
                         )
 
             primary_engine = engines.get("BTC") or next(iter(engines.values()))
@@ -945,6 +1012,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                                 "pair_settlement",
                                 order,
                                 pair_engine.dashboard_state(),
+                                recovery_dashboard_state(),
                             ),
                         )
                     if settled:
@@ -967,10 +1035,62 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                         payload.get("error", ""),
                     )
 
+            recovery_events = [
+                (event_type, payload)
+                for event_asset, event_type, payload in pending_events
+                if event_asset == "BTC_RECOVERY"
+            ]
+            for event_type, payload in recovery_events:
+                if event_type == "btc_recovery_resolution":
+                    slug, outcome = payload
+                    recovery_engine.settle(slug, outcome)
+                elif event_type == "btc_recovery_error":
+                    journal.latency_row(
+                        payload.get("source", "btc_recovery"),
+                        "resolution",
+                        False,
+                        None,
+                        payload.get("error", ""),
+                    )
+
             for engine in engines.values():
-                engine.entry_enabled = not config.pair_match.enabled
+                engine.entry_enabled = not (
+                    config.pair_match.enabled or config.btc_recovery.enabled
+                )
+            btc_engine = engines.get("BTC")
+            if recovery_input_changed and btc_engine is not None:
+                recovery_engine.evaluate(
+                    btc_engine.market,
+                    btc_engine.books,
+                    datetime.now(timezone.utc),
+                )
+            for recovery_event_type, recovery_payload in recovery_engine.drain_events():
+                if recovery_event_type == "btc_recovery_fill":
+                    journal.btc_recovery_order(recovery_payload)
+                elif recovery_event_type == "btc_recovery_round":
+                    journal.btc_recovery_round(recovery_payload)
+                elif recovery_event_type == "btc_recovery_result":
+                    journal.btc_recovery_result(recovery_payload)
+                else:
+                    journal.event(recovery_event_type, recovery_payload)
+                await emit_update(
+                    on_update,
+                    live_snapshot(
+                        primary_engine,
+                        output_dir,
+                        recovery_event_type,
+                        recovery_payload,
+                        pair_engine.dashboard_state(),
+                        recovery_dashboard_state(),
+                    ),
+                )
             if pair_input_changed:
-                order = pair_engine.evaluate(engines, datetime.now(timezone.utc))
+                if config.btc_recovery.enabled:
+                    pair_engine.status = "paused_by_btc_recovery"
+                    pair_engine.last_reason = pair_engine.status
+                    order = None
+                else:
+                    order = pair_engine.evaluate(engines, datetime.now(timezone.utc))
                 if order is not None:
                     journal.pair_order(order)
                     event_type: str = "pair_order"
@@ -986,6 +1106,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                         event_type,
                         event_payload,
                         pair_engine.dashboard_state(),
+                        recovery_dashboard_state(),
                     ),
                 )
     finally:
@@ -1004,15 +1125,26 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                     journal.position(position)
                 await emit_update(
                     on_update,
-                    live_snapshot(engine, output_dir, "summary", engine.summary(), pair_engine.dashboard_state()),
+                    live_snapshot(
+                        engine,
+                        output_dir,
+                        "summary",
+                        engine.summary(),
+                        pair_engine.dashboard_state(),
+                        recovery_dashboard_state(),
+                    ),
                 )
             summary = aggregate_engine_summaries(engines)
             pair_summary = pair_engine.dashboard_state()["summary"]
+            recovery_summary = recovery_dashboard_state()["summary"]
             summary.update(
                 {
                     "pair_orders": pair_summary["orders"],
                     "pair_pending_orders": pair_summary["pending_orders"],
                     "pair_realized_pnl": pair_summary["realized_pnl"],
+                    "btc_recovery_markets": recovery_summary["observed_markets"],
+                    "btc_recovery_pending_settlements": recovery_summary["pending_settlements"],
+                    "btc_recovery_realized_pnl": recovery_summary["realized_pnl"],
                 }
             )
             journal.summary(summary)
@@ -1026,4 +1158,5 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 pass
             entry_registry.close()
             pair_registry.close()
+            recovery_registry.close()
     return output_dir

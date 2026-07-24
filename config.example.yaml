@@ -74,3 +74,16 @@ pair_match:
   # Sequence modes default max_pairs_per_market to 2 when that field is omitted.
   # continuous_abab: alternate forever; always_a/always_b: fixed direction.
   alternation_mode: per_market
+
+btc_recovery:
+  enabled: false
+  # All prices are cents. Once recovery triggers, the reverse quantity buys at the live book.
+  entry_price_cents: 70
+  target_price_cents: 80
+  recovery_trigger_cents: 40
+  stop_price_cents: 30
+  initial_quantity: 5
+  recovery_quantity: 15
+  # The strategy observes entries only inside [entry, exit).
+  entry_seconds_after_open: 0
+  exit_seconds_after_open: 300

@@ -61,10 +61,18 @@
     .asset-tab { border: 0; border-radius: 5px; background: transparent; color: var(--muted); padding: 6px 12px; font-weight: 800; cursor: pointer; }
     .asset-tab.active { background: var(--ink); color: #fff; }
     .pair-only { display: none; }
+    .recovery-only { display: none; }
     body.pair-mode .pair-only { display: block; }
     body.pair-mode .single-only,
     body.pair-mode .single-only-section { display: none; }
     body.pair-mode .shell { grid-template-columns: minmax(300px, 380px) minmax(560px, 1fr); }
+    body.recovery-mode .recovery-only { display: block; }
+    body.recovery-mode section.recovery-only { display: grid; }
+    body.recovery-mode .single-only,
+    body.recovery-mode .pair-only,
+    body.recovery-mode .single-only-section,
+    body.recovery-mode .eth-trade-market { display: none; }
+    body.recovery-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr) minmax(330px, 430px); }
 
     .pill {
       display: inline-flex;
@@ -193,14 +201,17 @@
 
     @media (max-width: 1180px) {
       .shell { grid-template-columns: 320px 1fr; }
+      body.recovery-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr); }
       .right { grid-column: 1 / -1; }
     }
 
     @media (max-width: 800px) {
+      .app { grid-template-rows: auto 1fr; }
       header { min-height: 58px; height: auto; align-items: flex-start; padding: 12px 14px; flex-direction: column; }
       .topbar { width: 100%; justify-content: flex-start; }
       .shell { grid-template-columns: 1fr; padding: 10px; }
       body.pair-mode .shell { grid-template-columns: 1fr; }
+      body.recovery-mode .shell { grid-template-columns: 1fr; }
       .book-grid, .signal, .metrics, .settings-grid, .pair-grid, .scenario-grid { grid-template-columns: 1fr; }
       .metric-value { font-size: 21px; }
     }
@@ -221,6 +232,7 @@
           <button class="asset-tab active" id="assetBTC" type="button" role="tab" aria-selected="true">BTC</button>
           <button class="asset-tab" id="assetETH" type="button" role="tab" aria-selected="false">ETH</button>
           <button class="asset-tab" id="assetPAIR" type="button" role="tab" aria-selected="false">BTC/ETH 匹配</button>
+          <button class="asset-tab" id="assetRECOVERY" type="button" role="tab" aria-selected="false">BTC 70/40策略</button>
         </div>
         <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
         <div class="pill"><span id="wsText">WebSocket</span></div>
@@ -284,6 +296,35 @@
             </div>
           </div></div>
         </div>
+
+        <div class="panel recovery-only">
+          <div class="panel-head"><div class="panel-title">BTC 恢复策略市场</div><div class="tag blue" id="recoveryMarketState">等待</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="recoveryMarketSlug">--</div></div>
+            <div class="kv-row"><div class="kv-label">窗口</div><div class="kv-value" id="recoveryMarketWindow">--</div></div>
+            <div class="kv-row"><div class="kv-label">剩余</div><div class="kv-value" id="recoveryTimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">策略阶段</div><div class="kv-value" id="recoveryPhase">--</div></div>
+            <div class="kv-row"><div class="kv-label">首单方向</div><div class="kv-value" id="recoveryLockedDirection">--</div></div>
+            <div class="kv-row"><div class="kv-label">运行原因</div><div class="kv-value" id="recoveryReason">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel recovery-only">
+          <div class="panel-head"><div class="panel-title">累计统计</div><div class="tag amber">paper</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">观察场次</div><div class="metric-value" id="recoveryObserved">0</div></div>
+            <div class="metric"><div class="metric-name">首单 / 恢复单</div><div class="metric-value" id="recoveryEntryCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">完成 / 盈利</div><div class="metric-value" id="recoveryWinCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">无交易场次</div><div class="metric-value" id="recoveryNoTrade">0</div></div>
+            <div class="metric"><div class="metric-name">直接 / 恢复成功</div><div class="metric-value" id="recoveryTargetCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">30止损 / 定时退出</div><div class="metric-value" id="recoveryExitCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">官方 / 待结算</div><div class="metric-value" id="recoverySettlementCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">胜率</div><div class="metric-value" id="recoveryWinRate">0%</div></div>
+            <div class="metric"><div class="metric-name">总成交额</div><div class="metric-value" id="recoveryTurnover">$0.00</div></div>
+            <div class="metric"><div class="metric-name">总手续费</div><div class="metric-value" id="recoveryFees">$0.00</div></div>
+            <div class="metric"><div class="metric-name">净盈亏</div><div class="metric-value" id="recoveryPnl">0.00</div></div>
+          </div>
+        </div>
       </section>
 
       <section class="stack">
@@ -302,7 +343,7 @@
                 <div class="trade-option down" id="btcDownTradeQuote">Down --</div>
               </div>
             </div>
-            <div class="trade-market">
+            <div class="trade-market eth-trade-market">
               <div class="trade-market-head"><span class="trade-market-name">ETH 盘口</span><span class="trade-market-age" id="ethBookAge">--</span></div>
               <div class="trade-options">
                 <div class="trade-option up" id="ethUpTradeQuote">Up --</div>
@@ -393,6 +434,47 @@
             <div class="table-wrap" id="pairOrdersWrap"><table class="data-table"><thead><tr><th>订单编号</th><th>时间/方向</th><th>BTC 方向 / 均价 / 份数 / 金额 / 费</th><th>ETH 方向 / 均价 / 份数 / 金额 / 费</th><th>价差</th><th>官方结果</th><th>实际盈亏</th><th>状态</th></tr></thead><tbody id="pairOrders"></tbody></table></div>
           </div>
         </div>
+
+        <div class="panel recovery-only">
+          <div class="panel-head"><div class="panel-title">当前持仓与含费清仓检查</div><div class="tag blue" id="recoveryPositionState">空仓</div></div>
+          <div class="panel-body">
+            <div class="pair-grid">
+              <div class="pair-card">
+                <div class="pair-card-head"><span>UP 持仓</span><span class="tag blue" id="recoveryUpTag">--</span></div>
+                <div class="pair-line"><span>入场均价 / 数量</span><strong id="recoveryUpEntry">--</strong></div>
+                <div class="pair-line"><span>可卖均价 / 金额</span><strong id="recoveryUpExit">--</strong></div>
+                <div class="pair-line"><span>预计卖出费</span><strong id="recoveryUpExitFee">--</strong></div>
+              </div>
+              <div class="pair-card">
+                <div class="pair-card-head"><span>DOWN 持仓</span><span class="tag blue" id="recoveryDownTag">--</span></div>
+                <div class="pair-line"><span>入场均价 / 数量</span><strong id="recoveryDownEntry">--</strong></div>
+                <div class="pair-line"><span>可卖均价 / 金额</span><strong id="recoveryDownExit">--</strong></div>
+                <div class="pair-line"><span>预计卖出费</span><strong id="recoveryDownExitFee">--</strong></div>
+              </div>
+            </div>
+            <div class="subhead">套利检查</div>
+            <div class="reason-list">
+              <div class="reason"><strong>YES + NO 可卖均价</strong><span class="mono" id="recoveryYesNoSum">--</span></div>
+              <div class="reason"><strong>预计新增卖出费</strong><span class="mono" id="recoveryProjectedFees">--</span></div>
+              <div class="reason"><strong>全部清仓预计净盈亏</strong><span class="mono" id="recoveryProjectedPnl">--</span></div>
+              <div class="reason"><strong>检查状态</strong><span class="mono" id="recoveryProjectedReason">--</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel recovery-only">
+          <div class="panel-head"><div class="panel-title">最近市场</div><div class="tag amber" id="recoveryRoundCount">0</div></div>
+          <div class="panel-body">
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>场次</th><th>订单编号</th><th>首单 / 恢复</th><th>官方结果</th><th>退出原因</th><th>手续费</th><th>兑付</th><th>净盈亏</th><th>状态</th></tr></thead><tbody id="recoveryRounds"></tbody></table></div>
+          </div>
+        </div>
+
+        <div class="panel recovery-only">
+          <div class="panel-head"><div class="panel-title">最近订单</div><div class="tag amber" id="recoveryOrderCount">0</div></div>
+          <div class="panel-body">
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>时间</th><th>阶段</th><th>方向</th><th>买卖</th><th>均价</th><th>数量</th><th>金额</th><th>手续费</th><th>原因</th></tr></thead><tbody id="recoveryOrders"></tbody></table></div>
+          </div>
+        </div>
       </section>
 
       <section class="stack right single-only-section">
@@ -432,6 +514,28 @@
           <div class="panel-body"><div class="timeline" id="timeline"></div></div>
         </div>
       </section>
+
+      <section class="stack right recovery-only">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">BTC 70/40策略参数</div><div class="tag blue" id="recoveryConfigStatus">保存后下一场BTC生效</div></div>
+          <form class="panel-body" id="recoveryForm">
+            <div class="settings-grid">
+              <label class="setting"><span class="setting-label">自动模拟交易</span><span class="setting-toggle"><input id="recoveryEnabled" type="checkbox">启用时暂停新的BTC/ETH配对</span></label>
+              <label class="setting"><span class="setting-label">首单价（美分）</span><input class="setting-input" id="recoveryEntryPrice" type="number" min="1" max="99" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">盈利目标（美分）</span><input class="setting-input" id="recoveryTargetPrice" type="number" min="1" max="99" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">恢复触发价（美分）</span><input class="setting-input" id="recoveryTriggerPrice" type="number" min="1" max="99" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">反向买入方式</span><input class="setting-input" id="recoveryReverseLimit" type="text" disabled value="触发后按盘口"></label>
+              <label class="setting"><span class="setting-label">反向止损价（美分）</span><input class="setting-input" id="recoveryStopPrice" type="number" min="1" max="99" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">首单数量（份）</span><input class="setting-input" id="recoveryInitialQty" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">反向数量（份）</span><input class="setting-input" id="recoveryHedgeQty" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">入场时间（开盘后秒）</span><input class="setting-input" id="recoveryEntrySeconds" type="number" min="0" max="299" step="1" required></label>
+              <label class="setting"><span class="setting-label">出场时间（开盘后秒，不含）</span><input class="setting-input" id="recoveryExitSeconds" type="number" min="1" max="300" step="1" required></label>
+            </div>
+            <div class="settings-actions"><span class="settings-note">严格限价且不部分成交；80¢后仅在完整清仓含费盈利时退出，30¢或定时出场不要求盈利。</span><button class="settings-save" id="saveRecovery" type="submit">保存策略参数</button></div>
+          </form>
+        </div>
+
+      </section>
     </main>
   </div>
 
@@ -448,6 +552,9 @@
     let pairFormInitialized = false;
     let pairFormDirty = false;
     let renderedPairConfigKey = '';
+    let recoveryFormInitialized = false;
+    let recoveryFormDirty = false;
+    let renderedRecoveryConfigKey = '';
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -476,9 +583,22 @@
       alternate_directions: 'pairAlternate',
       alternation_mode: 'pairAlternationMode',
     };
+    const recoveryInputs = {
+      enabled: 'recoveryEnabled',
+      entry_price_cents: 'recoveryEntryPrice',
+      target_price_cents: 'recoveryTargetPrice',
+      recovery_trigger_cents: 'recoveryTriggerPrice',
+      stop_price_cents: 'recoveryStopPrice',
+      initial_quantity: 'recoveryInitialQty',
+      recovery_quantity: 'recoveryHedgeQty',
+      entry_seconds_after_open: 'recoveryEntrySeconds',
+      exit_seconds_after_open: 'recoveryExitSeconds',
+    };
     const renderCache = {
       pairMarkets: '',
       pairOrders: '',
+      recoveryRounds: '',
+      recoveryOrders: '',
       reasons: '',
       timeline: '',
     };
@@ -628,6 +748,230 @@
       }
     }
 
+    function syncRecoveryReverseLimit() {
+      $('recoveryReverseLimit').value = '触发后按盘口';
+    }
+
+    function renderRecoveryConfig(snapshot, force = false) {
+      const active = snapshot.btc_recovery?.config || {};
+      const recovery = snapshot.pending_btc_recovery || active;
+      const configKey = JSON.stringify(
+        Object.fromEntries(Object.keys(recoveryInputs).map((field) => [field, recovery[field]])),
+      );
+      if (
+        force
+        || !recoveryFormInitialized
+        || (!recoveryFormDirty && configKey !== renderedRecoveryConfigKey)
+      ) {
+        Object.entries(recoveryInputs).forEach(([field, id]) => setRuntimeInput(id, recovery[field]));
+        syncRecoveryReverseLimit();
+        renderedRecoveryConfigKey = configKey;
+        recoveryFormInitialized = true;
+      }
+      const status = $('recoveryConfigStatus');
+      if (recoveryFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+      } else if (snapshot.config_status === 'pending_next_btc_market') {
+        status.textContent = '已保存，下一场BTC生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
+    }
+
+    function recoveryRoundFees(round) {
+      const fills = [round?.initial_fill, round?.recovery_fill, ...(round?.exit_fills || [])].filter(Boolean);
+      return fills.reduce((total, fill) => total + Number(fill.fee_usd || 0), 0);
+    }
+
+    function recoveryFillBrief(fill) {
+      if (!fill) return '--';
+      return `${fill.direction} ${fmtCents(fill.avg_price)} × ${fmtNumber(fill.quantity, 2)}`;
+    }
+
+    function recoveryReasonText(reason) {
+      const labels = {
+        direct_target: '首单止盈',
+        recovery_target: '恢复成功',
+        recovery_stop: '恢复仓止损',
+        timed_exit: '定时退出',
+        official_settlement: '官方结算',
+        awaiting_official_settlement: '等待官方结算',
+        no_trade: '本场无交易',
+        entry_window_closed: '入场窗口结束',
+        restart_without_entry_ordering: '重启后无法确认触发顺序',
+        started_after_entry_window_began: '启动时已错过入场观察',
+        initial_entry: '首单买入',
+        recovery_entry: '恢复单买入',
+        disabled: '策略关闭',
+        waiting_for_btc_market: '等待BTC市场',
+        waiting_for_round: '等待策略场次',
+        waiting_entry_window: '等待入场时间',
+        entry_books_waiting: '等待可信盘口',
+        observing_entry: '观察首单触发',
+        entry_direction_locked: '首单方向已锁定',
+        initial_open: '首单持仓中',
+        recovery_open: '恢复仓持仓中',
+        timed_exit_waiting_for_depth: '定时退出等待深度',
+        no_open_position: '当前无持仓',
+        book_unavailable: '盘口不可用',
+        book_stale: '盘口已过期',
+        book_depth_untrusted: '盘口深度不可信',
+        insufficient_sell_depth: '卖出深度不足',
+        insufficient_buy_depth: '买入深度不足',
+        strict_limit_or_depth_unavailable: '限价内深度不足',
+        below_min_order_size: '低于最小订单量',
+        duplicate_transition: '重复状态变更',
+        closed: '本场已结束',
+        skipped_restart: '重启安全跳过',
+        pending_settlement: '等待官方结算',
+      };
+      return labels[reason] || reason || '--';
+    }
+
+    function recoveryRoundOrderNumbers(round) {
+      const entries = [round?.initial_fill, round?.recovery_fill].filter(Boolean);
+      const numbers = entries.map((fill) => displayOrderNumber({
+        ...fill,
+        display_order_number: fill.trade_order_number || fill.order_number,
+      }));
+      return [...new Set(numbers)].join(' / ') || '--';
+    }
+
+    function renderRecovery(recovery, btcSnapshot, configStatus, pendingRecovery) {
+      recovery = recovery || {};
+      const market = btcSnapshot?.market;
+      const round = recovery.round;
+      const phase = round?.phase || recovery.status || '--';
+      const enabled = Boolean((recovery.config || {}).enabled);
+      setText('recoveryMarketState', enabled ? (recovery.status || '等待') : '关闭');
+      setClass('recoveryMarketState', `tag ${enabled ? 'green' : 'blue'}`);
+      setText('recoveryMarketSlug', market?.slug || round?.market_slug || '--');
+      setText(
+        'recoveryMarketWindow',
+        market ? `${fmtTime(market.start_time)} - ${fmtTime(market.end_time)}` : '--',
+      );
+      const left = secondsLeft(market);
+      setText('recoveryTimeLeft', left == null ? '--' : `${left}s`);
+      setText('recoveryPhase', phase);
+      setText('recoveryLockedDirection', round?.locked_direction || '--');
+      setText(
+        'recoveryReason',
+        recoveryReasonText(recovery.last_reason || round?.close_reason),
+      );
+
+      const positions = recovery.positions || {};
+      ['UP', 'DOWN'].forEach((direction) => {
+        const position = positions[direction];
+        const prefix = direction === 'UP' ? 'recoveryUp' : 'recoveryDown';
+        setText(`${prefix}Tag`, position ? `${fmtNumber(position.quantity, 2)}份` : '空仓');
+        setClass(`${prefix}Tag`, `tag ${position ? 'green' : 'blue'}`);
+        setText(
+          `${prefix}Entry`,
+          position
+            ? `${fmtCents(position.entry_avg_price)} / ${fmtNumber(position.quantity, 2)}份`
+            : '--',
+        );
+        setText(
+          `${prefix}Exit`,
+          position?.sell_avg_price == null
+            ? '--'
+            : `${fmtCents(position.sell_avg_price)} / $${fmtNumber(position.sell_quote, 3)}`,
+        );
+        setText(
+          `${prefix}ExitFee`,
+          position?.sell_fee_usd == null ? '--' : `$${fmtNumber(position.sell_fee_usd, 4)}`,
+        );
+      });
+      const positionCount = Object.keys(positions).length;
+      setText('recoveryPositionState', positionCount ? `${positionCount}边持仓` : '空仓');
+      setClass('recoveryPositionState', `tag ${positionCount ? 'green' : 'blue'}`);
+
+      const check = recovery.arbitrage_check || {};
+      setText(
+        'recoveryYesNoSum',
+        check.yes_no_sell_sum == null ? '--' : `${fmtNumber(check.yes_no_sell_sum * 100, 2)}¢`,
+      );
+      setText(
+        'recoveryProjectedFees',
+        check.projected_exit_fees_usd == null
+          ? '--'
+          : `$${fmtNumber(check.projected_exit_fees_usd, 4)}`,
+      );
+      setPnl('recoveryProjectedPnl', check.projected_net_pnl);
+      setText('recoveryProjectedReason', check.reason || '--');
+
+      const summary = recovery.summary || {};
+      setText('recoveryObserved', summary.observed_markets || 0);
+      setText(
+        'recoveryEntryCounts',
+        `${summary.initial_orders || 0} / ${summary.recovery_orders || 0}`,
+      );
+      setText(
+        'recoveryWinCounts',
+        `${summary.completed_markets || 0} / ${summary.winning_markets || 0}`,
+      );
+      setText('recoveryNoTrade', summary.no_trade_markets || 0);
+      setText(
+        'recoveryTargetCounts',
+        `${summary.direct_target_exits || 0} / ${summary.recovery_target_exits || 0}`,
+      );
+      setText(
+        'recoveryExitCounts',
+        `${summary.stop_exits || 0} / ${summary.timed_exits || 0}`,
+      );
+      setText(
+        'recoverySettlementCounts',
+        `${summary.official_settlements || 0} / ${summary.pending_settlements || 0}`,
+      );
+      setText('recoveryWinRate', `${fmtNumber((summary.win_rate || 0) * 100, 1)}%`);
+      setText('recoveryTurnover', `$${fmtNumber(summary.total_quote_usd || 0, 3)}`);
+      setText('recoveryFees', `$${fmtNumber(summary.fees_usd || 0, 3)}`);
+      setPnl('recoveryPnl', summary.realized_pnl || 0);
+
+      const rounds = recovery.recent_rounds || [];
+      setText('recoveryRoundCount', rounds.length);
+      updateHtmlWhenChanged(
+        'recoveryRounds',
+        'recoveryRounds',
+        JSON.stringify(rounds),
+        rounds.map((item) => `<tr>
+          <td>${fmtTime(item.start_time)}</td><td>${recoveryRoundOrderNumbers(item)}</td>
+          <td>${recoveryFillBrief(item.initial_fill)} / ${recoveryFillBrief(item.recovery_fill)}</td>
+          <td>${item.official_outcome || '--'}</td>
+          <td>${recoveryReasonText(item.close_reason)}</td>
+          <td>$${fmtNumber(recoveryRoundFees(item), 4)}</td>
+          <td>$${fmtNumber(item.payout_usd || 0, 3)}</td>
+          <td>${item.realized_pnl == null ? '--' : pnlHtml(item.realized_pnl)}</td>
+          <td>${item.phase || '--'}</td>
+        </tr>`).join('') || '<tr><td colspan="9">暂无策略场次</td></tr>',
+      );
+
+      const orders = recovery.recent_orders || [];
+      setText('recoveryOrderCount', orders.length);
+      updateHtmlWhenChanged(
+        'recoveryOrders',
+        'recoveryOrders',
+        JSON.stringify(orders),
+        orders.map((order) => `<tr>
+          <td>${displayOrderNumber(order)}</td><td>${fmtTime(order.created_at)}</td>
+          <td>${order.stage || '--'}</td><td>${order.direction || '--'}</td>
+          <td>${order.side || '--'}</td><td>${fmtCents(order.avg_price)}</td>
+          <td>${fmtNumber(order.quantity, 2)}</td><td>$${fmtNumber(order.quote, 3)}</td>
+          <td>$${fmtNumber(order.fee_usd, 4)}</td><td>${recoveryReasonText(order.reason)}</td>
+        </tr>`).join('') || '<tr><td colspan="10">暂无策略订单</td></tr>',
+      );
+      renderRecoveryConfig(
+        {
+          btc_recovery: recovery,
+          pending_btc_recovery: pendingRecovery,
+          config_status: configStatus,
+        },
+      );
+    }
+
     function pnlHtml(value) {
       if (value === null || value === undefined) return '--';
       const number = Number(value);
@@ -641,7 +985,11 @@
     }
 
     function displayOrderNumber(order) {
-      const number = Number(order?.order_number);
+      const number = Number(
+        order?.display_order_number
+        ?? order?.trade_order_number
+        ?? order?.order_number,
+      );
       if (Number.isInteger(number) && number > 0) return `#${String(number).padStart(6, '0')}`;
       if (!order?.order_id) return '--';
       return `#${String(order.order_id).slice(0, 8).toUpperCase()}`;
@@ -851,7 +1199,10 @@
       latest = snapshot;
       const aggregate = snapshot;
       const pairPage = selectedAsset === 'PAIR';
-      const assetSnapshot = pairPage ? (aggregate.assets?.BTC || aggregate) : (aggregate.assets?.[selectedAsset] || aggregate);
+      const recoveryPage = selectedAsset === 'RECOVERY';
+      const assetSnapshot = pairPage || recoveryPage
+        ? (aggregate.assets?.BTC || aggregate)
+        : (aggregate.assets?.[selectedAsset] || aggregate);
       snapshot = {
         ...assetSnapshot,
         strategy: aggregate.strategy || assetSnapshot.strategy,
@@ -859,19 +1210,28 @@
         pending_strategy: aggregate.pending_strategy,
         pending_risk: aggregate.pending_risk,
         pending_pair_match: aggregate.pending_pair_match,
+        pending_btc_recovery: aggregate.pending_btc_recovery,
         pair_match: aggregate.pair_match || assetSnapshot.pair_match,
+        btc_recovery: aggregate.btc_recovery || assetSnapshot.btc_recovery,
         config_status: aggregate.config_status,
         ws_url: aggregate.ws_url,
       };
       const asset = String(snapshot.asset || selectedAsset).toUpperCase();
       document.body.classList.toggle('pair-mode', pairPage);
+      document.body.classList.toggle('recovery-mode', recoveryPage);
       $('assetBTC').classList.toggle('active', selectedAsset === 'BTC');
       $('assetETH').classList.toggle('active', selectedAsset === 'ETH');
       $('assetPAIR').classList.toggle('active', pairPage);
+      $('assetRECOVERY').classList.toggle('active', recoveryPage);
       $('assetBTC').setAttribute('aria-selected', String(selectedAsset === 'BTC'));
       $('assetETH').setAttribute('aria-selected', String(selectedAsset === 'ETH'));
       $('assetPAIR').setAttribute('aria-selected', String(pairPage));
-      $('brandTitle').textContent = pairPage ? 'polybtc · BTC/ETH 自动匹配' : `polybtc · ${asset} 实时面板`;
+      $('assetRECOVERY').setAttribute('aria-selected', String(recoveryPage));
+      $('brandTitle').textContent = pairPage
+        ? 'polybtc · BTC/ETH 自动匹配'
+        : recoveryPage
+        ? 'polybtc · BTC 70/40策略'
+        : `polybtc · ${asset} 实时面板`;
       $('binanceAssetLabel').textContent = `Binance ${asset}`;
       $('polymarketAssetLabel').textContent = `Polymarket ${asset}`;
       const market = snapshot.market;
@@ -888,6 +1248,21 @@
         renderPairMatch(snapshot.pair_match, snapshot.config_status);
         renderPairMarkets(aggregate.assets || {});
         renderTradeBooks(aggregate.assets || { [asset]: assetSnapshot });
+        return;
+      }
+      if (recoveryPage) {
+        renderRecovery(
+          snapshot.btc_recovery,
+          assetSnapshot,
+          snapshot.config_status,
+          snapshot.pending_btc_recovery,
+        );
+        renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
+        setText('bookAge', 'BTC');
+        setText(
+          'tradeBookNote',
+          bookSide === 'BUY' ? 'BTC · 买入按卖一价格' : 'BTC · 卖出按买一价格',
+        );
         return;
       }
       renderRuntimeConfig(snapshot);
@@ -1057,6 +1432,12 @@
         });
         return;
       }
+      if (selectedAsset === 'RECOVERY') {
+        const market = latest.assets?.BTC?.market || latest.market;
+        const left = secondsLeft(market);
+        setText('recoveryTimeLeft', left == null ? '--' : `${left}s`);
+        return;
+      }
       const market = latest.assets?.[selectedAsset]?.market || latest.market;
       const left = secondsLeft(market);
       setText('timeLeft', left == null ? '--' : `${left}s`);
@@ -1069,6 +1450,7 @@
     $('assetBTC').addEventListener('click', () => selectAsset('BTC'));
     $('assetETH').addEventListener('click', () => selectAsset('ETH'));
     $('assetPAIR').addEventListener('click', () => selectAsset('PAIR'));
+    $('assetRECOVERY').addEventListener('click', () => selectAsset('RECOVERY'));
     $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) scheduleRender(latest); });
     $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) scheduleRender(latest); });
     $('strategyForm').addEventListener('input', () => {
@@ -1174,6 +1556,63 @@
       } catch (error) {
         $('pairStatus').textContent = String(error.message || error).slice(0, 28);
         $('pairStatus').className = 'tag red';
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $('recoveryTriggerPrice').addEventListener('input', syncRecoveryReverseLimit);
+    $('recoveryForm').addEventListener('input', () => {
+      recoveryFormDirty = true;
+      syncRecoveryReverseLimit();
+      $('recoveryConfigStatus').textContent = '有修改，尚未保存';
+      $('recoveryConfigStatus').className = 'tag amber';
+    });
+    $('recoveryForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('saveRecovery');
+      const status = $('recoveryConfigStatus');
+      try {
+        button.disabled = true;
+        status.textContent = '保存中';
+        status.className = 'tag amber';
+        const payload = {
+          btc_recovery: {
+            enabled: $('recoveryEnabled').checked,
+            entry_price_cents: runtimeNumber('recoveryEntryPrice'),
+            target_price_cents: runtimeNumber('recoveryTargetPrice'),
+            recovery_trigger_cents: runtimeNumber('recoveryTriggerPrice'),
+            stop_price_cents: runtimeNumber('recoveryStopPrice'),
+            initial_quantity: runtimeNumber('recoveryInitialQty'),
+            recovery_quantity: runtimeNumber('recoveryHedgeQty'),
+            entry_seconds_after_open: runtimeNumber('recoveryEntrySeconds'),
+            exit_seconds_after_open: runtimeNumber('recoveryExitSeconds'),
+          },
+        };
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = {
+          ...(latest || {}),
+          pending_btc_recovery: config.pending_btc_recovery,
+          config_status: config.config_status,
+        };
+        recoveryFormDirty = false;
+        renderRecoveryConfig(
+          {
+            btc_recovery: latest?.btc_recovery,
+            pending_btc_recovery: config.pending_btc_recovery,
+            config_status: config.config_status,
+          },
+          true,
+        );
+        if (latest) scheduleRender(latest);
+      } catch (error) {
+        status.textContent = String(error.message || error).slice(0, 28);
+        status.className = 'tag red';
       } finally {
         button.disabled = false;
       }

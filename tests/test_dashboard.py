@@ -392,3 +392,67 @@ def test_pending_config_waits_for_new_aligned_btc_and_eth_markets(tmp_path) -> N
     asyncio.run(hub.publish(snapshot("ETH", "eth-new", new_start, new_end)))
     assert hub.config.pair_match.enabled is True
     assert hub.pending_config is None
+
+
+def test_btc_recovery_config_waits_only_for_next_btc_market_and_persists(tmp_path) -> None:
+    config = AppConfig(data_dir=tmp_path)
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+
+    def snapshot(asset: str, market_id: str, start: str, end: str) -> dict:
+        return {
+            "asset": asset,
+            "event": {"type": "market", "payload": {}},
+            "market": {
+                "asset": asset,
+                "condition_id": market_id,
+                "slug": f"{asset.lower()}-updown-5m-1",
+                "start_time": start,
+                "end_time": end,
+            },
+            "books": {},
+            "pair_match": {},
+            "btc_recovery": {},
+        }
+
+    old_start, old_end = "2026-07-20T00:00:00Z", "2026-07-20T00:05:00Z"
+    asyncio.run(hub.publish(snapshot("BTC", "btc-old", old_start, old_end)))
+    asyncio.run(hub.publish(snapshot("ETH", "eth-old", old_start, old_end)))
+
+    response = hub.set_runtime_config(
+        {
+            "btc_recovery": {
+                "enabled": True,
+                "entry_price_cents": 68,
+                "target_price_cents": 82,
+                "recovery_trigger_cents": 38,
+                "stop_price_cents": 28,
+                "initial_quantity": 6,
+                "recovery_quantity": 18,
+                "entry_seconds_after_open": 15,
+                "exit_seconds_after_open": 270,
+            }
+        }
+    )
+
+    assert response["config_status"] == "pending_next_btc_market"
+    assert response["btc_recovery"]["enabled"] is False
+    assert response["pending_btc_recovery"]["enabled"] is True
+    assert response["pending_btc_recovery"]["initial_quantity"] == 6.0
+
+    new_start, new_end = "2026-07-20T00:05:00Z", "2026-07-20T00:10:00Z"
+    asyncio.run(hub.publish(snapshot("ETH", "eth-new", new_start, new_end)))
+    assert hub.config.btc_recovery.enabled is False
+    asyncio.run(hub.publish(snapshot("BTC", "btc-old", old_start, old_end)))
+    assert hub.config.btc_recovery.enabled is False
+
+    asyncio.run(hub.publish(snapshot("BTC", "btc-new", new_start, new_end)))
+    assert hub.config.btc_recovery.enabled is True
+    assert hub.config.btc_recovery.recovery_trigger_cents == 38.0
+    assert hub.pending_config is None
+
+    reloaded = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert reloaded.config.btc_recovery.enabled is True
+    assert reloaded.config.btc_recovery.target_price_cents == 82.0
+    assert reloaded.config.btc_recovery.exit_seconds_after_open == 270.0

@@ -220,6 +220,52 @@ class PairMatchConfig(BaseModel):
             raise ValueError("start_seconds_after_open must be lower than end_seconds_after_open")
         return self
 
+
+class BtcRecoveryConfig(BaseModel):
+    enabled: bool = False
+    entry_price_cents: float = 70.0
+    target_price_cents: float = 80.0
+    recovery_trigger_cents: float = 40.0
+    stop_price_cents: float = 30.0
+    initial_quantity: float = 5.0
+    recovery_quantity: float = 15.0
+    entry_seconds_after_open: float = 0.0
+    exit_seconds_after_open: float = 300.0
+
+    @field_validator(
+        "entry_price_cents",
+        "target_price_cents",
+        "recovery_trigger_cents",
+        "stop_price_cents",
+    )
+    @classmethod
+    def valid_price_cents(cls, value: float) -> float:
+        if not 0 < value < 100:
+            raise ValueError("BTC recovery prices must be between 0 and 100 cents")
+        return value
+
+    @field_validator("initial_quantity", "recovery_quantity")
+    @classmethod
+    def positive_quantity(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC recovery quantities must be positive")
+        return value
+
+    @field_validator("entry_seconds_after_open", "exit_seconds_after_open")
+    @classmethod
+    def valid_market_second(cls, value: float) -> float:
+        if not 0 <= value <= 300:
+            raise ValueError("BTC recovery market seconds must be between 0 and 300")
+        return value
+
+    @model_validator(mode="after")
+    def valid_strategy_shape(self) -> "BtcRecoveryConfig":
+        if self.entry_seconds_after_open >= self.exit_seconds_after_open:
+            raise ValueError(
+                "BTC recovery entry_seconds_after_open must be lower than exit_seconds_after_open"
+            )
+        return self
+
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
     data_cleanup_enabled: bool = True
@@ -229,6 +275,7 @@ class AppConfig(BaseModel):
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     pair_match: PairMatchConfig = Field(default_factory=PairMatchConfig)
+    btc_recovery: BtcRecoveryConfig = Field(default_factory=BtcRecoveryConfig)
 
     @field_validator("data_retention_hours", "data_cleanup_interval_seconds")
     @classmethod

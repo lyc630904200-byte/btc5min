@@ -1,6 +1,6 @@
 # polybtc 交接文档
 
-更新时间：2026-07-23（Asia/Shanghai）
+更新时间：2026-07-24（Asia/Shanghai）
 
 ## 项目目标
 
@@ -12,31 +12,32 @@
 
 - 工作目录：`D:\Users\Administrator\Documents\btc5fenzhong`
 - 当前分支：`jiaoyi02`
-- HEAD：`b85b16f 正盈利001`
+- HEAD：`cfe3c6d 新增 BTC 70/40 恢复策略分页前`
 - 跟踪分支：`origin/jiaoyi02`
-- `jiaoyi02` 与 `origin/jiaoyi02` 位于同一提交。
-- BTC/ETH 双资产、配对模块和 Dashboard 主体已包含在 `b85b16f`。当前工作区另有“每场两阶段”模式及对应配置、前端、测试和文档修改，交接后不要 reset 或覆盖。
+- `jiaoyi02` 当前领先 `origin/jiaoyi02` 1 个本地提交。
+- 当前工作区新增第四页“BTC 70/40策略”及其配置、状态机、独立账本、CSV、实时接口、测试和文档；尚未提交，交接后不要 reset 或覆盖。
 - Dashboard 正在运行：`http://127.0.0.1:8765/`
 - WebSocket：`ws://127.0.0.1:8766/ws`
-- 更新文档时进程 PID：`24064`
-- 当前运行输出目录：`data\20260723T012624Z`
-- 更新文档时 BTC 市场为 `btc-updown-5m-1784769900`，ETH 市场为 `eth-updown-5m-1784769900`，两者起止时间完全一致。
+- 更新文档时进程 PID：`17164`
+- 当前运行输出目录：`data\20260724T164550Z`
+- 更新文档时 BTC 市场为 `btc-updown-5m-1784904000`，ETH 市场为 `eth-updown-5m-1784904000`，两者起止时间完全一致。
 - 配对账本共有 489 组订单、388 个去重市场，订单号连续为 `1..489`；更新时 489 组已全部结算，无待结算订单。
 - 实际联网验证已确认：BTC/ETH 当前市场、各自 UP/DOWN token、两套 CLOB 盘口、`BTCUSDT`/`ETHUSDT` 和 `BTC/USD`/`ETH/USD` 实时 tick 均正常。
-- 配对模块当前已开启；`leg_quote_usd=20`（单组报价预算 40 USD，手续费另计）、首单最低盈利价差 10 美分、第二单最低盈利价差 1 美分、UP/DOWN 最小价格差 60 美分、开盘后 `[150, 300)` 秒、每场固定上限 2、严格方向控制开启，模式为每场两阶段（`per_market_two_stage`）。当前无待生效配置。
-- 最近完整测试：`205 passed`
+- 配对模块当前已开启；实际运行模式为 `per_market`，每场上限 1。BTC 70/40 策略当前关闭，默认参数为 `70/80/40/30` 美分、首单 5 份、反向 15 份、窗口 `[0, 300)` 秒。当前无待生效配置。
+- 最近完整测试：`217 passed`
 
 当前工作区主要变更：
 
 ```text
-M  HANDOFF.md
 M  config.example.yaml
 M  polybtc/config.py
 M  polybtc/dashboard.py
-M  polybtc/pair_match.py
+M  polybtc/journal.py
+M  polybtc/runner.py
 M  tests/test_dashboard.py
-M  tests/test_pair_match.py
 M  web/index.html
+?? polybtc/btc_recovery.py
+?? tests/test_btc_recovery.py
 ```
 
 ## Git 与代理
@@ -137,9 +138,44 @@ Invoke-RestMethod http://127.0.0.1:8765/api/config
 - `polybtc/orderbook.py`：按多档盘口模拟买卖成交。
 - `polybtc/entry_registry.py`：每市场入场次数的 SQLite 持久化注册表。
 - `polybtc/pair_match.py`：跨市场组合评估、每场交替、跨场 ABAB、固定 A/B、SQLite 配对账本、顺序订单号、结算与汇总。
+- `polybtc/btc_recovery.py`：BTC 70/40 本地模拟策略、严格限价、恢复单、原子清仓、官方结算、独立 SQLite 账本与连续订单号。
 - `polybtc/dashboard.py`：HTTP/WebSocket 服务和“保存后下一把生效”的运行时参数管理。
 - `web/index.html`：Dashboard 前端。
-- `tests/`：当前完整测试集，共 189 项。
+- `tests/`：当前完整测试集，共 217 项。
+
+## BTC 70/40 恢复策略
+
+Dashboard 第四页“BTC 70/40策略”仅使用 BTC 的 UP/DOWN 实时多档盘口进行本地模拟，不发送真实订单。配置字段位于 `btc_recovery`：
+
+```text
+enabled
+entry_price_cents              默认 70
+target_price_cents             默认 80
+recovery_trigger_cents         默认 40
+stop_price_cents               默认 30
+initial_quantity               默认 5
+recovery_quantity              默认 15
+entry_seconds_after_open       默认 0
+exit_seconds_after_open        默认 300
+```
+
+首单只在 `[entry_seconds_after_open, exit_seconds_after_open)` 内观察“从首单价以下首次触及首单价”的方向；开始观察前不会记录信号。首单保持严格限价。恢复触发后，反向数量立即按实时完整卖盘模拟买入，不再使用 `100 - recovery_trigger_cents` 限价；仍要求盘口新鲜、可信、满足最小数量且能够完整成交，不允许部分成交。
+
+首单完整可卖均价达到目标且含费净盈利大于 0 时直接退出；首单可卖均价跌到恢复触发价时，按派生限价完整买入反方向。恢复仓达到目标且两边可原子清仓、合计含费盈利时退出；恢复仓跌到止损价时无视盈亏原子清仓。到达配置出场秒数后无视目标持续尝试完整清仓；默认 300 秒没有提前缓冲，到期未卖持仓转为官方结算。
+
+启用恢复策略时，新的 BTC/ETH 配对和旧单币入场暂停，既有仓位仍按原规则管理；停用后配对自动恢复。配置通过 `GET/POST /api/config` 和实时 `btc_recovery.config` 暴露，仅在下一场 BTC 市场原子生效。重启会恢复已成交持仓；如果已经开始观察但无法确认首次触发顺序，则跳过当前场。
+
+持久账本为 `data/btc-recovery-ledger.sqlite3`。每次运行目录同步写入：
+
+```text
+btc_recovery_orders.csv
+btc_recovery_rounds.csv
+btc_recovery_results.csv
+```
+
+统计包含观察/无交易场次、首单/恢复单、直接盈利/恢复成功、30 止损、定时退出、官方/待结算、成交额、手续费、胜率和净盈亏。
+
+恢复策略每条底层成交保留唯一 `order_number`，页面使用 `trade_order_number` 作为交易订单号。同一方向的买入和后续卖出共用一个展示号；若一场出现恢复单，则首单与恢复单各有一个展示号。“最近市场”显示该场的首单/恢复单编号。旧账本缺少新字段时，页面按对应方向的买入成交号回填。
 
 ## 市场与阈值机制
 
