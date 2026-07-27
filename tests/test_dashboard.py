@@ -1,8 +1,29 @@
 import asyncio
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 from polybtc.config import AppConfig
 from polybtc.dashboard import DashboardHub
+
+
+def test_recovery_orders_table_uses_merged_order_columns() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+    header = (
+        "<th>订单编号</th><th>方向</th><th>买入时间</th>"
+        "<th>买入均价</th><th>买入金额</th><th>卖出时间</th>"
+        "<th>卖出均价</th><th>卖出金额</th><th>数量</th>"
+        "<th>手续费</th><th>官方结果</th><th>净盈亏</th>"
+    )
+
+    assert header in html
+    assert "<th>方向</th><th>买卖</th>" not in html
+    assert "${order.side || '--'}" not in html
+    assert "${recoveryReasonText(order.reason)}" not in html
+    assert 'id="recoveryTargetPrice" type="number" min="1" max="100"' in html
+    assert 'id="recoveryTriggerPrice" type="number" min="0" max="99"' in html
 
 
 def test_compact_market_exposes_threshold_verification() -> None:
@@ -55,6 +76,33 @@ def test_compact_book_keeps_only_top_prices() -> None:
     assert "asks" not in compact
 
 
+def test_recovery_order_stop_command_is_queued() -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+
+    response = hub.request_recovery_orders_stopped(True)
+
+    assert response == {
+        "accepted": True,
+        "recovery_orders_stopped": True,
+    }
+    assert hub.control_commands.get_nowait() == (
+        "btc_recovery_orders_stopped",
+        True,
+    )
+
+
+def test_recovery_statistics_reset_command_is_queued() -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+
+    response = hub.request_btc_recovery_statistics_reset()
+
+    assert response["accepted"] is True
+    assert response["statistics_reset_at"]
+    command, reset_at = hub.control_commands.get_nowait()
+    assert command == "btc_recovery_statistics_reset"
+    assert reset_at.tzinfo == timezone.utc
+
+
 def test_dashboard_keeps_btc_and_eth_snapshots_separate() -> None:
     hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
 
@@ -77,6 +125,76 @@ def test_dashboard_keeps_btc_and_eth_snapshots_separate() -> None:
     assert state["assets"]["BTC"]["tick"]["price"] == 64000
     assert state["assets"]["ETH"]["tick"]["price"] == 3500
     assert state["assets"]["ETH"]["market"]["asset"] == "ETH"
+
+
+def test_dashboard_keeps_global_history_out_of_asset_snapshots() -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+    pair_match = {
+        "status": "running",
+        "recent_orders": [{"payload": "p" * 1000} for _ in range(100)],
+    }
+    btc_recovery = {
+        "status": "running",
+        "recent_orders": [{"payload": "r" * 1000} for _ in range(300)],
+    }
+
+    for asset in ("BTC", "ETH"):
+        asyncio.run(
+            hub.publish(
+                {
+                    "asset": asset,
+                    "event": {
+                        "type": "pair_state",
+                        "payload": pair_match,
+                    },
+                    "market": {
+                        "asset": asset,
+                        "condition_id": f"{asset}-market",
+                    },
+                    "books": {},
+                    "pair_match": pair_match,
+                    "btc_recovery": btc_recovery,
+                }
+            )
+        )
+
+    body = hub.state_json()
+    state = json.loads(body)
+
+    assert state["pair_match"] == pair_match
+    assert state["btc_recovery"] == btc_recovery
+    assert state["event"] == {"type": "pair_state", "payload": {}}
+    assert all(
+        "pair_match" not in snapshot and "btc_recovery" not in snapshot
+        for snapshot in state["assets"].values()
+    )
+    assert len(body) < 500_000
+
+
+def test_dashboard_throttles_frequent_book_snapshots() -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+    last_push_at = datetime.now(timezone.utc)
+    hub.last_push_at = last_push_at
+
+    asyncio.run(
+        hub.publish(
+            {
+                "asset": "BTC",
+                "event": {
+                    "type": "book",
+                    "payload": {
+                        "direction": "UP",
+                        "bids": [{"price": 0.51, "size": 20}],
+                        "asks": [{"price": 0.53, "size": 15}],
+                    },
+                },
+                "books": {},
+            }
+        )
+    )
+
+    assert hub.last_push_at == last_push_at
+    assert hub.latest["event"]["type"] == "book"
 
 
 def test_recent_events_keep_only_fills() -> None:
@@ -423,8 +541,10 @@ def test_btc_recovery_config_waits_only_for_next_btc_market_and_persists(tmp_pat
             "btc_recovery": {
                 "enabled": True,
                 "entry_price_cents": 68,
-                "target_price_cents": 82,
-                "recovery_trigger_cents": 38,
+                "max_entry_price_cents": 92,
+                "target_price_cents": 100,
+                "recovery_target_price_cents": 87,
+                "recovery_trigger_cents": 0,
                 "stop_price_cents": 28,
                 "initial_quantity": 6,
                 "recovery_quantity": 18,
@@ -437,6 +557,7 @@ def test_btc_recovery_config_waits_only_for_next_btc_market_and_persists(tmp_pat
     assert response["config_status"] == "pending_next_btc_market"
     assert response["btc_recovery"]["enabled"] is False
     assert response["pending_btc_recovery"]["enabled"] is True
+    assert response["pending_btc_recovery"]["max_entry_price_cents"] == 92.0
     assert response["pending_btc_recovery"]["initial_quantity"] == 6.0
 
     new_start, new_end = "2026-07-20T00:05:00Z", "2026-07-20T00:10:00Z"
@@ -447,12 +568,14 @@ def test_btc_recovery_config_waits_only_for_next_btc_market_and_persists(tmp_pat
 
     asyncio.run(hub.publish(snapshot("BTC", "btc-new", new_start, new_end)))
     assert hub.config.btc_recovery.enabled is True
-    assert hub.config.btc_recovery.recovery_trigger_cents == 38.0
+    assert hub.config.btc_recovery.recovery_trigger_cents == 0.0
     assert hub.pending_config is None
 
     reloaded = DashboardHub(
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert reloaded.config.btc_recovery.enabled is True
-    assert reloaded.config.btc_recovery.target_price_cents == 82.0
+    assert reloaded.config.btc_recovery.max_entry_price_cents == 92.0
+    assert reloaded.config.btc_recovery.target_price_cents == 100.0
+    assert reloaded.config.btc_recovery.recovery_target_price_cents == 87.0
     assert reloaded.config.btc_recovery.exit_seconds_after_open == 270.0

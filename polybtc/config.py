@@ -224,7 +224,9 @@ class PairMatchConfig(BaseModel):
 class BtcRecoveryConfig(BaseModel):
     enabled: bool = False
     entry_price_cents: float = 70.0
+    max_entry_price_cents: float = 100.0
     target_price_cents: float = 80.0
+    recovery_target_price_cents: float = 80.0
     recovery_trigger_cents: float = 40.0
     stop_price_cents: float = 30.0
     initial_quantity: float = 5.0
@@ -234,14 +236,40 @@ class BtcRecoveryConfig(BaseModel):
 
     @field_validator(
         "entry_price_cents",
-        "target_price_cents",
-        "recovery_trigger_cents",
+        "recovery_target_price_cents",
         "stop_price_cents",
     )
     @classmethod
-    def valid_price_cents(cls, value: float) -> float:
+    def valid_open_price_cents(cls, value: float) -> float:
         if not 0 < value < 100:
             raise ValueError("BTC recovery prices must be between 0 and 100 cents")
+        return value
+
+    @field_validator("max_entry_price_cents")
+    @classmethod
+    def valid_max_entry_price_cents(cls, value: float) -> float:
+        if not 0 < value <= 100:
+            raise ValueError(
+                "BTC recovery maximum entry price must be above 0 and at most 100 cents"
+            )
+        return value
+
+    @field_validator("target_price_cents")
+    @classmethod
+    def valid_initial_target_price_cents(cls, value: float) -> float:
+        if not 0 < value <= 100:
+            raise ValueError(
+                "BTC recovery initial target must be above 0 and at most 100 cents"
+            )
+        return value
+
+    @field_validator("recovery_trigger_cents")
+    @classmethod
+    def valid_recovery_trigger_cents(cls, value: float) -> float:
+        if not 0 <= value < 100:
+            raise ValueError(
+                "BTC recovery trigger must be at least 0 and below 100 cents"
+            )
         return value
 
     @field_validator("initial_quantity", "recovery_quantity")
@@ -263,6 +291,10 @@ class BtcRecoveryConfig(BaseModel):
         if self.entry_seconds_after_open >= self.exit_seconds_after_open:
             raise ValueError(
                 "BTC recovery entry_seconds_after_open must be lower than exit_seconds_after_open"
+            )
+        if self.max_entry_price_cents <= self.entry_price_cents:
+            raise ValueError(
+                "BTC recovery max_entry_price_cents must be above entry_price_cents"
             )
         return self
 

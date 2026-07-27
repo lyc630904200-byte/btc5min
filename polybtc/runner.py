@@ -5,6 +5,8 @@ import math
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from queue import Empty as ThreadQueueEmpty
+from queue import Queue as ThreadQueue
 from typing import Any, Awaitable, Callable
 
 from .btc_recovery import BtcRecoveryEngine, BtcRecoveryRegistry
@@ -541,7 +543,7 @@ async def btc_recovery_resolution_loop(
     queue: asyncio.Queue[tuple[str, str, Any]],
 ) -> None:
     while True:
-        for slug in recovery_engine.pending_slugs():
+        for slug in recovery_engine.unresolved_slugs():
             try:
                 outcome = await btc_client.resolved_outcome(slug)
                 if outcome is not None:
@@ -823,7 +825,12 @@ def aggregate_engine_summaries(engines: dict[str, PaperEngine]) -> dict[str, flo
     return combined
 
 
-async def run_live(config: AppConfig, max_seconds: int | None = None, on_update: UpdateCallback | None = None) -> Path:
+async def run_live(
+    config: AppConfig,
+    max_seconds: int | None = None,
+    on_update: UpdateCallback | None = None,
+    control_commands: ThreadQueue[tuple[str, Any]] | None = None,
+) -> Path:
     output_dir = run_dir(config.data_dir)
     journal = RunJournal(output_dir)
     entry_registry = SqliteMarketEntryRegistry(config.data_dir / "market-entry-ledger.sqlite3")
@@ -911,6 +918,21 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 timer_tick = True
             else:
                 timer_tick = False
+            recovery_control_changed = False
+            if control_commands is not None:
+                while True:
+                    try:
+                        command, value = control_commands.get_nowait()
+                    except ThreadQueueEmpty:
+                        break
+                    if command == "btc_recovery_orders_stopped":
+                        recovery_engine.set_recovery_orders_stopped(bool(value))
+                        recovery_control_changed = True
+                    elif command == "btc_recovery_statistics_reset":
+                        recovery_engine.reset_statistics(
+                            value if isinstance(value, datetime) else None
+                        )
+                        recovery_control_changed = True
             # Give simultaneous market frames a tiny window to accumulate so
             # hundreds of depth-only deltas collapse to the newest complete
             # UP/DOWN snapshots.  This bounds added latency at 20 ms.
@@ -919,7 +941,7 @@ async def run_live(config: AppConfig, max_seconds: int | None = None, on_update:
                 while not queue.empty() and len(pending_events) < 500:
                     pending_events.append(queue.get_nowait())
             pair_input_changed = False
-            recovery_input_changed = timer_tick
+            recovery_input_changed = timer_tick or recovery_control_changed
             for asset in assets:
                 asset_events = [(event_type, payload) for event_asset, event_type, payload in pending_events if event_asset == asset]
                 if not asset_events:

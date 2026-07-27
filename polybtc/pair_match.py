@@ -492,6 +492,9 @@ class PairMatchEngine:
 
     def refresh_history(self) -> None:
         self._recent_orders = self.registry.recent_orders(100)
+        self._recent_order_payloads = [
+            order.model_dump(mode="json") for order in self._recent_orders
+        ]
         self._recent_markets = self.registry.recent_markets(20)
         self._summary = self.registry.summary()
 
@@ -808,6 +811,6 @@ class PairMatchEngine:
                 for direction, candidate in self.candidates.items()
             },
             "summary": self._summary,
-            "recent_orders": [order.model_dump(mode="json") for order in self._recent_orders],
+            "recent_orders": self._recent_order_payloads,
             "recent_markets": self._recent_markets,
         }

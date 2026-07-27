@@ -1,6 +1,6 @@
 # polybtc 交接文档
 
-更新时间：2026-07-24（Asia/Shanghai）
+更新时间：2026-07-26（Asia/Shanghai）
 
 ## 项目目标
 
@@ -12,32 +12,36 @@
 
 - 工作目录：`D:\Users\Administrator\Documents\btc5fenzhong`
 - 当前分支：`jiaoyi02`
-- HEAD：`cfe3c6d 新增 BTC 70/40 恢复策略分页前`
+- HEAD：`78cd41d btc 70/40策略`
 - 跟踪分支：`origin/jiaoyi02`
-- `jiaoyi02` 当前领先 `origin/jiaoyi02` 1 个本地提交。
-- 当前工作区新增第四页“BTC 70/40策略”及其配置、状态机、独立账本、CSV、实时接口、测试和文档；尚未提交，交接后不要 reset 或覆盖。
+- `jiaoyi02` 与 `origin/jiaoyi02` 当前指向同一提交。
+- 第四页“BTC 70/40策略”主体已在 `78cd41d` 提交并推送；提交之后还有恢复止盈、高于首单价入场、订单汇总展示等未提交修改，交接后不要 reset 或覆盖。
 - Dashboard 正在运行：`http://127.0.0.1:8765/`
 - WebSocket：`ws://127.0.0.1:8766/ws`
-- 更新文档时进程 PID：`17164`
-- 当前运行输出目录：`data\20260724T164550Z`
-- 更新文档时 BTC 市场为 `btc-updown-5m-1784904000`，ETH 市场为 `eth-updown-5m-1784904000`，两者起止时间完全一致。
+- 更新文档时进程 PID：`26856`
+- 当前运行输出目录：`data\20260725T165404Z`
+- 更新文档时 BTC 市场为 `btc-updown-5m-1784998200`。
 - 配对账本共有 489 组订单、388 个去重市场，订单号连续为 `1..489`；更新时 489 组已全部结算，无待结算订单。
 - 实际联网验证已确认：BTC/ETH 当前市场、各自 UP/DOWN token、两套 CLOB 盘口、`BTCUSDT`/`ETHUSDT` 和 `BTC/USD`/`ETH/USD` 实时 tick 均正常。
-- 配对模块当前已开启；实际运行模式为 `per_market`，每场上限 1。BTC 70/40 策略当前关闭，默认参数为 `70/80/40/30` 美分、首单 5 份、反向 15 份、窗口 `[0, 300)` 秒。当前无待生效配置。
-- 最近完整测试：`217 passed`
+- BTC 70/40 策略当前已启用，因此新的 BTC/ETH 配对和旧单币入场处于暂停状态；当前配置状态为 `active`，无待生效配置。
+- 恢复单下单控制当前为“已停止”，状态已从 SQLite 恢复；当前处于 `INITIAL_OPEN`。
+- BTC 恢复策略实际运行参数为：首单价 80¢、首单止盈 99¢、恢复单止盈 90¢、恢复触发/首单止损 1¢、恢复止损 20¢、首单 100 份、恢复单 400 份、窗口 `[150, 300)` 秒。
+- 更新文档时累计观察 313 场、完成 273 场、无交易 39 场、待结算 0 场，累计已实现净盈亏 `-304.76316592 USD`；已有 311 场补记官方结果。这是运行时快照，后续会继续变化。
+- 最近完整测试：`234 passed`
 
 当前工作区主要变更：
 
 ```text
-M  config.example.yaml
-M  polybtc/config.py
-M  polybtc/dashboard.py
-M  polybtc/journal.py
-M  polybtc/runner.py
-M  tests/test_dashboard.py
-M  web/index.html
-?? polybtc/btc_recovery.py
-?? tests/test_btc_recovery.py
+ M HANDOFF.md
+ M config.example.yaml
+ M polybtc/btc_recovery.py
+ M polybtc/config.py
+ M polybtc/dashboard.py
+ M polybtc/pair_match.py
+ M polybtc/runner.py
+ M tests/test_btc_recovery.py
+ M tests/test_dashboard.py
+ M web/index.html
 ```
 
 ## Git 与代理
@@ -55,7 +59,7 @@ http.proxy  = http://127.0.0.1:10808
 https.proxy = http://127.0.0.1:10808
 ```
 
-当前主线 `master` 位于 `03e1c80`，该提交为 `Merge branch 'codex/jiaoyi' into master`。当前开发分支 `jiaoyi02` 位于 `b85b16f`，并与 `origin/jiaoyi02` 一致。
+当前主线 `master` 位于 `03e1c80`，该提交为 `Merge branch 'codex/jiaoyi' into master`。当前开发分支 `jiaoyi02` 位于 `78cd41d`，并与 `origin/jiaoyi02` 一致。
 
 程序持久配置仍为 `http://127.0.0.1:10808`，但该端口没有监听；运行时网络现按“Windows 系统代理 → 手工配置代理 → 直连”的顺序尝试，并记住成功路径、复用 CLOB REST 连接。Windows 系统代理当前指向 Clash Verge mixed 入口 `127.0.0.1:7897`。仓库 Git 代理仍是 10808；最近一次推送使用单次命令参数走 Clash，未修改 Git 持久配置：
 
@@ -138,10 +142,10 @@ Invoke-RestMethod http://127.0.0.1:8765/api/config
 - `polybtc/orderbook.py`：按多档盘口模拟买卖成交。
 - `polybtc/entry_registry.py`：每市场入场次数的 SQLite 持久化注册表。
 - `polybtc/pair_match.py`：跨市场组合评估、每场交替、跨场 ABAB、固定 A/B、SQLite 配对账本、顺序订单号、结算与汇总。
-- `polybtc/btc_recovery.py`：BTC 70/40 本地模拟策略、严格限价、恢复单、原子清仓、官方结算、独立 SQLite 账本与连续订单号。
+- `polybtc/btc_recovery.py`：BTC 70/40 本地模拟策略、高于首单价入场、恢复单、原子清仓、官方结算、独立 SQLite 账本与连续订单号。
 - `polybtc/dashboard.py`：HTTP/WebSocket 服务和“保存后下一把生效”的运行时参数管理。
 - `web/index.html`：Dashboard 前端。
-- `tests/`：当前完整测试集，共 217 项。
+- `tests/`：当前完整测试集，共 234 项。
 
 ## BTC 70/40 恢复策略
 
@@ -150,7 +154,9 @@ Dashboard 第四页“BTC 70/40策略”仅使用 BTC 的 UP/DOWN 实时多档�
 ```text
 enabled
 entry_price_cents              默认 70
+max_entry_price_cents          默认 100（不限制）
 target_price_cents             默认 80
+recovery_target_price_cents    默认 80
 recovery_trigger_cents         默认 40
 stop_price_cents               默认 30
 initial_quantity               默认 5
@@ -159,11 +165,11 @@ entry_seconds_after_open       默认 0
 exit_seconds_after_open        默认 300
 ```
 
-首单只在 `[entry_seconds_after_open, exit_seconds_after_open)` 内观察“从首单价以下首次触及首单价”的方向；开始观察前不会记录信号。首单保持严格限价。恢复触发后，反向数量立即按实时完整卖盘模拟买入，不再使用 `100 - recovery_trigger_cents` 限价；仍要求盘口新鲜、可信、满足最小数量且能够完整成交，不允许部分成交。
+首单只在 `[entry_seconds_after_open, exit_seconds_after_open)` 内判断当前盘口。任一方向可信卖一价严格大于 `entry_price_cents` 且不高于 `max_entry_price_cents` 时锁定该方向；完整数量的所有卖盘档位均不高于最高限价才成交，深度不足或价格超过限价时等待，不追高、不部分成交。等于首单价时不买；最高限价默认 100，旧配置自动兼容。若价格跌回首单价或以下则解除方向锁定。恢复触发后，反向数量仍按实时完整卖盘模拟买入。
 
-首单完整可卖均价达到目标且含费净盈利大于 0 时直接退出；首单可卖均价跌到恢复触发价时，按派生限价完整买入反方向。恢复仓达到目标且两边可原子清仓、合计含费盈利时退出；恢复仓跌到止损价时无视盈亏原子清仓。到达配置出场秒数后无视目标持续尝试完整清仓；默认 300 秒没有提前缓冲，到期未卖持仓转为官方结算。
+首单完整可卖均价达到 `target_price_cents` 且含费净盈利大于 0 时直接退出；`target_price_cents=100` 是明确的关闭首单盘口止盈哨兵，即使盘口达到 100¢ 或提前到达配置出场时间也不产生首单卖出，未触发首单止损或恢复仓规则时会持有至官方结算。首单可卖均价跌到恢复触发价时完整买入反方向。恢复仓达到独立的 `recovery_target_price_cents` 且两边可原子清仓、合计含费盈利时退出；恢复仓跌到止损价时无视盈亏原子清仓。其他模式到达配置出场秒数后无视目标持续尝试完整清仓；默认 300 秒没有提前缓冲，到期未卖持仓转为官方结算。
 
-启用恢复策略时，新的 BTC/ETH 配对和旧单币入场暂停，既有仓位仍按原规则管理；停用后配对自动恢复。配置通过 `GET/POST /api/config` 和实时 `btc_recovery.config` 暴露，仅在下一场 BTC 市场原子生效。重启会恢复已成交持仓；如果已经开始观察但无法确认首次触发顺序，则跳过当前场。
+启用恢复策略时，新的 BTC/ETH 配对和旧单币入场暂停，既有仓位仍按原规则管理；停用后配对自动恢复。配置通过 `GET/POST /api/config` 和实时 `btc_recovery.config` 暴露，仅在下一场 BTC 市场原子生效。重启会恢复已成交持仓；未成交场次可直接根据重启后的当前盘口继续判断，不再因无法还原历史触发顺序而跳过。
 
 持久账本为 `data/btc-recovery-ledger.sqlite3`。每次运行目录同步写入：
 
@@ -176,6 +182,24 @@ btc_recovery_results.csv
 统计包含观察/无交易场次、首单/恢复单、直接盈利/恢复成功、30 止损、定时退出、官方/待结算、成交额、手续费、胜率和净盈亏。
 
 恢复策略每条底层成交保留唯一 `order_number`，页面使用 `trade_order_number` 作为交易订单号。同一方向的买入和后续卖出共用一个展示号；若一场出现恢复单，则首单与恢复单各有一个展示号。“最近市场”显示该场的首单/恢复单编号。旧账本缺少新字段时，页面按对应方向的买入成交号回填。
+
+页面提供“停止恢复单”即时控制按钮。停止后当前场和后续场次都不会新增 `recovery_entry`；`recovery_trigger_cents` 立即改作首单止损价，首单完整可卖均价小于或等于该值时以 `initial_stop` 退出。该值允许设为 `0`，此时明确关闭首单止损，即使盘口达到 0¢ 也不产生止损请求。深度不足时持久记录 `initial_stop_requested` 并持续重试，不允许部分卖出；已经成交的恢复仓继续按原规则退出。停止状态保存在 `btc_recovery_controls` 表并跨重启生效；同一按钮变为“恢复下单”，恢复后会取消尚未成交的首单止损请求，若恢复触发条件仍满足则重新执行恢复单逻辑。
+
+官方结果轮询覆盖所有已结束且 `official_outcome` 为空的恢复策略场次，不再只处理 `PENDING_SETTLEMENT`。直接止盈、首单/恢复止损、定时退出、无交易和安全跳过场次在 Gamma 严格标记 resolved 后都会补记 UP/DOWN；这些已完成场次只更新官方方向，不修改原退出原因、兑付或已实现盈亏。仍有持仓的待结算场次继续按官方结果计算兑付并关闭。启动时每轮优先补记最近 50 场，历史空白会逐批完成。
+
+实时 `btc_recovery.recent_orders` 返回最近 300 个逻辑订单，而不是最近 300 条底层成交。同一 `trade_order_number` 的买入和卖出合并为一条，分别返回买入/卖出时间、加权均价和金额，手续费为该订单全部成交手续费之和；多笔卖出按数量加权。Dashboard“最近订单”删除“买卖”和“原因”，一行展示完整买卖过程、官方结果和按方向计算的净盈亏。尚未卖出或仅等待官方结算时卖出字段显示 `--`。更新文档时接口返回最近 300 个历史逻辑订单。
+
+Dashboard 卡顿原因已经定位并修复：此前每次盘口更新都会在顶层、BTC/ETH 资产快照和事件载荷中重复携带配对及恢复策略的完整历史，同时反复序列化最近订单。现在历史只保留在顶层状态，重型事件改为轻量通知，配对/恢复历史使用刷新缓存，高频 WebSocket 快照限制为每 250ms 一次。实测 `/api/state` 从约 1.43MB 降至 366KB，响应约从 500ms 降至 199ms，单核运行 CPU 从约 62% 降至 23%；在线 WebSocket 客户端、盘口更新和 stderr 均正常。
+
+`78cd41d` 之后尚未提交的恢复策略改动包括：
+
+- 新增独立的“恢复单止盈”参数 `recovery_target_price_cents`，首单和恢复单可使用不同止盈价。
+- 首单止盈允许设置为 100，表示不按盘口止盈；停止恢复单时首单止损允许设置为 0，表示不止损。
+- 首单改为当前可信卖一价严格大于首单价时立即按实时多档盘口完整买入；等于时不买，且不要求此前价格低于首单价。深度不足且价格回到首单价或以下时解除锁定。
+- 恢复触发条件已经满足时立即按反方向实时盘口买入，不再使用 `100 - recovery_trigger_cents` 作为限价。
+- 同一方向的买入和卖出共用页面交易订单号，底层成交编号仍保持唯一；旧账本会自动回填展示号。
+- “最近订单”已按交易订单号合并为一行，并保留最近 300 个逻辑订单的完整成交。
+- 页面退出原因已汉化。
 
 ## 市场与阈值机制
 
@@ -236,7 +260,7 @@ ethereum-updown-5m-<Unix开始时间>
 
 前端“价格偏离”始终保留原值，并在其下方单独显示“有效偏离”；普通模式或空仓时两者相同，反买持仓期间只有有效偏离取反。偏离优势消失和盘口冲突使用有效偏离。
 
-当前未提交的 `web/index.html` 已删除价格偏离折线图及其前端历史数组、绘图函数和定时绘制调用；“价格偏离”和“有效偏离”两个实时数值仍保留。
+`web/index.html` 已删除价格偏离折线图及其前端历史数组、绘图函数和定时绘制调用；“价格偏离”和“有效偏离”两个实时数值仍保留。
 
 ## 当前实际生效参数
 
@@ -266,10 +290,18 @@ taker 费率参数                0.07
 第二单最低盈利价差            1 美分
 UP/DOWN 最小价格差            60 美分
 配对入场窗口                  开盘后 [150, 300) 秒
-每场配对上限                  2 组
+每场配对上限                  1 组
 严格方向控制                  开启
-方向模式                      per_market_two_stage
+方向模式                      per_market
+
+BTC 70/40策略                 开启
+首单价/首单止盈               80/90 美分
+恢复触发/恢复止盈/恢复止损     20/90/20 美分
+首单/恢复单数量               50/400 份
+恢复策略入场窗口              开盘后 [150, 300) 秒
 ```
+
+恢复策略启用期间，以上配对配置仍会保存，但新配对被暂停；停用恢复策略后才恢复执行。
 
 入场持续确认已做成前端按钮：
 

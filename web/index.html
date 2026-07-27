@@ -130,6 +130,10 @@
     .settings-note { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .settings-save { height: 32px; border: 0; border-radius: 6px; padding: 0 12px; background: var(--blue); color: #fff; font: inherit; font-size: 12px; font-weight: 760; cursor: pointer; white-space: nowrap; }
     .settings-save:disabled { cursor: wait; opacity: .65; }
+    .control-button { height: 28px; border: 0; border-radius: 6px; padding: 0 10px; background: var(--red); color: #fff; font: inherit; font-size: 12px; font-weight: 760; cursor: pointer; white-space: nowrap; }
+    .control-button.resume { background: var(--blue); }
+    .control-button:disabled { cursor: wait; opacity: .65; }
+    .panel-head-actions { display: flex; align-items: center; gap: 8px; }
 
     .tag { display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 0 8px; border-radius: 5px; font-size: 12px; font-weight: 740; white-space: nowrap; }
     .tag.green { color: var(--green); background: var(--green-soft); }
@@ -298,13 +302,20 @@
         </div>
 
         <div class="panel recovery-only">
-          <div class="panel-head"><div class="panel-title">BTC 恢复策略市场</div><div class="tag blue" id="recoveryMarketState">等待</div></div>
+          <div class="panel-head">
+            <div class="panel-title">BTC 恢复策略市场</div>
+            <div class="panel-head-actions">
+              <div class="tag blue" id="recoveryMarketState">等待</div>
+              <button class="control-button" id="recoveryOrderStopButton" type="button">停止恢复单</button>
+            </div>
+          </div>
           <div class="panel-body kv">
             <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="recoveryMarketSlug">--</div></div>
             <div class="kv-row"><div class="kv-label">窗口</div><div class="kv-value" id="recoveryMarketWindow">--</div></div>
             <div class="kv-row"><div class="kv-label">剩余</div><div class="kv-value" id="recoveryTimeLeft">--</div></div>
             <div class="kv-row"><div class="kv-label">策略阶段</div><div class="kv-value" id="recoveryPhase">--</div></div>
             <div class="kv-row"><div class="kv-label">首单方向</div><div class="kv-value" id="recoveryLockedDirection">--</div></div>
+            <div class="kv-row"><div class="kv-label">恢复单下单</div><div class="kv-value" id="recoveryOrderState">允许</div></div>
             <div class="kv-row"><div class="kv-label">运行原因</div><div class="kv-value" id="recoveryReason">--</div></div>
           </div>
         </div>
@@ -317,7 +328,7 @@
             <div class="metric"><div class="metric-name">完成 / 盈利</div><div class="metric-value" id="recoveryWinCounts">0 / 0</div></div>
             <div class="metric"><div class="metric-name">无交易场次</div><div class="metric-value" id="recoveryNoTrade">0</div></div>
             <div class="metric"><div class="metric-name">直接 / 恢复成功</div><div class="metric-value" id="recoveryTargetCounts">0 / 0</div></div>
-            <div class="metric"><div class="metric-name">30止损 / 定时退出</div><div class="metric-value" id="recoveryExitCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">止损 / 定时退出</div><div class="metric-value" id="recoveryExitCounts">0 / 0</div></div>
             <div class="metric"><div class="metric-name">官方 / 待结算</div><div class="metric-value" id="recoverySettlementCounts">0 / 0</div></div>
             <div class="metric"><div class="metric-name">胜率</div><div class="metric-value" id="recoveryWinRate">0%</div></div>
             <div class="metric"><div class="metric-name">总成交额</div><div class="metric-value" id="recoveryTurnover">$0.00</div></div>
@@ -472,7 +483,7 @@
         <div class="panel recovery-only">
           <div class="panel-head"><div class="panel-title">最近订单</div><div class="tag amber" id="recoveryOrderCount">0</div></div>
           <div class="panel-body">
-            <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>时间</th><th>阶段</th><th>方向</th><th>买卖</th><th>均价</th><th>数量</th><th>金额</th><th>手续费</th><th>原因</th></tr></thead><tbody id="recoveryOrders"></tbody></table></div>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>方向</th><th>买入时间</th><th>买入均价</th><th>买入金额</th><th>卖出时间</th><th>卖出均价</th><th>卖出金额</th><th>数量</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="recoveryOrders"></tbody></table></div>
           </div>
         </div>
       </section>
@@ -522,8 +533,10 @@
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">自动模拟交易</span><span class="setting-toggle"><input id="recoveryEnabled" type="checkbox">启用时暂停新的BTC/ETH配对</span></label>
               <label class="setting"><span class="setting-label">首单价（美分）</span><input class="setting-input" id="recoveryEntryPrice" type="number" min="1" max="99" step="0.01" required></label>
-              <label class="setting"><span class="setting-label">盈利目标（美分）</span><input class="setting-input" id="recoveryTargetPrice" type="number" min="1" max="99" step="0.01" required></label>
-              <label class="setting"><span class="setting-label">恢复触发价（美分）</span><input class="setting-input" id="recoveryTriggerPrice" type="number" min="1" max="99" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">首单最高限价（美分）</span><input class="setting-input" id="recoveryMaxEntryPrice" type="number" min="1" max="100" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">首单止盈（美分）</span><input class="setting-input" id="recoveryTargetPrice" type="number" min="1" max="100" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">恢复单止盈（美分）</span><input class="setting-input" id="recoveryRecoveryTargetPrice" type="number" min="1" max="99" step="0.01" required></label>
+              <label class="setting"><span class="setting-label" id="recoveryTriggerLabel">恢复触发价（美分）</span><input class="setting-input" id="recoveryTriggerPrice" type="number" min="0" max="99" step="0.01" required></label>
               <label class="setting"><span class="setting-label">反向买入方式</span><input class="setting-input" id="recoveryReverseLimit" type="text" disabled value="触发后按盘口"></label>
               <label class="setting"><span class="setting-label">反向止损价（美分）</span><input class="setting-input" id="recoveryStopPrice" type="number" min="1" max="99" step="0.01" required></label>
               <label class="setting"><span class="setting-label">首单数量（份）</span><input class="setting-input" id="recoveryInitialQty" type="number" min="0.01" step="0.01" required></label>
@@ -531,7 +544,7 @@
               <label class="setting"><span class="setting-label">入场时间（开盘后秒）</span><input class="setting-input" id="recoveryEntrySeconds" type="number" min="0" max="299" step="1" required></label>
               <label class="setting"><span class="setting-label">出场时间（开盘后秒，不含）</span><input class="setting-input" id="recoveryExitSeconds" type="number" min="1" max="300" step="1" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">严格限价且不部分成交；80¢后仅在完整清仓含费盈利时退出，30¢或定时出场不要求盈利。</span><button class="settings-save" id="saveRecovery" type="submit">保存策略参数</button></div>
+            <div class="settings-actions"><span class="settings-note">价格严格高于首单价，且完整数量均可在首单最高限价内成交时才买入，不追高、不部分成交；最高限价100表示不限制。首单止盈100表示等待官方结算，首单止损0表示不止损。</span><button class="settings-save" id="saveRecovery" type="submit">保存策略参数</button></div>
           </form>
         </div>
 
@@ -555,6 +568,7 @@
     let recoveryFormInitialized = false;
     let recoveryFormDirty = false;
     let renderedRecoveryConfigKey = '';
+    let recoveryControlBusy = false;
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -586,7 +600,9 @@
     const recoveryInputs = {
       enabled: 'recoveryEnabled',
       entry_price_cents: 'recoveryEntryPrice',
+      max_entry_price_cents: 'recoveryMaxEntryPrice',
       target_price_cents: 'recoveryTargetPrice',
+      recovery_target_price_cents: 'recoveryRecoveryTargetPrice',
       recovery_trigger_cents: 'recoveryTriggerPrice',
       stop_price_cents: 'recoveryStopPrice',
       initial_quantity: 'recoveryInitialQty',
@@ -794,6 +810,7 @@
     function recoveryReasonText(reason) {
       const labels = {
         direct_target: '首单止盈',
+        initial_stop: '首单止损',
         recovery_target: '恢复成功',
         recovery_stop: '恢复仓止损',
         timed_exit: '定时退出',
@@ -812,8 +829,14 @@
         entry_books_waiting: '等待可信盘口',
         observing_entry: '观察首单触发',
         entry_direction_locked: '首单方向已锁定',
+        entry_breakout_receded: '突破回落，等待再次突破',
+        entry_price_not_above_threshold: '价格未高于首单价',
+        entry_price_above_limit: '价格高于首单最高限价',
         initial_open: '首单持仓中',
+        holding_for_official_settlement: '等待官方结算',
         recovery_open: '恢复仓持仓中',
+        recovery_orders_stopped: '恢复单已停止',
+        initial_stop_waiting_for_depth: '首单止损等待深度',
         timed_exit_waiting_for_depth: '定时退出等待深度',
         no_open_position: '当前无持仓',
         book_unavailable: '盘口不可用',
@@ -857,6 +880,17 @@
       setText('recoveryTimeLeft', left == null ? '--' : `${left}s`);
       setText('recoveryPhase', phase);
       setText('recoveryLockedDirection', round?.locked_direction || '--');
+      const recoveryOrdersStopped = Boolean(recovery.recovery_orders_stopped);
+      setText('recoveryOrderState', recoveryOrdersStopped ? '已停止' : '允许');
+      setText(
+        'recoveryTriggerLabel',
+        recoveryOrdersStopped ? '首单止损价（美分）' : '恢复触发价（美分）',
+      );
+      const recoveryOrderStopButton = $('recoveryOrderStopButton');
+      recoveryOrderStopButton.textContent = recoveryOrdersStopped ? '恢复下单' : '停止恢复单';
+      recoveryOrderStopButton.className = `control-button${recoveryOrdersStopped ? ' resume' : ''}`;
+      recoveryOrderStopButton.disabled = recoveryControlBusy;
+      recoveryOrderStopButton.setAttribute('aria-pressed', recoveryOrdersStopped ? 'true' : 'false');
       setText(
         'recoveryReason',
         recoveryReasonText(recovery.last_reason || round?.close_reason),
@@ -956,12 +990,15 @@
         'recoveryOrders',
         JSON.stringify(orders),
         orders.map((order) => `<tr>
-          <td>${displayOrderNumber(order)}</td><td>${fmtTime(order.created_at)}</td>
-          <td>${order.stage || '--'}</td><td>${order.direction || '--'}</td>
-          <td>${order.side || '--'}</td><td>${fmtCents(order.avg_price)}</td>
-          <td>${fmtNumber(order.quantity, 2)}</td><td>$${fmtNumber(order.quote, 3)}</td>
-          <td>$${fmtNumber(order.fee_usd, 4)}</td><td>${recoveryReasonText(order.reason)}</td>
-        </tr>`).join('') || '<tr><td colspan="10">暂无策略订单</td></tr>',
+          <td>${displayOrderNumber(order)}</td><td>${order.direction || '--'}</td>
+          <td>${fmtTime(order.buy_created_at)}</td><td>${fmtCents(order.buy_avg_price)}</td>
+          <td>${order.buy_quote == null ? '--' : `$${fmtNumber(order.buy_quote, 3)}`}</td>
+          <td>${fmtTime(order.sell_created_at)}</td><td>${fmtCents(order.sell_avg_price)}</td>
+          <td>${order.sell_quote == null ? '--' : `$${fmtNumber(order.sell_quote, 3)}`}</td>
+          <td>${fmtNumber(order.quantity, 2)}</td><td>$${fmtNumber(order.fee_usd, 4)}</td>
+          <td>${order.official_outcome || '--'}</td>
+          <td>${order.net_pnl == null ? '--' : pnlHtml(order.net_pnl)}</td>
+        </tr>`).join('') || '<tr><td colspan="12">暂无策略订单</td></tr>',
       );
       renderRecoveryConfig(
         {
@@ -1561,6 +1598,39 @@
       }
     });
     $('recoveryTriggerPrice').addEventListener('input', syncRecoveryReverseLimit);
+    $('recoveryOrderStopButton').addEventListener('click', async () => {
+      if (recoveryControlBusy) return;
+      const stopped = Boolean(latest?.btc_recovery?.recovery_orders_stopped);
+      const nextStopped = !stopped;
+      if (
+        nextStopped
+        && !window.confirm('停止恢复单下单？已有持仓仍按当前退出规则管理。')
+      ) {
+        return;
+      }
+      recoveryControlBusy = true;
+      if (latest) scheduleRender(latest);
+      try {
+        const action = nextStopped ? 'stop' : 'resume';
+        const response = await fetch(`/api/btc-recovery/recovery-orders/${action}`, {
+          method: 'POST',
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '操作失败');
+        latest = {
+          ...(latest || {}),
+          btc_recovery: {
+            ...(latest?.btc_recovery || {}),
+            recovery_orders_stopped: payload.recovery_orders_stopped,
+          },
+        };
+      } catch (error) {
+        setText('recoveryReason', String(error.message || error).slice(0, 32));
+      } finally {
+        recoveryControlBusy = false;
+        if (latest) scheduleRender(latest);
+      }
+    });
     $('recoveryForm').addEventListener('input', () => {
       recoveryFormDirty = true;
       syncRecoveryReverseLimit();
@@ -1579,7 +1649,9 @@
           btc_recovery: {
             enabled: $('recoveryEnabled').checked,
             entry_price_cents: runtimeNumber('recoveryEntryPrice'),
+            max_entry_price_cents: runtimeNumber('recoveryMaxEntryPrice'),
             target_price_cents: runtimeNumber('recoveryTargetPrice'),
+            recovery_target_price_cents: runtimeNumber('recoveryRecoveryTargetPrice'),
             recovery_trigger_cents: runtimeNumber('recoveryTriggerPrice'),
             stop_price_cents: runtimeNumber('recoveryStopPrice'),
             initial_quantity: runtimeNumber('recoveryInitialQty'),

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from queue import Queue
 from threading import Thread
 from typing import Any, Callable
 
@@ -56,6 +57,7 @@ class DashboardHub:
             },
             "btc_recovery": {
                 "status": "starting",
+                "recovery_orders_stopped": False,
                 "config": self.config.btc_recovery.model_dump(mode="json"),
                 "round": None,
                 "positions": {},
@@ -71,6 +73,8 @@ class DashboardHub:
             **self.config_status_json(),
             "ws_url": self.ws_url,
         }
+        self.pair_match_state = self.latest["pair_match"]
+        self.btc_recovery_state = self.latest["btc_recovery"]
         self.events: list[dict[str, Any]] = []
         self.events_by_asset: dict[str, list[dict[str, Any]]] = {
             asset: [] for asset in self.config.sources.enabled_assets
@@ -79,8 +83,8 @@ class DashboardHub:
         self.clients: set[Any] = set()
         self.lock = asyncio.Lock()
         self.last_push_at = datetime.min.replace(tzinfo=timezone.utc)
-        self.push_interval = timedelta(milliseconds=50)
-        self.pair_state_push_interval = timedelta(milliseconds=100)
+        self.push_interval = timedelta(milliseconds=250)
+        self.control_commands: Queue[tuple[str, Any]] = Queue()
 
     @property
     def ws_url(self) -> str:
@@ -149,6 +153,16 @@ class DashboardHub:
                     "end_time": payload.get("end_time"),
                 },
             }
+        if event_type in {
+            "pair_state",
+            "pair_order",
+            "pair_settlement",
+            "btc_recovery_fill",
+            "btc_recovery_round",
+            "btc_recovery_result",
+            "btc_recovery_control",
+        }:
+            return {"type": event_type, "payload": {}}
         return event
 
     def compact_market(self, market: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -425,7 +439,9 @@ class DashboardHub:
         recovery_fields = {
             "enabled",
             "entry_price_cents",
+            "max_entry_price_cents",
             "target_price_cents",
+            "recovery_target_price_cents",
             "recovery_trigger_cents",
             "stop_price_cents",
             "initial_quantity",
@@ -530,6 +546,12 @@ class DashboardHub:
         snapshot = self.compact_snapshot(snapshot)
         snapshot["asset"] = asset
         async with self.lock:
+            pair_match = snapshot.pop("pair_match", None)
+            if isinstance(pair_match, dict) and pair_match:
+                self.pair_match_state = pair_match
+            btc_recovery = snapshot.pop("btc_recovery", None)
+            if isinstance(btc_recovery, dict) and btc_recovery:
+                self.btc_recovery_state = btc_recovery
             event = snapshot.get("event")
             compacted_event = self.compact_event(event) if event else None
             if compacted_event and compacted_event.get("type") == "fill":
@@ -548,6 +570,8 @@ class DashboardHub:
             primary = self.asset_snapshots.get(primary_asset, snapshot)
             combined = dict(primary)
             combined["assets"] = dict(self.asset_snapshots)
+            combined["pair_match"] = self.pair_match_state
+            combined["btc_recovery"] = self.btc_recovery_state
             combined["ws_url"] = self.ws_url
             combined.update(self.config_status_json())
             self.latest = combined
@@ -555,9 +579,7 @@ class DashboardHub:
             event_type = event.get("type") if isinstance(event, dict) else None
             minimum_interval = (
                 self.push_interval
-                if event_type in {"tick", "polymarket_tick"}
-                else self.pair_state_push_interval
-                if event_type == "pair_state"
+                if event_type in {"tick", "polymarket_tick", "book", "pair_state"}
                 else None
             )
             should_push = minimum_interval is None or now - self.last_push_at >= minimum_interval
@@ -598,6 +620,21 @@ class DashboardHub:
         payload.update(self.config_status_json())
         return orjson.dumps(payload)
 
+    def request_recovery_orders_stopped(self, stopped: bool) -> dict[str, Any]:
+        self.control_commands.put(("btc_recovery_orders_stopped", stopped))
+        return {
+            "accepted": True,
+            "recovery_orders_stopped": stopped,
+        }
+
+    def request_btc_recovery_statistics_reset(self) -> dict[str, Any]:
+        reset_at = datetime.now(timezone.utc)
+        self.control_commands.put(("btc_recovery_statistics_reset", reset_at))
+        return {
+            "accepted": True,
+            "statistics_reset_at": reset_at.isoformat(),
+        }
+
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     hub: DashboardHub
@@ -634,6 +671,15 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/btc-recovery/recovery-orders/stop":
+            self.send_json(202, self.hub.request_recovery_orders_stopped(True))
+            return
+        if self.path == "/api/btc-recovery/recovery-orders/resume":
+            self.send_json(202, self.hub.request_recovery_orders_stopped(False))
+            return
+        if self.path == "/api/btc-recovery/statistics/reset":
+            self.send_json(202, self.hub.request_btc_recovery_statistics_reset())
+            return
         if not self.path.startswith("/api/config"):
             self.send_error(404)
             return
@@ -695,7 +741,12 @@ async def run_dashboard(
     try:
         while True:
             try:
-                output_dir = await run_live(config, max_seconds=max_seconds, on_update=hub.publish)
+                output_dir = await run_live(
+                    config,
+                    max_seconds=max_seconds,
+                    on_update=hub.publish,
+                    control_commands=hub.control_commands,
+                )
                 return {**started, "output_dir": str(output_dir)}
             except asyncio.CancelledError:
                 raise

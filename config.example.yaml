@@ -77,9 +77,13 @@ pair_match:
 
 btc_recovery:
   enabled: false
-  # All prices are cents. Once recovery triggers, the reverse quantity buys at the live book.
+  # All prices are cents. Initial entry buys the live book on an upward breakout.
+  # Once recovery triggers, the reverse quantity also buys at the live book.
   entry_price_cents: 70
-  target_price_cents: 80
+  max_entry_price_cents: 100  # 100 disables the initial entry price cap.
+  target_price_cents: 80  # 100 disables the initial take-profit exit.
+  recovery_target_price_cents: 80
+  # When recovery orders are stopped, 0 disables the initial stop-loss.
   recovery_trigger_cents: 40
   stop_price_cents: 30
   initial_quantity: 5
