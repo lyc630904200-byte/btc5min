@@ -12,12 +12,15 @@ from rich.table import Table
 from .config import load_config
 from .dashboard import run_dashboard
 from .journal import RunJournal
+from .real_trading import RealTradingCredentials
 from .replay import replay_events
 from .report import build_report, latest_run_dir
 from .runner import check_connectivity, run_live, run_dir
 
 
-app = typer.Typer(help="Polymarket 5 minute BTC/ETH paper trading tool")
+app = typer.Typer(
+    help="Polymarket 5 minute BTC/ETH research and guarded execution tool"
+)
 console = Console()
 
 
@@ -67,13 +70,46 @@ def dashboard(
     port: int = typer.Option(8765, "--port", help="HTTP port"),
     ws_port: int = typer.Option(8766, "--ws-port", help="WebSocket port"),
     max_seconds: Optional[int] = typer.Option(None, "--max-seconds", help="Optional run duration for smoke tests"),
+    prompt_live_credentials: bool = typer.Option(
+        False,
+        "--prompt-live-credentials",
+        help="Prompt for ephemeral Polymarket credentials for this process",
+    ),
 ) -> None:
-    """Run live paper trading with a local realtime dashboard."""
+    """Run paper trading and the local realtime dashboard."""
     cfg = load_config(config)
+    live_credentials: RealTradingCredentials | None = None
+    if prompt_live_credentials:
+        private_key = typer.prompt(
+            "Polymarket private key (kept in memory only)",
+            hide_input=True,
+        ).strip()
+        if not private_key:
+            raise typer.BadParameter("private key cannot be empty")
+        wallet = typer.prompt(
+            "Polymarket funder wallet address (optional)",
+            default="",
+            show_default=False,
+        ).strip()
+        live_credentials = RealTradingCredentials(
+            private_key=private_key,
+            wallet=wallet or None,
+        )
+
     def show_started(payload: dict[str, object]) -> None:
         console.print(f"dashboard: {payload['url']}")
 
-    result = asyncio.run(run_dashboard(cfg, host=host, port=port, ws_port=ws_port, max_seconds=max_seconds, on_started=show_started))
+    result = asyncio.run(
+        run_dashboard(
+            cfg,
+            host=host,
+            port=port,
+            ws_port=ws_port,
+            max_seconds=max_seconds,
+            on_started=show_started,
+            live_credentials=live_credentials,
+        )
+    )
     print_json(result)
 
 

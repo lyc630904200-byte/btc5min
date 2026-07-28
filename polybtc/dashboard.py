@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import secrets
 import traceback
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -16,6 +17,7 @@ import orjson
 import websockets
 
 from .config import AppConfig
+from .real_trading import RealTradingCredentials
 from .runner import run_live
 
 
@@ -32,6 +34,7 @@ class DashboardHub:
         self.ws_port = ws_port
         self.config = config
         self.runtime_settings_path = self.config.data_dir / "dashboard-settings.json"
+        self.control_token = secrets.token_urlsafe(32)
         self.pending_config: dict[str, dict[str, Any]] | None = None
         self.pending_config_scope = "aligned"
         self.pending_after_market_id: str | None = None
@@ -66,15 +69,39 @@ class DashboardHub:
                 "recent_orders": [],
                 "recent_rounds": [],
             },
+            "btc_dynamic": {
+                "status": "starting",
+                "config": self.config.btc_dynamic.model_dump(mode="json"),
+                "round": None,
+                "diagnostics": {},
+                "candidates": {},
+                "confirmations": {},
+                "summary": {},
+                "recent_orders": [],
+                "recent_rounds": [],
+            },
+            "real_trading": {
+                "status": "starting",
+                "armed": False,
+                "credentials_loaded": False,
+                "config": self.config.real_trading.model_dump(mode="json"),
+                "account": {},
+                "shadow_gate": {},
+                "summary": {},
+                "recent_orders": [],
+            },
             "events": [],
             "assets": {},
             "strategy": self.config_json()["strategy"],
             "risk": self.config_json()["risk"],
             **self.config_status_json(),
             "ws_url": self.ws_url,
+            "control_token": self.control_token,
         }
         self.pair_match_state = self.latest["pair_match"]
         self.btc_recovery_state = self.latest["btc_recovery"]
+        self.btc_dynamic_state = self.latest["btc_dynamic"]
+        self.real_trading_state = self.latest["real_trading"]
         self.events: list[dict[str, Any]] = []
         self.events_by_asset: dict[str, list[dict[str, Any]]] = {
             asset: [] for asset in self.config.sources.enabled_assets
@@ -161,6 +188,12 @@ class DashboardHub:
             "btc_recovery_round",
             "btc_recovery_result",
             "btc_recovery_control",
+            "btc_dynamic_order",
+            "btc_dynamic_round",
+            "btc_dynamic_settlement",
+            "btc_dynamic_statistics_reset",
+            "btc_dynamic_model_reset",
+            "btc_dynamic_model_reset_pending",
         }:
             return {"type": event_type, "payload": {}}
         return event
@@ -247,6 +280,8 @@ class DashboardHub:
             },
             "pair_match": self.config.pair_match.model_dump(mode="json"),
             "btc_recovery": self.config.btc_recovery.model_dump(mode="json"),
+            "btc_dynamic": self.config.btc_dynamic.model_dump(mode="json"),
+            "real_trading": self.config.real_trading.model_dump(mode="json"),
         }
 
     def config_status_json(self) -> dict[str, Any]:
@@ -263,6 +298,8 @@ class DashboardHub:
             "pending_risk": pending.get("risk"),
             "pending_pair_match": pending.get("pair_match"),
             "pending_btc_recovery": pending.get("btc_recovery"),
+            "pending_btc_dynamic": pending.get("btc_dynamic"),
+            "pending_real_trading": pending.get("real_trading"),
         }
 
     def _load_runtime_settings(self) -> None:
@@ -284,10 +321,16 @@ class DashboardHub:
                 pair_payload.update(active.get("pair_match") or {})
                 recovery_payload = self.config.btc_recovery.model_dump()
                 recovery_payload.update(active.get("btc_recovery") or {})
+                dynamic_payload = self.config.btc_dynamic.model_dump()
+                dynamic_payload.update(active.get("btc_dynamic") or {})
+                real_payload = self.config.real_trading.model_dump()
+                real_payload.update(active.get("real_trading") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
                 risk = type(self.config.risk).model_validate(risk_payload)
                 pair_match = type(self.config.pair_match).model_validate(pair_payload)
                 btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
+                btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
+                real_trading = type(self.config.real_trading).model_validate(real_payload)
             except (TypeError, ValueError):
                 pass
             else:
@@ -295,6 +338,8 @@ class DashboardHub:
                 self.config.risk = risk
                 self.config.pair_match = pair_match
                 self.config.btc_recovery = btc_recovery
+                self.config.btc_dynamic = btc_dynamic
+                self.config.real_trading = real_trading
 
         pending = payload.get("pending")
         if isinstance(pending, dict):
@@ -307,10 +352,16 @@ class DashboardHub:
                 pair_payload.update(pending.get("pair_match") or {})
                 recovery_payload = self.config.btc_recovery.model_dump()
                 recovery_payload.update(pending.get("btc_recovery") or {})
+                dynamic_payload = self.config.btc_dynamic.model_dump()
+                dynamic_payload.update(pending.get("btc_dynamic") or {})
+                real_payload = self.config.real_trading.model_dump()
+                real_payload.update(pending.get("real_trading") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
                 risk = type(self.config.risk).model_validate(risk_payload)
                 pair_match = type(self.config.pair_match).model_validate(pair_payload)
                 btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
+                btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
+                real_trading = type(self.config.real_trading).model_validate(real_payload)
             except (TypeError, ValueError):
                 return
             self.pending_config = {
@@ -318,6 +369,8 @@ class DashboardHub:
                 "risk": risk.model_dump(),
                 "pair_match": pair_match.model_dump(),
                 "btc_recovery": btc_recovery.model_dump(),
+                "btc_dynamic": btc_dynamic.model_dump(),
+                "real_trading": real_trading.model_dump(),
             }
             scope = payload.get("pending_scope")
             self.pending_config_scope = "btc" if scope == "btc" else "aligned"
@@ -336,6 +389,8 @@ class DashboardHub:
                 "risk": self.config.risk.model_dump(),
                 "pair_match": self.config.pair_match.model_dump(),
                 "btc_recovery": self.config.btc_recovery.model_dump(),
+                "btc_dynamic": self.config.btc_dynamic.model_dump(),
+                "real_trading": self.config.real_trading.model_dump(),
             },
             "pending": self.pending_config,
             "pending_scope": self.pending_config_scope if self.pending_config else None,
@@ -386,6 +441,12 @@ class DashboardHub:
         self.config.btc_recovery = type(self.config.btc_recovery).model_validate(
             self.pending_config["btc_recovery"]
         )
+        self.config.btc_dynamic = type(self.config.btc_dynamic).model_validate(
+            self.pending_config["btc_dynamic"]
+        )
+        self.config.real_trading = type(self.config.real_trading).model_validate(
+            self.pending_config["real_trading"]
+        )
         self.pending_config = None
         self.pending_config_scope = "aligned"
         self.pending_after_market_id = None
@@ -398,6 +459,8 @@ class DashboardHub:
         risk_update = payload.get("risk")
         pair_update = payload.get("pair_match")
         recovery_update = payload.get("btc_recovery")
+        dynamic_update = payload.get("btc_dynamic")
+        real_update = payload.get("real_trading")
         if strategy_update is not None and not isinstance(strategy_update, dict):
             raise ValueError("strategy must be an object")
         if risk_update is not None and not isinstance(risk_update, dict):
@@ -406,8 +469,23 @@ class DashboardHub:
             raise ValueError("pair_match must be an object")
         if recovery_update is not None and not isinstance(recovery_update, dict):
             raise ValueError("btc_recovery must be an object")
-        if not strategy_update and not risk_update and not pair_update and not recovery_update:
-            raise ValueError("strategy, risk, pair_match, or btc_recovery settings are required")
+        if dynamic_update is not None and not isinstance(dynamic_update, dict):
+            raise ValueError("btc_dynamic must be an object")
+        if real_update is not None and not isinstance(real_update, dict):
+            raise ValueError("real_trading must be an object")
+        if not any(
+            (
+                strategy_update,
+                risk_update,
+                pair_update,
+                recovery_update,
+                dynamic_update,
+                real_update,
+            )
+        ):
+            raise ValueError(
+                "strategy, risk, pair_match, btc_recovery, btc_dynamic, or real_trading settings are required"
+            )
 
         strategy_fields = {
             "min_entry_edge_usd",
@@ -449,16 +527,52 @@ class DashboardHub:
             "entry_seconds_after_open",
             "exit_seconds_after_open",
         }
+        dynamic_fields = {
+            "enabled",
+            "quantity",
+            "entry_seconds_after_open",
+            "exit_seconds_after_open",
+            "min_net_edge_cents",
+            "slippage_reserve_cents",
+            "confirmation_seconds",
+            "confirmation_updates",
+            "short_volatility_window_seconds",
+            "long_volatility_window_seconds",
+            "volatility_floor_bps",
+            "max_probability_correction_points",
+        }
+        real_fields = {
+            "enabled",
+            "order_quantity",
+            "max_order_notional_usd",
+            "daily_loss_limit_usd",
+            "max_orders_per_day",
+            "auto_redeem",
+            "shadow_required_signals",
+        }
         unexpected_strategy = set(strategy_update or {}) - strategy_fields
         unexpected_risk = set(risk_update or {}) - risk_fields
         unexpected_pair = set(pair_update or {}) - pair_fields
         unexpected_recovery = set(recovery_update or {}) - recovery_fields
-        if unexpected_strategy or unexpected_risk or unexpected_pair or unexpected_recovery:
+        unexpected_dynamic = set(dynamic_update or {}) - dynamic_fields
+        unexpected_real = set(real_update or {}) - real_fields
+        if any(
+            (
+                unexpected_strategy,
+                unexpected_risk,
+                unexpected_pair,
+                unexpected_recovery,
+                unexpected_dynamic,
+                unexpected_real,
+            )
+        ):
             names = sorted(
                 unexpected_strategy
                 | unexpected_risk
                 | unexpected_pair
                 | unexpected_recovery
+                | unexpected_dynamic
+                | unexpected_real
             )
             raise ValueError(f"unsupported runtime settings: {', '.join(names)}")
 
@@ -473,6 +587,14 @@ class DashboardHub:
             pending.get("btc_recovery") or self.config.btc_recovery.model_dump()
         )
         recovery_payload.update(recovery_update or {})
+        dynamic_payload = dict(
+            pending.get("btc_dynamic") or self.config.btc_dynamic.model_dump()
+        )
+        dynamic_payload.update(dynamic_update or {})
+        real_payload = dict(
+            pending.get("real_trading") or self.config.real_trading.model_dump()
+        )
+        real_payload.update(real_update or {})
         if pair_payload.get("alternation_mode") == "per_market_two_stage":
             pair_payload["alternate_directions"] = True
             pair_payload["max_pairs_per_market"] = 2
@@ -486,16 +608,20 @@ class DashboardHub:
         risk = type(self.config.risk).model_validate(risk_payload)
         pair_match = type(self.config.pair_match).model_validate(pair_payload)
         btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
+        btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
+        real_trading = type(self.config.real_trading).model_validate(real_payload)
         self.pending_config = {
             "strategy": strategy.model_dump(),
             "risk": risk.model_dump(),
             "pair_match": pair_match.model_dump(),
             "btc_recovery": btc_recovery.model_dump(),
+            "btc_dynamic": btc_dynamic.model_dump(),
+            "real_trading": real_trading.model_dump(),
         }
-        recovery_only = bool(recovery_update) and not any(
+        btc_only = bool(recovery_update or dynamic_update or real_update) and not any(
             (strategy_update, risk_update, pair_update)
         )
-        self.pending_config_scope = "btc" if recovery_only else "aligned"
+        self.pending_config_scope = "btc" if btc_only else "aligned"
         if self.pending_config_scope == "btc":
             current_btc = self.current_btc_market_id()
             self.pending_after_market_ids = {current_btc} if current_btc else set()
@@ -552,6 +678,12 @@ class DashboardHub:
             btc_recovery = snapshot.pop("btc_recovery", None)
             if isinstance(btc_recovery, dict) and btc_recovery:
                 self.btc_recovery_state = btc_recovery
+            btc_dynamic = snapshot.pop("btc_dynamic", None)
+            if isinstance(btc_dynamic, dict) and btc_dynamic:
+                self.btc_dynamic_state = btc_dynamic
+            real_trading = snapshot.pop("real_trading", None)
+            if isinstance(real_trading, dict) and real_trading:
+                self.real_trading_state = real_trading
             event = snapshot.get("event")
             compacted_event = self.compact_event(event) if event else None
             if compacted_event and compacted_event.get("type") == "fill":
@@ -572,7 +704,10 @@ class DashboardHub:
             combined["assets"] = dict(self.asset_snapshots)
             combined["pair_match"] = self.pair_match_state
             combined["btc_recovery"] = self.btc_recovery_state
+            combined["btc_dynamic"] = self.btc_dynamic_state
+            combined["real_trading"] = self.real_trading_state
             combined["ws_url"] = self.ws_url
+            combined["control_token"] = self.control_token
             combined.update(self.config_status_json())
             self.latest = combined
             now = datetime.now(timezone.utc)
@@ -615,6 +750,7 @@ class DashboardHub:
         payload = dict(self.latest)
         payload["events"] = list(payload.get("events") or [])
         payload["ws_url"] = self.ws_url
+        payload["control_token"] = self.control_token
         payload["strategy"] = {**self.config_json()["strategy"], **(payload.get("strategy") or {})}
         payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}
         payload.update(self.config_status_json())
@@ -634,6 +770,27 @@ class DashboardHub:
             "accepted": True,
             "statistics_reset_at": reset_at.isoformat(),
         }
+
+    def request_btc_dynamic_statistics_reset(self) -> dict[str, Any]:
+        reset_at = datetime.now(timezone.utc)
+        self.control_commands.put(("btc_dynamic_statistics_reset", reset_at))
+        return {
+            "accepted": True,
+            "statistics_reset_at": reset_at.isoformat(),
+        }
+
+    def request_btc_dynamic_model_reset(self) -> dict[str, Any]:
+        requested_at = datetime.now(timezone.utc)
+        self.control_commands.put(("btc_dynamic_model_reset", requested_at))
+        return {
+            "accepted": True,
+            "model_reset_pending": True,
+            "requested_at": requested_at.isoformat(),
+        }
+
+    def request_real_trading_control(self, command: str) -> dict[str, Any]:
+        self.control_commands.put((f"real_trading_{command}", True))
+        return {"accepted": True, "command": command}
 
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
@@ -664,13 +821,56 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if self.path.startswith("/api/config"):
-            self.send_json(200, self.hub.config_json())
+            self.send_json(
+                200,
+                {**self.hub.config_json(), **self.hub.config_status_json()},
+            )
             return
         if self.path == "/" or self.path.startswith("/dashboard"):
             self.path = "/index.html"
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/real-trading/"):
+            if self.headers.get("X-Polybtc-Control-Token") != self.hub.control_token:
+                self.send_json(403, {"error": "invalid control token"})
+                return
+            action = self.path.removeprefix("/api/real-trading/")
+            allowed = {
+                "connect",
+                "prepare-allowance",
+                "arm",
+                "disarm",
+                "emergency-stop",
+                "resume",
+                "shadow-reset",
+            }
+            if action not in allowed:
+                self.send_error(404)
+                return
+            confirmations = {
+                "connect": "CONNECT_REAL_ACCOUNT",
+                "prepare-allowance": "PREPARE_TRADING_ALLOWANCE",
+                "arm": "ENABLE_REAL_TRADING",
+            }
+            required_confirmation = confirmations.get(action)
+            if required_confirmation is not None:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(
+                        self.rfile.read(length).decode("utf-8") or "{}"
+                    )
+                except (ValueError, json.JSONDecodeError):
+                    self.send_json(400, {"error": "invalid confirmation payload"})
+                    return
+                if payload.get("confirmation") != required_confirmation:
+                    self.send_json(400, {"error": "explicit confirmation required"})
+                    return
+            self.send_json(
+                202,
+                self.hub.request_real_trading_control(action.replace("-", "_")),
+            )
+            return
         if self.path == "/api/btc-recovery/recovery-orders/stop":
             self.send_json(202, self.hub.request_recovery_orders_stopped(True))
             return
@@ -679,6 +879,21 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
         if self.path == "/api/btc-recovery/statistics/reset":
             self.send_json(202, self.hub.request_btc_recovery_statistics_reset())
+            return
+        if self.path == "/api/btc-dynamic/statistics/reset":
+            self.send_json(202, self.hub.request_btc_dynamic_statistics_reset())
+            return
+        if self.path == "/api/btc-dynamic/model/reset":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except (ValueError, json.JSONDecodeError):
+                self.send_json(400, {"error": "invalid confirmation payload"})
+                return
+            if payload.get("confirmation") != "RESET_DYNAMIC_MODEL":
+                self.send_json(400, {"error": "explicit confirmation required"})
+                return
+            self.send_json(202, self.hub.request_btc_dynamic_model_reset())
             return
         if not self.path.startswith("/api/config"):
             self.send_error(404)
@@ -728,7 +943,10 @@ async def run_dashboard(
     ws_port: int = 8766,
     max_seconds: int | None = None,
     on_started: Callable[[dict[str, Any]], None] | None = None,
+    live_credentials: RealTradingCredentials | None = None,
 ) -> dict[str, Any]:
+    if live_credentials is not None and host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("real trading credentials require a loopback dashboard host")
     http_port = choose_port(host, port)
     websocket_port = choose_port(host, ws_port if ws_port != http_port else http_port + 1)
     web_dir = Path(__file__).resolve().parent.parent / "web"
@@ -746,6 +964,7 @@ async def run_dashboard(
                     max_seconds=max_seconds,
                     on_update=hub.publish,
                     control_commands=hub.control_commands,
+                    live_credentials=live_credentials,
                 )
                 return {**started, "output_dir": str(output_dir)}
             except asyncio.CancelledError:

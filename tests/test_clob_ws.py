@@ -262,17 +262,24 @@ def test_clob_best_bid_ask_can_seed_a_book_and_reject_stale_update() -> None:
     assert books["up"].best_ask == 0.51
 
 
-def test_connections_prefer_system_proxy_before_configured_proxy_and_direct() -> None:
+def test_connections_prefer_system_proxy_before_configured_proxy_and_direct(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "polybtc.clients.system_proxy_url",
+        lambda: "http://127.0.0.1:7897",
+    )
     attempts = websocket_option_attempts()
     if "proxy" in attempts[0]:
-        assert attempts == [{}, {"proxy": None}]
+        assert attempts == [
+            {"proxy": "http://127.0.0.1:7897"},
+            {"proxy": None},
+        ]
         assert websocket_option_attempts("http://127.0.0.1:10808") == [
-            {},
+            {"proxy": "http://127.0.0.1:7897"},
             {"proxy": "http://127.0.0.1:10808"},
             {"proxy": None},
         ]
     assert http_option_attempts("http://127.0.0.1:10808") == [
-        (None, True),
+        ("http://127.0.0.1:7897", False),
         ("http://127.0.0.1:10808", False),
         (None, False),
     ]
@@ -415,6 +422,10 @@ def test_book_http_requests_reuse_successful_system_proxy_session(monkeypatch) -
             self.closed = True
 
     monkeypatch.setattr("polybtc.clients.httpx.AsyncClient", Client)
+    monkeypatch.setattr(
+        "polybtc.clients.system_proxy_url",
+        lambda: "http://127.0.0.1:7897",
+    )
     polymarket = PolymarketClient(SourceConfig(proxy_url="http://127.0.0.1:10808"))
 
     async def fetch_twice() -> None:
@@ -425,6 +436,7 @@ def test_book_http_requests_reuse_successful_system_proxy_session(monkeypatch) -
     asyncio.run(fetch_twice())
 
     assert len(clients) == 1
-    assert clients[0].kwargs["trust_env"] is True
+    assert clients[0].kwargs["trust_env"] is False
+    assert clients[0].kwargs["proxy"] == "http://127.0.0.1:7897"
     assert clients[0].calls == 2
     assert clients[0].closed is True

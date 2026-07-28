@@ -50,6 +50,8 @@
       border-bottom: 1px solid var(--line);
       background: rgba(255, 255, 255, .92);
       backdrop-filter: blur(10px);
+      width: 100%;
+      min-width: 0;
     }
 
     .brand { display: flex; align-items: center; gap: 10px; min-width: 220px; }
@@ -57,11 +59,13 @@
     h1 { margin: 0; font-size: 16px; line-height: 1; }
     .subline { margin-top: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
     .topbar { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
-    .asset-switch { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .asset-switch { display: inline-flex; gap: 4px; max-width: 100%; overflow-x: auto; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
     .asset-tab { border: 0; border-radius: 5px; background: transparent; color: var(--muted); padding: 6px 12px; font-weight: 800; cursor: pointer; }
     .asset-tab.active { background: var(--ink); color: #fff; }
     .pair-only { display: none; }
     .recovery-only { display: none; }
+    .real-only { display: none; }
+    .dynamic-only { display: none; }
     body.pair-mode .pair-only { display: block; }
     body.pair-mode .single-only,
     body.pair-mode .single-only-section { display: none; }
@@ -73,6 +77,23 @@
     body.recovery-mode .single-only-section,
     body.recovery-mode .eth-trade-market { display: none; }
     body.recovery-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr) minmax(330px, 430px); }
+    body.real-mode .real-only { display: block; }
+    body.real-mode section.real-only { display: grid; }
+    body.real-mode .single-only,
+    body.real-mode .pair-only,
+    body.real-mode .recovery-only,
+    body.real-mode .single-only-section,
+    body.real-mode .eth-trade-market { display: none; }
+    body.real-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr) minmax(330px, 430px); }
+    body.dynamic-mode .dynamic-only { display: block; }
+    body.dynamic-mode section.dynamic-only { display: grid; }
+    body.dynamic-mode .single-only,
+    body.dynamic-mode .pair-only,
+    body.dynamic-mode .recovery-only,
+    body.dynamic-mode .real-only,
+    body.dynamic-mode .single-only-section,
+    body.dynamic-mode .eth-trade-market { display: none; }
+    body.dynamic-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr) minmax(330px, 430px); }
 
     .pill {
       display: inline-flex;
@@ -98,9 +119,11 @@
       gap: 14px;
       padding: 14px;
       min-height: 0;
+      width: 100%;
+      min-width: 0;
     }
 
-    .stack { display: grid; gap: 14px; align-content: start; }
+    .stack { display: grid; gap: 14px; align-content: start; min-width: 0; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
     .panel-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 13px; border-bottom: 1px solid var(--line); background: var(--panel-soft); }
     .panel-title { font-size: 13px; font-weight: 760; color: var(--ink); white-space: nowrap; }
@@ -206,6 +229,8 @@
     @media (max-width: 1180px) {
       .shell { grid-template-columns: 320px 1fr; }
       body.recovery-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr); }
+      body.real-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
+      body.dynamic-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
       .right { grid-column: 1 / -1; }
     }
 
@@ -216,6 +241,8 @@
       .shell { grid-template-columns: 1fr; padding: 10px; }
       body.pair-mode .shell { grid-template-columns: 1fr; }
       body.recovery-mode .shell { grid-template-columns: 1fr; }
+      body.real-mode .shell { grid-template-columns: 1fr; }
+      body.dynamic-mode .shell { grid-template-columns: 1fr; }
       .book-grid, .signal, .metrics, .settings-grid, .pair-grid, .scenario-grid { grid-template-columns: 1fr; }
       .metric-value { font-size: 21px; }
     }
@@ -237,6 +264,8 @@
           <button class="asset-tab" id="assetETH" type="button" role="tab" aria-selected="false">ETH</button>
           <button class="asset-tab" id="assetPAIR" type="button" role="tab" aria-selected="false">BTC/ETH 匹配</button>
           <button class="asset-tab" id="assetRECOVERY" type="button" role="tab" aria-selected="false">BTC 70/40策略</button>
+          <button class="asset-tab" id="assetREAL" type="button" role="tab" aria-selected="false">真实交易</button>
+          <button class="asset-tab" id="assetDYNAMIC" type="button" role="tab" aria-selected="false">BTC动态胜率</button>
         </div>
         <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
         <div class="pill"><span id="wsText">WebSocket</span></div>
@@ -320,6 +349,31 @@
           </div>
         </div>
 
+        <div class="panel real-only">
+          <div class="panel-head"><div class="panel-title">真实账户</div><div class="tag amber" id="realAccountState">未连接</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">凭据</div><div class="kv-value" id="realCredentials">未加载</div></div>
+            <div class="kv-row"><div class="kv-label">钱包</div><div class="kv-value" id="realWallet">--</div></div>
+            <div class="kv-row"><div class="kv-label">钱包类型</div><div class="kv-value" id="realWalletType">--</div></div>
+            <div class="kv-row"><div class="kv-label">地区检查</div><div class="kv-value" id="realGeo">--</div></div>
+            <div class="kv-row"><div class="kv-label">用户WS</div><div class="kv-value" id="realUserWs">--</div></div>
+            <div class="kv-row"><div class="kv-label">余额</div><div class="kv-value" id="realBalance">--</div></div>
+            <div class="kv-row"><div class="kv-label">授权</div><div class="kv-value" id="realAllowance">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel real-only">
+          <div class="panel-head"><div class="panel-title">影子验证</div><div class="tag blue" id="realMode">影子</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">有效信号</div><div class="metric-value" id="realShadowProgress">0 / 20</div></div>
+            <div class="metric"><div class="metric-name">严重错误</div><div class="metric-value" id="realShadowErrors">0</div></div>
+            <div class="metric"><div class="metric-name">官方最小量</div><div class="metric-value" id="realOfficialMinimum">--</div></div>
+            <div class="metric"><div class="metric-name">实盘门槛</div><div class="metric-value" id="realGateState">未解锁</div></div>
+            <div class="metric"><div class="metric-name">真实订单</div><div class="metric-value" id="realOrderCount">0</div></div>
+            <div class="metric"><div class="metric-name">真实净盈亏</div><div class="metric-value" id="realPnl">0.00</div></div>
+          </div>
+        </div>
+
         <div class="panel recovery-only">
           <div class="panel-head"><div class="panel-title">累计统计</div><div class="tag amber">paper</div></div>
           <div class="panel-body metrics">
@@ -336,6 +390,37 @@
             <div class="metric"><div class="metric-name">净盈亏</div><div class="metric-value" id="recoveryPnl">0.00</div></div>
           </div>
         </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">动态模型</div><div class="tag blue" id="dynamicState">等待</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="dynamicMarketSlug">--</div></div>
+            <div class="kv-row"><div class="kv-label">状态</div><div class="kv-value" id="dynamicReason">--</div></div>
+            <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="dynamicTimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink开盘</div><div class="kv-value" id="dynamicOpenPrice">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink当前</div><div class="kv-value" id="dynamicCurrentPrice">--</div></div>
+            <div class="kv-row"><div class="kv-label">Z值 / 波动率</div><div class="kv-value" id="dynamicZVol">--</div></div>
+            <div class="kv-row"><div class="kv-label">训练快照</div><div class="kv-value" id="dynamicSnapshotSchedule">--</div></div>
+            <div class="kv-row"><div class="kv-label">模型版本</div><div class="kv-value" id="dynamicModelVersion">--</div></div>
+            <div class="kv-row"><div class="kv-label">已训练市场</div><div class="kv-value" id="dynamicTrainedMarkets">0</div></div>
+          </div>
+        </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">在线与公式</div><div class="tag amber">paper</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">公式 UP</div><div class="metric-value" id="dynamicFormulaUp">--</div></div>
+            <div class="metric"><div class="metric-name">在线 UP</div><div class="metric-value" id="dynamicOnlineUp">--</div></div>
+            <div class="metric"><div class="metric-name">修正</div><div class="metric-value" id="dynamicCorrection">--</div></div>
+            <div class="metric"><div class="metric-name">Binance特征</div><div class="metric-value" id="dynamicBinanceState">--</div></div>
+            <div class="metric"><div class="metric-name">在线盈亏</div><div class="metric-value" id="dynamicOnlinePnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">公式盈亏</div><div class="metric-value" id="dynamicFormulaPnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">在线Brier</div><div class="metric-value" id="dynamicOnlineBrier">--</div></div>
+            <div class="metric"><div class="metric-name">公式Brier</div><div class="metric-value" id="dynamicFormulaBrier">--</div></div>
+            <div class="metric metric-wide"><div class="metric-name">前向准确率</div><div class="metric-value" id="dynamicAccuracy">--</div></div>
+          </div>
+        </div>
+
       </section>
 
       <section class="stack">
@@ -486,6 +571,67 @@
             <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>方向</th><th>买入时间</th><th>买入均价</th><th>买入金额</th><th>卖出时间</th><th>卖出均价</th><th>卖出金额</th><th>数量</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="recoveryOrders"></tbody></table></div>
           </div>
         </div>
+
+        <div class="panel real-only">
+          <div class="panel-head"><div class="panel-title">当前真实仓位</div><div class="tag blue" id="realPositionState">空仓</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">市场</div><div class="kv-value" id="realPositionMarket">--</div></div>
+            <div class="kv-row"><div class="kv-label">方向</div><div class="kv-value" id="realPositionDirection">--</div></div>
+            <div class="kv-row"><div class="kv-label">数量</div><div class="kv-value" id="realPositionQuantity">--</div></div>
+            <div class="kv-row"><div class="kv-label">真实成本</div><div class="kv-value" id="realPositionCost">--</div></div>
+            <div class="kv-row"><div class="kv-label">手续费</div><div class="kv-value" id="realPositionFee">--</div></div>
+            <div class="kv-row"><div class="kv-label">状态</div><div class="kv-value" id="realPositionStatus">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel real-only">
+          <div class="panel-head"><div class="panel-title">最近真实订单</div><div class="tag amber" id="realRecentCount">0</div></div>
+          <div class="panel-body">
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>时间</th><th>模式</th><th>方向</th><th>数量</th><th>最高限价</th><th>真实金额</th><th>手续费</th><th>官方结果</th><th>兑付</th><th>净盈亏</th><th>状态</th><th>原因</th></tr></thead><tbody id="realOrders"></tbody></table></div>
+          </div>
+        </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">UP / DOWN 动态候选</div><div class="tag blue" id="dynamicDecision">等待模型</div></div>
+          <div class="panel-body">
+            <div class="pair-grid">
+              <div class="pair-card">
+                <div class="pair-card-head"><span>UP</span><span class="tag blue" id="dynamicUpStatus">等待</span></div>
+                <div class="pair-line"><span>在线概率</span><strong id="dynamicUpProbability">--</strong></div>
+                <div class="pair-line"><span>动态最高限价</span><strong id="dynamicUpLimit">--</strong></div>
+                <div class="pair-line"><span>完整成交均价</span><strong id="dynamicUpAverage">--</strong></div>
+                <div class="pair-line"><span>手续费</span><strong id="dynamicUpFee">--</strong></div>
+                <div class="pair-line"><span>实际净优势</span><strong id="dynamicUpEdge">--</strong></div>
+                <div class="pair-line"><span>原因</span><strong id="dynamicUpReason">--</strong></div>
+              </div>
+              <div class="pair-card">
+                <div class="pair-card-head"><span>DOWN</span><span class="tag blue" id="dynamicDownStatus">等待</span></div>
+                <div class="pair-line"><span>在线概率</span><strong id="dynamicDownProbability">--</strong></div>
+                <div class="pair-line"><span>动态最高限价</span><strong id="dynamicDownLimit">--</strong></div>
+                <div class="pair-line"><span>完整成交均价</span><strong id="dynamicDownAverage">--</strong></div>
+                <div class="pair-line"><span>手续费</span><strong id="dynamicDownFee">--</strong></div>
+                <div class="pair-line"><span>实际净优势</span><strong id="dynamicDownEdge">--</strong></div>
+                <div class="pair-line"><span>原因</span><strong id="dynamicDownReason">--</strong></div>
+              </div>
+            </div>
+            <div class="subhead">确认进度 · <span id="dynamicConfirmation">--</span></div>
+          </div>
+        </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">最近市场</div><div class="tag amber" id="dynamicRoundCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>场次</th><th>在线单</th><th>公式单</th><th>官方结果</th><th>已训练</th></tr></thead><tbody id="dynamicRounds"></tbody></table></div></div>
+        </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">每日统计</div><div class="tag amber" id="dynamicDayCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>日期</th><th>在线订单</th><th>在线盈亏</th><th>公式订单</th><th>公式盈亏</th></tr></thead><tbody id="dynamicDaily"></tbody></table></div></div>
+        </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">最近订单</div><div class="tag amber" id="dynamicOrderCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>版本</th><th>时间</th><th>方向</th><th>模型概率</th><th>动态限价</th><th>成交均价</th><th>数量</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="dynamicOrders"></tbody></table></div></div>
+        </div>
       </section>
 
       <section class="stack right single-only-section">
@@ -549,6 +695,81 @@
         </div>
 
       </section>
+
+      <section class="stack right real-only">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">真实交易控制</div><div class="tag amber" id="realControlState">影子模式</div></div>
+          <div class="panel-body">
+            <div class="settings-actions">
+              <button class="settings-save" id="realConnect" type="button">连接账户</button>
+              <button class="settings-save" id="realPrepareAllowance" type="button">准备授权</button>
+            </div>
+            <div class="settings-actions">
+              <button class="settings-save" id="realArm" type="button">启用实盘</button>
+              <button class="control-button" id="realDisarm" type="button">解除武装</button>
+            </div>
+            <div class="settings-actions">
+              <button class="control-button" id="realEmergencyStop" type="button">紧急停止</button>
+              <button class="control-button resume" id="realResume" type="button">清除停止</button>
+              <button class="control-button" id="realShadowReset" type="button">重置影子验证</button>
+            </div>
+            <div class="subhead">运行状态</div>
+            <div class="reason-list">
+              <div class="reason"><strong>状态</strong><span class="mono" id="realStatus">--</span></div>
+              <div class="reason"><strong>原因</strong><span class="mono" id="realReason">--</span></div>
+              <div class="reason"><strong>信号来源</strong><span class="mono" id="realSignalSource">BTC 70/40首单</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">真实风控参数</div><div class="tag blue" id="realConfigStatus">保存后下一场BTC生效</div></div>
+          <form class="panel-body" id="realForm">
+            <div class="settings-grid">
+              <label class="setting"><span class="setting-label">真实交易观察</span><span class="setting-toggle"><input id="realEnabled" type="checkbox">启用影子信号</span></label>
+              <label class="setting"><span class="setting-label">真实数量（份）</span><input class="setting-input" id="realQuantity" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">单笔名义上限（USD）</span><input class="setting-input" id="realMaxNotional" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">每日亏损上限（USD）</span><input class="setting-input" id="realDailyLoss" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">每日最多订单</span><input class="setting-input" id="realDailyOrders" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">自动赎回</span><span class="setting-toggle"><input id="realAutoRedeem" type="checkbox">赢家自动赎回</span></label>
+            </div>
+            <div class="settings-actions"><span class="settings-note">默认1份仅用于观察；低于市场官方最小量时实盘始终被锁定。真实入场价、最高限价和时间窗跟随BTC 70/40首单。</span><button class="settings-save" id="saveReal" type="submit">保存真实参数</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="stack right dynamic-only">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">BTC动态胜率参数</div><div class="tag blue" id="dynamicConfigStatus">保存后下一场BTC生效</div></div>
+          <form class="panel-body" id="dynamicForm">
+            <div class="settings-grid">
+              <label class="setting"><span class="setting-label">在线模拟</span><span class="setting-toggle"><input id="dynamicEnabled" type="checkbox">启用并暂停其他BTC新入场</span></label>
+              <label class="setting"><span class="setting-label">数量（份）</span><input class="setting-input" id="dynamicQuantity" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">入场开始（开盘后秒）</span><input class="setting-input" id="dynamicEntrySeconds" type="number" min="0" max="299" step="1" required></label>
+              <label class="setting"><span class="setting-label">入场截止（开盘后秒）</span><input class="setting-input" id="dynamicExitSeconds" type="number" min="1" max="300" step="1" required></label>
+              <label class="setting"><span class="setting-label">最低净优势（美分/份）</span><input class="setting-input" id="dynamicMinEdge" type="number" min="0" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">滑点预留（美分/份）</span><input class="setting-input" id="dynamicSlippage" type="number" min="0" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">连续确认（秒）</span><input class="setting-input" id="dynamicConfirmSeconds" type="number" min="0" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">确认更新数</span><input class="setting-input" id="dynamicConfirmUpdates" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">短波动窗口（秒）</span><input class="setting-input" id="dynamicShortVol" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">长波动窗口（秒）</span><input class="setting-input" id="dynamicLongVol" type="number" min="2" step="1" required></label>
+              <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="dynamicVolFloor" type="number" min="0" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">最大概率修正（百分点）</span><input class="setting-input" id="dynamicMaxCorrection" type="number" min="0" max="100" step="0.1" required></label>
+            </div>
+            <div class="settings-actions"><span class="settings-note">模型概率同时决定方向和最高限价；仅完整深度成交，买入后持有到官方结算。本页永远只做本地模拟。</span><button class="settings-save" id="saveDynamic" type="submit">保存动态参数</button></div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">统计与模型控制</div><div class="tag amber" id="dynamicResetState">保留历史</div></div>
+          <div class="panel-body">
+            <div class="settings-actions">
+              <button class="control-button" id="dynamicStatsReset" type="button">重置统计</button>
+              <button class="control-button" id="dynamicModelReset" type="button">重置在线模型</button>
+            </div>
+            <div class="settings-note">统计重置不删除订单。模型重置需确认码，并从下一场开始使用零系数；历史样本和订单保留。</div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -556,6 +777,8 @@
     const $ = (id) => document.getElementById(id);
     let latest = null;
     let reconnectTimer = null;
+    let activeSocket = null;
+    let lastSocketMessageAt = 0;
     let renderScheduled = false;
     let bookSide = 'BUY';
     let selectedAsset = 'BTC';
@@ -569,6 +792,14 @@
     let recoveryFormDirty = false;
     let renderedRecoveryConfigKey = '';
     let recoveryControlBusy = false;
+    let realFormInitialized = false;
+    let realFormDirty = false;
+    let renderedRealConfigKey = '';
+    let realControlBusy = false;
+    let dynamicFormInitialized = false;
+    let dynamicFormDirty = false;
+    let renderedDynamicConfigKey = '';
+    let dynamicControlBusy = false;
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -609,6 +840,27 @@
       recovery_quantity: 'recoveryHedgeQty',
       entry_seconds_after_open: 'recoveryEntrySeconds',
       exit_seconds_after_open: 'recoveryExitSeconds',
+    };
+    const dynamicInputs = {
+      quantity: 'dynamicQuantity',
+      entry_seconds_after_open: 'dynamicEntrySeconds',
+      exit_seconds_after_open: 'dynamicExitSeconds',
+      min_net_edge_cents: 'dynamicMinEdge',
+      slippage_reserve_cents: 'dynamicSlippage',
+      confirmation_seconds: 'dynamicConfirmSeconds',
+      confirmation_updates: 'dynamicConfirmUpdates',
+      short_volatility_window_seconds: 'dynamicShortVol',
+      long_volatility_window_seconds: 'dynamicLongVol',
+      volatility_floor_bps: 'dynamicVolFloor',
+      max_probability_correction_points: 'dynamicMaxCorrection',
+    };
+    const realInputs = {
+      enabled: 'realEnabled',
+      order_quantity: 'realQuantity',
+      max_order_notional_usd: 'realMaxNotional',
+      daily_loss_limit_usd: 'realDailyLoss',
+      max_orders_per_day: 'realDailyOrders',
+      auto_redeem: 'realAutoRedeem',
     };
     const renderCache = {
       pairMarkets: '',
@@ -768,6 +1020,35 @@
       $('recoveryReverseLimit').value = '触发后按盘口';
     }
 
+    function renderDynamicConfig(snapshot, force = false) {
+      const active = snapshot.btc_dynamic?.config || {};
+      const dynamic = snapshot.pending_btc_dynamic || active;
+      const configKey = JSON.stringify(
+        Object.fromEntries(Object.keys(dynamicInputs).map((field) => [field, dynamic[field]])),
+      ) + String(dynamic.enabled);
+      if (
+        force
+        || !dynamicFormInitialized
+        || (!dynamicFormDirty && configKey !== renderedDynamicConfigKey)
+      ) {
+        Object.entries(dynamicInputs).forEach(([field, id]) => setRuntimeInput(id, dynamic[field]));
+        $('dynamicEnabled').checked = Boolean(dynamic.enabled);
+        renderedDynamicConfigKey = configKey;
+        dynamicFormInitialized = true;
+      }
+      const status = $('dynamicConfigStatus');
+      if (dynamicFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+      } else if (snapshot.config_status === 'pending_next_btc_market') {
+        status.textContent = '已保存，下一场BTC生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
+    }
+
     function renderRecoveryConfig(snapshot, force = false) {
       const active = snapshot.btc_recovery?.config || {};
       const recovery = snapshot.pending_btc_recovery || active;
@@ -795,6 +1076,150 @@
         status.textContent = '当前生效';
         status.className = 'tag green';
       }
+    }
+
+    function renderRealConfig(snapshot, force = false) {
+      const active = snapshot.real_trading?.config || {};
+      const real = snapshot.pending_real_trading || active;
+      const configKey = JSON.stringify(
+        Object.fromEntries(Object.keys(realInputs).map((field) => [field, real[field]])),
+      );
+      if (
+        force
+        || !realFormInitialized
+        || (!realFormDirty && configKey !== renderedRealConfigKey)
+      ) {
+        Object.entries(realInputs).forEach(([field, id]) => setRuntimeInput(id, real[field]));
+        renderedRealConfigKey = configKey;
+        realFormInitialized = true;
+      }
+      const status = $('realConfigStatus');
+      if (realFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+      } else if (snapshot.config_status === 'pending_next_btc_market') {
+        status.textContent = '已保存，下一场BTC生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
+    }
+
+    function realReasonText(reason) {
+      const labels = {
+        disabled: '真实观察关闭',
+        shadow: '影子模式',
+        connected: '账户已连接',
+        credentials_missing: '本次启动未输入私钥',
+        connection_error: '账户连接失败',
+        geoblocked: '当前地区禁止交易',
+        geographic_restriction: '当前地区禁止交易',
+        account_not_connected: '真实账户未连接',
+        below_official_min_order_size: '低于官方最小订单量',
+        shadow_order_built: '影子FOK订单构建成功',
+        shadow_gate_not_met: '影子验证尚未完成',
+        user_ws_not_ready: '用户WebSocket未就绪',
+        live_armed: '实盘已武装',
+        disarmed: '实盘已解除武装',
+        emergency_stopped: '紧急停止中',
+        emergency_stop_cleared: '紧急停止已清除',
+        allowance_ready: '交易授权已准备',
+        insufficient_allowance: '授权额度不足',
+        insufficient_balance: '余额不足',
+        fok_depth_or_limit_unavailable: '限价内深度不足',
+        max_order_notional_exceeded: '超过单笔名义上限',
+        daily_loss_limit_reached: '达到每日亏损上限',
+        daily_order_limit_reached: '达到每日订单上限',
+        open_position_exists: '已有未结算真实仓位',
+        submission_outcome_unknown: '提交结果不确定，等待对账',
+        fok_matched: 'FOK真实成交',
+        fok_rejected: 'FOK未完全成交，整单取消',
+        trade_confirmed: '真实成交已确认',
+        official_win: '官方结果获胜',
+        official_loss: '官方结果亏损',
+        auto_redeemed: '赢家仓位已自动赎回',
+      };
+      return labels[reason] || reason || '--';
+    }
+
+    function maskWallet(value) {
+      if (!value) return '--';
+      const text = String(value);
+      return text.length > 14 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+    }
+
+    function renderReal(real, snapshot) {
+      real = real || {};
+      renderRealConfig(
+        {
+          real_trading: real,
+          pending_real_trading: snapshot.pending_real_trading,
+          config_status: snapshot.config_status,
+        },
+      );
+      const account = real.account || {};
+      const connected = Boolean(account.connected);
+      setText('realAccountState', account.geoblocked ? '地区受限' : connected ? '已连接' : '未连接');
+      setClass('realAccountState', `tag ${account.geoblocked ? 'red' : connected ? 'green' : 'amber'}`);
+      setText('realCredentials', real.credentials_loaded ? '本次启动已加载' : '未加载');
+      setText('realWallet', maskWallet(account.wallet));
+      setText('realWalletType', account.wallet_type || '--');
+      setText('realGeo', account.geoblocked == null ? '--' : account.geoblocked ? '禁止交易' : `${account.country || '允许'} ${account.region || ''}`);
+      setText('realUserWs', account.user_ws_connected ? '已连接' : '未连接');
+      setText('realBalance', account.balance_usd == null ? '--' : `$${fmtNumber(account.balance_usd, 2)}`);
+      setText('realAllowance', account.allowance_usd == null ? '--' : `$${fmtNumber(account.allowance_usd, 2)}`);
+
+      const gate = real.shadow_gate || {};
+      setText('realMode', real.armed ? '真实实盘' : '影子模式');
+      setClass('realMode', `tag ${real.armed ? 'red' : 'blue'}`);
+      setText('realShadowProgress', `${gate.successful_signals || 0} / ${gate.required_signals || 20}`);
+      setText('realShadowErrors', gate.serious_errors || 0);
+      setText('realOfficialMinimum', real.official_min_order_size == null ? '--' : `${fmtNumber(real.official_min_order_size, 2)}份`);
+      setText('realGateState', gate.unlocked ? '已解锁' : '未解锁');
+      setClass('realGateState', gate.unlocked ? 'metric-value pnl-pos' : 'metric-value');
+
+      const summary = real.summary || {};
+      setText('realOrderCount', summary.live_orders || 0);
+      setPnl('realPnl', summary.net_pnl || 0);
+      setText('realControlState', real.emergency_stopped ? '紧急停止' : real.armed ? '实盘已武装' : '影子模式');
+      setClass('realControlState', `tag ${real.emergency_stopped ? 'red' : real.armed ? 'red' : 'amber'}`);
+      setText('realStatus', real.status || '--');
+      setText('realReason', realReasonText(real.last_reason));
+
+      const position = real.current_position;
+      setText('realPositionState', position ? '持仓中' : '空仓');
+      setClass('realPositionState', `tag ${position ? 'red' : 'blue'}`);
+      setText('realPositionMarket', position?.market_slug || '--');
+      setText('realPositionDirection', position?.direction || '--');
+      setText('realPositionQuantity', position ? `${fmtNumber(position.filled_quantity, 2)}份` : '--');
+      setText('realPositionCost', position ? `$${fmtNumber(position.filled_quote, 4)}` : '--');
+      setText('realPositionFee', position ? `$${fmtNumber(position.fee_usd, 4)}` : '--');
+      setText('realPositionStatus', position?.status || '--');
+
+      const orders = real.recent_orders || [];
+      setText('realRecentCount', orders.length);
+      updateHtmlWhenChanged(
+        'realOrders',
+        'realOrders',
+        JSON.stringify(orders),
+        orders.map((order) => `<tr>
+          <td>${displayOrderNumber(order)}</td><td>${fmtTime(order.created_at)}</td>
+          <td>${order.mode === 'live' ? '实盘' : '影子'}</td><td>${order.direction || '--'}</td>
+          <td>${fmtNumber(order.filled_quantity || order.quantity, 2)}</td><td>${fmtCents(order.max_price)}</td>
+          <td>${order.filled_quote ? `$${fmtNumber(order.filled_quote, 4)}` : '--'}</td>
+          <td>$${fmtNumber(order.fee_usd || order.expected_fee_usd || 0, 4)}</td>
+          <td>${order.official_outcome || '--'}</td>
+          <td>${order.payout_usd == null ? '--' : `$${fmtNumber(order.payout_usd, 3)}`}</td>
+          <td>${order.net_pnl == null ? '--' : pnlHtml(order.net_pnl)}</td>
+          <td>${order.status || '--'}</td><td>${realReasonText(order.reason)}</td>
+        </tr>`).join('') || '<tr><td colspan="13">暂无真实或影子订单</td></tr>',
+      );
+
+      const disabled = realControlBusy;
+      ['realConnect', 'realPrepareAllowance', 'realArm', 'realDisarm', 'realEmergencyStop', 'realResume', 'realShadowReset']
+        .forEach((id) => { $(id).disabled = disabled; });
+      $('realArm').disabled = disabled || !gate.unlocked || !connected || !account.user_ws_connected || Boolean(real.emergency_stopped) || real.quantity_meets_minimum === false;
     }
 
     function recoveryRoundFees(round) {
@@ -1004,6 +1429,157 @@
         {
           btc_recovery: recovery,
           pending_btc_recovery: pendingRecovery,
+          config_status: configStatus,
+        },
+      );
+    }
+
+    function dynamicReasonText(reason) {
+      const labels = {
+        disabled: '策略已关闭',
+        waiting_for_btc_market: '等待BTC市场',
+        collecting_market_data: '收集市场数据',
+        chainlink_open_unavailable: 'Chainlink开盘价未核验',
+        chainlink_stale: 'Chainlink数据过期',
+        before_entry_window: '尚未进入入场时间',
+        entry_window_closed: '入场窗口已关闭',
+        order_held_for_settlement: '已成交，等待官方结算',
+        confirming: '连续确认中',
+        waiting_for_edge: '等待净优势',
+        book_missing: '盘口缺失',
+        book_market_mismatch: '盘口与市场不匹配',
+        book_depth_untrusted: '盘口深度不可信',
+        book_stale: '盘口数据过期',
+        quantity_below_market_minimum: '数量低于市场最低量',
+        model_edge_below_threshold: '模型优势不足',
+        depth_below_dynamic_limit: '动态限价内深度不足',
+        actual_edge_below_threshold: '实际成交优势不足',
+        eligible: '达标',
+        official_settlement: '官方已结算',
+      };
+      return labels[reason] || reason || '--';
+    }
+
+    function renderDynamic(dynamic, btcSnapshot, configStatus, pendingDynamic) {
+      dynamic = dynamic || {};
+      const market = btcSnapshot?.market;
+      const diagnostics = dynamic.diagnostics || {};
+      const model = diagnostics.model || {};
+      const enabled = Boolean((dynamic.config || {}).enabled);
+      setText('dynamicState', enabled ? dynamicReasonText(dynamic.status) : '关闭');
+      setClass('dynamicState', `tag ${enabled ? 'green' : 'blue'}`);
+      setText('dynamicMarketSlug', market?.slug || dynamic.round?.market_slug || '--');
+      setText('dynamicReason', dynamicReasonText(dynamic.last_reason));
+      const left = secondsLeft(market);
+      setText('dynamicTimeLeft', left == null ? '--' : `${left}s`);
+      setText('dynamicOpenPrice', diagnostics.chainlink_open_price == null ? '--' : fmtPrice(diagnostics.chainlink_open_price));
+      setText('dynamicCurrentPrice', diagnostics.chainlink_current_price == null ? '--' : fmtPrice(diagnostics.chainlink_current_price));
+      setText(
+        'dynamicZVol',
+        diagnostics.z_score == null
+          ? '--'
+          : `${fmtNumber(diagnostics.z_score, 3)} / ${fmtNumber((diagnostics.sigma || 0) * 10000, 3)}bps`,
+      );
+      setText(
+        'dynamicSnapshotSchedule',
+        (diagnostics.training_snapshot_seconds || []).length
+          ? diagnostics.training_snapshot_seconds.map((value) => `${fmtNumber(value, 1)}s`).join(' / ')
+          : '--',
+      );
+      setText('dynamicModelVersion', model.version == null ? '--' : `v${model.version}`);
+      setText('dynamicTrainedMarkets', model.trained_markets || 0);
+      setText('dynamicFormulaUp', diagnostics.formula_probability_up == null ? '--' : fmtProb(diagnostics.formula_probability_up));
+      setText('dynamicOnlineUp', diagnostics.online_probability_up == null ? '--' : fmtProb(diagnostics.online_probability_up));
+      setText(
+        'dynamicCorrection',
+        diagnostics.probability_correction_points == null
+          ? '--'
+          : `${fmtSigned(diagnostics.probability_correction_points, 2)}点`,
+      );
+      setText(
+        'dynamicBinanceState',
+        diagnostics.binance_missing == null
+          ? '--'
+          : diagnostics.binance_missing
+          ? '缺失'
+          : '有效',
+      );
+
+      ['UP', 'DOWN'].forEach((direction) => {
+        const candidate = dynamic.candidates?.[direction] || {};
+        const prefix = direction === 'UP' ? 'dynamicUp' : 'dynamicDown';
+        setText(`${prefix}Status`, candidate.eligible ? '达标' : '等待');
+        setClass(`${prefix}Status`, `tag ${candidate.eligible ? 'green' : 'amber'}`);
+        setText(`${prefix}Probability`, candidate.probability == null ? '--' : fmtProb(candidate.probability));
+        setText(`${prefix}Limit`, candidate.dynamic_max_price == null ? '--' : fmtCents(candidate.dynamic_max_price));
+        setText(`${prefix}Average`, candidate.avg_price == null ? '--' : fmtCents(candidate.avg_price));
+        setText(`${prefix}Fee`, candidate.fee_usd == null ? '--' : `$${fmtNumber(candidate.fee_usd, 4)}`);
+        setText(`${prefix}Edge`, candidate.net_edge_per_share == null ? '--' : `${fmtNumber(candidate.net_edge_per_share * 100, 2)}¢`);
+        setText(`${prefix}Reason`, dynamicReasonText(candidate.reason));
+      });
+      const confirmation = dynamic.confirmations?.online;
+      setText(
+        'dynamicConfirmation',
+        confirmation
+          ? `${confirmation.direction} · ${confirmation.updates}/${dynamic.config?.confirmation_updates || 2}次`
+          : '--',
+      );
+      setText('dynamicDecision', dynamic.round?.online_order ? `已买 ${dynamic.round.online_order.direction}` : dynamicReasonText(dynamic.status));
+      setClass('dynamicDecision', `tag ${dynamic.round?.online_order ? 'green' : 'blue'}`);
+
+      const summary = dynamic.summary || {};
+      setPnl('dynamicOnlinePnl', summary.online?.realized_pnl || 0);
+      setPnl('dynamicFormulaPnl', summary.formula?.realized_pnl || 0);
+      setText('dynamicOnlineBrier', summary.brier_online == null ? '--' : fmtNumber(summary.brier_online, 4));
+      setText('dynamicFormulaBrier', summary.brier_formula == null ? '--' : fmtNumber(summary.brier_formula, 4));
+      setText('dynamicAccuracy', summary.forward_accuracy == null ? '--' : `${fmtNumber(summary.forward_accuracy * 100, 1)}%`);
+      const daily = summary.daily || [];
+      setText('dynamicDayCount', daily.length);
+      updateHtmlWhenChanged(
+        'dynamicDaily',
+        'dynamicDaily',
+        JSON.stringify(daily),
+        daily.map((day) => `<tr>
+          <td>${day.date}</td><td>${day.online_orders || 0}</td>
+          <td>${pnlHtml(day.online_pnl || 0)}</td><td>${day.formula_orders || 0}</td>
+          <td>${pnlHtml(day.formula_pnl || 0)}</td>
+        </tr>`).join('') || '<tr><td colspan="5">暂无每日统计</td></tr>',
+      );
+
+      const rounds = dynamic.recent_rounds || [];
+      setText('dynamicRoundCount', rounds.length);
+      updateHtmlWhenChanged(
+        'dynamicRounds',
+        'dynamicRounds',
+        JSON.stringify(rounds),
+        rounds.map((round) => `<tr>
+          <td>${fmtTime(round.start_time)}</td>
+          <td>${round.online_order ? `${round.online_order.direction} ${fmtCents(round.online_order.avg_price)}` : '--'}</td>
+          <td>${round.formula_order ? `${round.formula_order.direction} ${fmtCents(round.formula_order.avg_price)}` : '--'}</td>
+          <td>${round.official_outcome || '--'}</td><td>${round.trained ? '是' : '否'}</td>
+        </tr>`).join('') || '<tr><td colspan="5">暂无动态市场</td></tr>',
+      );
+      const orders = dynamic.recent_orders || [];
+      setText('dynamicOrderCount', orders.length);
+      updateHtmlWhenChanged(
+        'dynamicOrders',
+        'dynamicOrders',
+        JSON.stringify(orders),
+        orders.map((order) => `<tr>
+          <td>#${String(order.order_number || 0).padStart(6, '0')}</td>
+          <td>${order.variant === 'online' ? '在线' : '公式'}</td>
+          <td>${fmtTime(order.created_at)}</td><td>${order.direction || '--'}</td>
+          <td>${fmtProb(order.model_probability)}</td><td>${fmtCents(order.max_price)}</td>
+          <td>${fmtCents(order.avg_price)}</td><td>${fmtNumber(order.quantity, 2)}</td>
+          <td>$${fmtNumber(order.fee_usd, 4)}</td><td>${order.official_outcome || '--'}</td>
+          <td>${order.realized_pnl == null ? '--' : pnlHtml(order.realized_pnl)}</td>
+        </tr>`).join('') || '<tr><td colspan="11">暂无动态订单</td></tr>',
+      );
+      setText('dynamicResetState', dynamic.model_reset_pending ? '模型重置待生效' : '保留历史');
+      renderDynamicConfig(
+        {
+          btc_dynamic: dynamic,
+          pending_btc_dynamic: pendingDynamic,
           config_status: configStatus,
         },
       );
@@ -1237,7 +1813,9 @@
       const aggregate = snapshot;
       const pairPage = selectedAsset === 'PAIR';
       const recoveryPage = selectedAsset === 'RECOVERY';
-      const assetSnapshot = pairPage || recoveryPage
+      const realPage = selectedAsset === 'REAL';
+      const dynamicPage = selectedAsset === 'DYNAMIC';
+      const assetSnapshot = pairPage || recoveryPage || realPage || dynamicPage
         ? (aggregate.assets?.BTC || aggregate)
         : (aggregate.assets?.[selectedAsset] || aggregate);
       snapshot = {
@@ -1248,26 +1826,41 @@
         pending_risk: aggregate.pending_risk,
         pending_pair_match: aggregate.pending_pair_match,
         pending_btc_recovery: aggregate.pending_btc_recovery,
+        pending_btc_dynamic: aggregate.pending_btc_dynamic,
+        pending_real_trading: aggregate.pending_real_trading,
         pair_match: aggregate.pair_match || assetSnapshot.pair_match,
         btc_recovery: aggregate.btc_recovery || assetSnapshot.btc_recovery,
+        btc_dynamic: aggregate.btc_dynamic || assetSnapshot.btc_dynamic,
+        real_trading: aggregate.real_trading || assetSnapshot.real_trading,
         config_status: aggregate.config_status,
         ws_url: aggregate.ws_url,
+        control_token: aggregate.control_token,
       };
       const asset = String(snapshot.asset || selectedAsset).toUpperCase();
       document.body.classList.toggle('pair-mode', pairPage);
       document.body.classList.toggle('recovery-mode', recoveryPage);
+      document.body.classList.toggle('real-mode', realPage);
+      document.body.classList.toggle('dynamic-mode', dynamicPage);
       $('assetBTC').classList.toggle('active', selectedAsset === 'BTC');
       $('assetETH').classList.toggle('active', selectedAsset === 'ETH');
       $('assetPAIR').classList.toggle('active', pairPage);
       $('assetRECOVERY').classList.toggle('active', recoveryPage);
+      $('assetREAL').classList.toggle('active', realPage);
+      $('assetDYNAMIC').classList.toggle('active', dynamicPage);
       $('assetBTC').setAttribute('aria-selected', String(selectedAsset === 'BTC'));
       $('assetETH').setAttribute('aria-selected', String(selectedAsset === 'ETH'));
       $('assetPAIR').setAttribute('aria-selected', String(pairPage));
       $('assetRECOVERY').setAttribute('aria-selected', String(recoveryPage));
+      $('assetREAL').setAttribute('aria-selected', String(realPage));
+      $('assetDYNAMIC').setAttribute('aria-selected', String(dynamicPage));
       $('brandTitle').textContent = pairPage
         ? 'polybtc · BTC/ETH 自动匹配'
         : recoveryPage
         ? 'polybtc · BTC 70/40策略'
+        : realPage
+        ? 'polybtc · Polymarket真实交易'
+        : dynamicPage
+        ? 'polybtc · BTC动态胜率'
         : `polybtc · ${asset} 实时面板`;
       $('binanceAssetLabel').textContent = `Binance ${asset}`;
       $('polymarketAssetLabel').textContent = `Polymarket ${asset}`;
@@ -1300,6 +1893,25 @@
           'tradeBookNote',
           bookSide === 'BUY' ? 'BTC · 买入按卖一价格' : 'BTC · 卖出按买一价格',
         );
+        return;
+      }
+      if (realPage) {
+        renderReal(snapshot.real_trading, snapshot);
+        renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
+        setText('bookAge', 'BTC');
+        setText('tradeBookNote', 'BTC真实公共盘口 · 实盘成交与账户数据在本页独立统计');
+        return;
+      }
+      if (dynamicPage) {
+        renderDynamic(
+          snapshot.btc_dynamic,
+          assetSnapshot,
+          snapshot.config_status,
+          snapshot.pending_btc_dynamic,
+        );
+        renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
+        setText('bookAge', 'BTC');
+        setText('tradeBookNote', 'BTC公共盘口 · 动态最高限价内必须可完整成交');
         return;
       }
       renderRuntimeConfig(snapshot);
@@ -1448,17 +2060,49 @@
         scheduleReconnect();
         return;
       }
+      if (activeSocket) {
+        activeSocket.onclose = null;
+        activeSocket.close();
+      }
       setConnection('pending');
       $('wsText').textContent = url;
       const ws = new WebSocket(url);
-      ws.onopen = () => setConnection('live');
+      activeSocket = ws;
+      lastSocketMessageAt = Date.now();
+      ws.onopen = () => {
+        if (activeSocket !== ws) return;
+        lastSocketMessageAt = Date.now();
+        setConnection('live');
+      };
       ws.onmessage = (event) => {
+        if (activeSocket !== ws) return;
+        lastSocketMessageAt = Date.now();
         const state = JSON.parse(event.data);
         scheduleRender(state);
       };
-      ws.onclose = () => { setConnection('off'); scheduleReconnect(); };
+      ws.onclose = () => {
+        if (activeSocket !== ws) return;
+        activeSocket = null;
+        setConnection('off');
+        scheduleReconnect();
+      };
       ws.onerror = () => { setConnection('off'); ws.close(); };
     }
+
+    function monitorConnection() {
+      refreshCountdowns();
+      if (document.visibilityState !== 'visible' || !activeSocket) return;
+      if (Date.now() - lastSocketMessageAt <= 5000) return;
+      activeSocket.close();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!activeSocket || Date.now() - lastSocketMessageAt > 5000) {
+        if (activeSocket) activeSocket.close();
+        else scheduleReconnect();
+      }
+    });
 
     function refreshCountdowns() {
       if (!latest) return;
@@ -1475,6 +2119,18 @@
         setText('recoveryTimeLeft', left == null ? '--' : `${left}s`);
         return;
       }
+      if (selectedAsset === 'REAL') {
+        const market = latest.assets?.BTC?.market || latest.market;
+        const left = secondsLeft(market);
+        setText('bookAge', left == null ? 'BTC' : `BTC · ${left}s`);
+        return;
+      }
+      if (selectedAsset === 'DYNAMIC') {
+        const market = latest.assets?.BTC?.market || latest.market;
+        const left = secondsLeft(market);
+        setText('dynamicTimeLeft', left == null ? '--' : `${left}s`);
+        return;
+      }
       const market = latest.assets?.[selectedAsset]?.market || latest.market;
       const left = secondsLeft(market);
       setText('timeLeft', left == null ? '--' : `${left}s`);
@@ -1488,6 +2144,8 @@
     $('assetETH').addEventListener('click', () => selectAsset('ETH'));
     $('assetPAIR').addEventListener('click', () => selectAsset('PAIR'));
     $('assetRECOVERY').addEventListener('click', () => selectAsset('RECOVERY'));
+    $('assetREAL').addEventListener('click', () => selectAsset('REAL'));
+    $('assetDYNAMIC').addEventListener('click', () => selectAsset('DYNAMIC'));
     $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) scheduleRender(latest); });
     $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) scheduleRender(latest); });
     $('strategyForm').addEventListener('input', () => {
@@ -1689,7 +2347,196 @@
         button.disabled = false;
       }
     });
-    setInterval(refreshCountdowns, 1000);
+    $('dynamicForm').addEventListener('input', () => {
+      dynamicFormDirty = true;
+      $('dynamicConfigStatus').textContent = '有修改，尚未保存';
+      $('dynamicConfigStatus').className = 'tag amber';
+    });
+    $('dynamicForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('saveDynamic');
+      const status = $('dynamicConfigStatus');
+      try {
+        button.disabled = true;
+        status.textContent = '保存中';
+        status.className = 'tag amber';
+        const payload = {
+          btc_dynamic: {
+            enabled: $('dynamicEnabled').checked,
+            quantity: runtimeNumber('dynamicQuantity'),
+            entry_seconds_after_open: runtimeNumber('dynamicEntrySeconds'),
+            exit_seconds_after_open: runtimeNumber('dynamicExitSeconds'),
+            min_net_edge_cents: runtimeNumber('dynamicMinEdge'),
+            slippage_reserve_cents: runtimeNumber('dynamicSlippage'),
+            confirmation_seconds: runtimeNumber('dynamicConfirmSeconds'),
+            confirmation_updates: runtimeNumber('dynamicConfirmUpdates'),
+            short_volatility_window_seconds: runtimeNumber('dynamicShortVol'),
+            long_volatility_window_seconds: runtimeNumber('dynamicLongVol'),
+            volatility_floor_bps: runtimeNumber('dynamicVolFloor'),
+            max_probability_correction_points: runtimeNumber('dynamicMaxCorrection'),
+          },
+        };
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = {
+          ...(latest || {}),
+          pending_btc_dynamic: config.pending_btc_dynamic,
+          config_status: config.config_status,
+        };
+        dynamicFormDirty = false;
+        renderDynamicConfig(
+          {
+            btc_dynamic: latest?.btc_dynamic,
+            pending_btc_dynamic: config.pending_btc_dynamic,
+            config_status: config.config_status,
+          },
+          true,
+        );
+      } catch (error) {
+        status.textContent = String(error.message || error).slice(0, 28);
+        status.className = 'tag red';
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $('dynamicStatsReset').addEventListener('click', async () => {
+      if (dynamicControlBusy || !window.confirm('重置动态策略统计起点？历史订单不会删除。')) return;
+      dynamicControlBusy = true;
+      try {
+        const response = await fetch('/api/btc-dynamic/statistics/reset', { method: 'POST' });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '操作失败');
+        setText('dynamicResetState', '统计已重置');
+      } catch (error) {
+        setText('dynamicResetState', String(error.message || error).slice(0, 24));
+      } finally {
+        dynamicControlBusy = false;
+      }
+    });
+    $('dynamicModelReset').addEventListener('click', async () => {
+      if (dynamicControlBusy) return;
+      const confirmation = window.prompt('输入确认码 RESET_DYNAMIC_MODEL，模型将在下一场归零：');
+      if (confirmation !== 'RESET_DYNAMIC_MODEL') return;
+      dynamicControlBusy = true;
+      try {
+        const response = await fetch('/api/btc-dynamic/model/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmation }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '操作失败');
+        setText('dynamicResetState', '模型重置待下一场生效');
+      } catch (error) {
+        setText('dynamicResetState', String(error.message || error).slice(0, 24));
+      } finally {
+        dynamicControlBusy = false;
+      }
+    });
+    $('realForm').addEventListener('input', () => {
+      realFormDirty = true;
+      $('realConfigStatus').textContent = '有修改，尚未保存';
+      $('realConfigStatus').className = 'tag amber';
+    });
+    $('realForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('saveReal');
+      try {
+        button.disabled = true;
+        const payload = {
+          real_trading: {
+            enabled: $('realEnabled').checked,
+            order_quantity: runtimeNumber('realQuantity'),
+            max_order_notional_usd: runtimeNumber('realMaxNotional'),
+            daily_loss_limit_usd: runtimeNumber('realDailyLoss'),
+            max_orders_per_day: runtimeNumber('realDailyOrders'),
+            auto_redeem: $('realAutoRedeem').checked,
+          },
+        };
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = {
+          ...(latest || {}),
+          pending_real_trading: config.pending_real_trading,
+          config_status: config.config_status,
+        };
+        realFormDirty = false;
+        renderRealConfig(
+          {
+            real_trading: latest?.real_trading,
+            pending_real_trading: config.pending_real_trading,
+            config_status: config.config_status,
+          },
+          true,
+        );
+      } catch (error) {
+        $('realConfigStatus').textContent = String(error.message || error).slice(0, 28);
+        $('realConfigStatus').className = 'tag red';
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    async function postRealControl(action, confirmation = null, confirmationCode = null) {
+      if (realControlBusy) return;
+      if (confirmation && !window.confirm(confirmation)) return;
+      realControlBusy = true;
+      if (latest) scheduleRender(latest);
+      try {
+        const response = await fetch(`/api/real-trading/${action}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Polybtc-Control-Token': latest?.control_token || '',
+          },
+          body: JSON.stringify({ confirmation: confirmationCode }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '操作失败');
+        setText('realReason', '请求已提交，等待运行状态更新');
+      } catch (error) {
+        setText('realReason', String(error.message || error).slice(0, 48));
+      } finally {
+        realControlBusy = false;
+        if (latest) scheduleRender(latest);
+      }
+    }
+    $('realConnect').addEventListener('click', () => postRealControl(
+      'connect',
+      '连接真实账户？首次连接Deposit Wallet时官方SDK可能准备钱包，但不会提交买卖订单。',
+      'CONNECT_REAL_ACCOUNT',
+    ));
+    $('realPrepareAllowance').addEventListener('click', () => postRealControl(
+      'prepare-allowance',
+      '准备真实交易授权？该操作可能提交钱包授权交易，但不会买入。',
+      'PREPARE_TRADING_ALLOWANCE',
+    ));
+    $('realArm').addEventListener('click', () => postRealControl(
+      'arm',
+      '确认启用真实实盘？下一次符合条件的首单信号将发送FOK真实订单。',
+      'ENABLE_REAL_TRADING',
+    ));
+    $('realDisarm').addEventListener('click', () => postRealControl('disarm'));
+    $('realEmergencyStop').addEventListener('click', () => postRealControl(
+      'emergency-stop',
+      '立即停止新的真实订单？已有持仓仍会等待官方结算并自动赎回。',
+    ));
+    $('realResume').addEventListener('click', () => postRealControl('resume'));
+    $('realShadowReset').addEventListener('click', () => postRealControl(
+      'shadow-reset',
+      '重置20次影子验证进度？历史记录不会删除。',
+    ));
+    setInterval(monitorConnection, 1000);
     loadInitial();
   </script>
 </body>

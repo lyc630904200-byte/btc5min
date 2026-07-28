@@ -298,6 +298,102 @@ class BtcRecoveryConfig(BaseModel):
             )
         return self
 
+
+class BtcDynamicConfig(BaseModel):
+    enabled: bool = False
+    quantity: float = 10.0
+    entry_seconds_after_open: float = 270.0
+    exit_seconds_after_open: float = 290.0
+    min_net_edge_cents: float = 3.0
+    slippage_reserve_cents: float = 1.35
+    confirmation_seconds: float = 2.0
+    confirmation_updates: int = 2
+    short_volatility_window_seconds: int = 10
+    long_volatility_window_seconds: int = 60
+    volatility_floor_bps: float = 0.5
+    max_probability_correction_points: float = 10.0
+
+    @field_validator("quantity")
+    @classmethod
+    def positive_dynamic_quantity(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC dynamic quantity must be positive")
+        return value
+
+    @field_validator("entry_seconds_after_open", "exit_seconds_after_open")
+    @classmethod
+    def valid_dynamic_market_second(cls, value: float) -> float:
+        if not 0 <= value <= 300:
+            raise ValueError("BTC dynamic market seconds must be between 0 and 300")
+        return value
+
+    @field_validator(
+        "min_net_edge_cents",
+        "slippage_reserve_cents",
+        "confirmation_seconds",
+        "volatility_floor_bps",
+        "max_probability_correction_points",
+    )
+    @classmethod
+    def non_negative_dynamic_value(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("BTC dynamic thresholds must not be negative")
+        return value
+
+    @field_validator(
+        "confirmation_updates",
+        "short_volatility_window_seconds",
+        "long_volatility_window_seconds",
+    )
+    @classmethod
+    def positive_dynamic_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("BTC dynamic counts must be at least one")
+        return value
+
+    @model_validator(mode="after")
+    def valid_dynamic_shape(self) -> "BtcDynamicConfig":
+        if self.entry_seconds_after_open >= self.exit_seconds_after_open:
+            raise ValueError(
+                "BTC dynamic entry_seconds_after_open must be lower than exit_seconds_after_open"
+            )
+        if self.short_volatility_window_seconds >= self.long_volatility_window_seconds:
+            raise ValueError(
+                "BTC dynamic short volatility window must be lower than long window"
+            )
+        if self.max_probability_correction_points > 100:
+            raise ValueError("BTC dynamic probability correction must be at most 100 points")
+        return self
+
+
+class RealTradingConfig(BaseModel):
+    enabled: bool = False
+    order_quantity: float = 1.0
+    max_order_notional_usd: float = 5.0
+    daily_loss_limit_usd: float = 10.0
+    max_orders_per_day: int = 10
+    auto_redeem: bool = True
+    shadow_required_signals: int = 20
+
+    @field_validator(
+        "order_quantity",
+        "max_order_notional_usd",
+        "daily_loss_limit_usd",
+    )
+    @classmethod
+    def positive_real_trading_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("real trading quantity and risk limits must be positive")
+        return value
+
+    @field_validator("max_orders_per_day", "shadow_required_signals")
+    @classmethod
+    def positive_real_trading_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("real trading counts must be at least one")
+        return value
+
+
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
     data_cleanup_enabled: bool = True
@@ -308,6 +404,8 @@ class AppConfig(BaseModel):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     pair_match: PairMatchConfig = Field(default_factory=PairMatchConfig)
     btc_recovery: BtcRecoveryConfig = Field(default_factory=BtcRecoveryConfig)
+    btc_dynamic: BtcDynamicConfig = Field(default_factory=BtcDynamicConfig)
+    real_trading: RealTradingConfig = Field(default_factory=RealTradingConfig)
 
     @field_validator("data_retention_hours", "data_cleanup_interval_seconds")
     @classmethod

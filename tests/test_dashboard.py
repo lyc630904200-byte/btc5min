@@ -1,10 +1,14 @@
 import asyncio
 import json
+import threading
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from polybtc.config import AppConfig
-from polybtc.dashboard import DashboardHub
+from polybtc.dashboard import DashboardHub, DashboardRequestHandler
 
 
 def test_recovery_orders_table_uses_merged_order_columns() -> None:
@@ -579,3 +583,182 @@ def test_btc_recovery_config_waits_only_for_next_btc_market_and_persists(tmp_pat
     assert reloaded.config.btc_recovery.target_price_cents == 100.0
     assert reloaded.config.btc_recovery.recovery_target_price_cents == 87.0
     assert reloaded.config.btc_recovery.exit_seconds_after_open == 270.0
+
+
+def test_real_trading_config_is_backward_compatible_and_activates_next_btc_market(
+    tmp_path,
+) -> None:
+    settings_path = tmp_path / "dashboard-settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "active": {"btc_recovery": {"enabled": True}},
+                "pending": None,
+                "apply_after_market_id": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert hub.config_json()["real_trading"] == {
+        "enabled": False,
+        "order_quantity": 1.0,
+        "max_order_notional_usd": 5.0,
+        "daily_loss_limit_usd": 10.0,
+        "max_orders_per_day": 10,
+        "auto_redeem": True,
+        "shadow_required_signals": 20,
+    }
+
+    hub.asset_snapshots["BTC"] = {
+        "market": {"asset": "BTC", "condition_id": "btc-old"}
+    }
+    response = hub.set_runtime_config(
+        {
+            "real_trading": {
+                "enabled": True,
+                "order_quantity": 5,
+                "max_order_notional_usd": 5,
+            }
+        }
+    )
+
+    assert response["config_status"] == "pending_next_btc_market"
+    assert response["real_trading"]["enabled"] is False
+    assert response["pending_real_trading"]["enabled"] is True
+    assert hub.apply_pending_config_for_market("btc-old") is False
+    assert hub.apply_pending_config_for_market("btc-new") is True
+    assert hub.config.real_trading.enabled is True
+    assert hub.config.real_trading.order_quantity == 5
+
+    reloaded = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert reloaded.config.real_trading.enabled is True
+    assert reloaded.config.real_trading.order_quantity == 5
+
+
+def test_real_trading_controls_require_token_and_confirmation(tmp_path) -> None:
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    handler = type(
+        "TestDashboardRequestHandler",
+        (DashboardRequestHandler,),
+        {"hub": hub},
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    endpoint = (
+        f"http://127.0.0.1:{server.server_address[1]}/api/real-trading/arm"
+    )
+
+    def post(token: str | None, confirmation: str | None) -> int:
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-Polybtc-Control-Token"] = token
+        payload = json.dumps({"confirmation": confirmation}).encode()
+        request = urllib.request.Request(
+            endpoint, data=payload, headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    try:
+        assert post(None, "ENABLE_REAL_TRADING") == 403
+        assert post(hub.control_token, "wrong") == 400
+        assert post(hub.control_token, "ENABLE_REAL_TRADING") == 202
+        assert hub.control_commands.get_nowait() == ("real_trading_arm", True)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market(
+    tmp_path,
+) -> None:
+    (tmp_path / "dashboard-settings.json").write_text(
+        json.dumps({"active": {"btc_recovery": {"enabled": True}}, "pending": None}),
+        encoding="utf-8",
+    )
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert hub.config.btc_dynamic.enabled is False
+    assert hub.config.btc_dynamic.quantity == 10
+    assert hub.config.btc_dynamic.slippage_reserve_cents == 1.35
+
+    hub.asset_snapshots["BTC"] = {
+        "market": {"asset": "BTC", "condition_id": "btc-old"}
+    }
+    response = hub.set_runtime_config(
+        {
+            "btc_dynamic": {
+                "enabled": True,
+                "quantity": 12,
+                "min_net_edge_cents": 4,
+            }
+        }
+    )
+    assert response["config_status"] == "pending_next_btc_market"
+    assert response["btc_dynamic"]["enabled"] is False
+    assert response["pending_btc_dynamic"]["enabled"] is True
+    assert response["pending_btc_dynamic"]["quantity"] == 12
+    assert hub.apply_pending_config_for_market("btc-old") is False
+    assert hub.apply_pending_config_for_market("btc-new") is True
+    assert hub.config.btc_dynamic.enabled is True
+    assert hub.config.btc_dynamic.min_net_edge_cents == 4
+
+    reloaded = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert reloaded.config.btc_dynamic.enabled is True
+    assert reloaded.config.btc_dynamic.quantity == 12
+
+
+def test_btc_dynamic_model_reset_requires_confirmation(tmp_path) -> None:
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    handler = type(
+        "TestDynamicDashboardRequestHandler",
+        (DashboardRequestHandler,),
+        {"hub": hub},
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    endpoint = (
+        f"http://127.0.0.1:{server.server_address[1]}/api/btc-dynamic/model/reset"
+    )
+
+    def post(confirmation: str) -> int:
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps({"confirmation": confirmation}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    try:
+        assert post("wrong") == 400
+        assert post("RESET_DYNAMIC_MODEL") == 202
+        command, requested_at = hub.control_commands.get_nowait()
+        assert command == "btc_dynamic_model_reset"
+        assert isinstance(requested_at, datetime)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

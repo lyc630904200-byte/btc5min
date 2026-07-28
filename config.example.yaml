@@ -91,3 +91,30 @@ btc_recovery:
   # The strategy observes entries only inside [entry, exit).
   entry_seconds_after_open: 0
   exit_seconds_after_open: 300
+
+btc_dynamic:
+  # Online probability controls both direction and a per-direction dynamic limit.
+  # This strategy is local simulation only and holds every fill to official settlement.
+  enabled: false
+  quantity: 10
+  entry_seconds_after_open: 270
+  exit_seconds_after_open: 290
+  min_net_edge_cents: 3
+  slippage_reserve_cents: 1.35
+  confirmation_seconds: 2
+  confirmation_updates: 2
+  short_volatility_window_seconds: 10
+  long_volatility_window_seconds: 60
+  volatility_floor_bps: 0.5
+  max_probability_correction_points: 10
+
+real_trading:
+  # Real execution follows only the BTC recovery initial-order signal.
+  # The process always starts disarmed and in shadow mode.
+  enabled: false
+  order_quantity: 1
+  max_order_notional_usd: 5
+  daily_loss_limit_usd: 10
+  max_orders_per_day: 10
+  auto_redeem: true
+  shadow_required_signals: 20

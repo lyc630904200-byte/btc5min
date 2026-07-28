@@ -1179,7 +1179,6 @@ class BtcRecoveryEngine:
             self.status = "waiting_entry_window"
             self.last_reason = self.status
             return
-
         entry_books: dict[Direction, OrderBookSnapshot] = {}
         if round_.initial_fill is None and round_.locked_direction is None:
             for direction in (Direction.UP, Direction.DOWN):

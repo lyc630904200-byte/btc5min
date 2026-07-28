@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Iterable
+from urllib.request import getproxies
 
 import httpx
 import websockets
@@ -80,22 +81,31 @@ def direct_websocket_options() -> dict[str, Any]:
     return {}
 
 
+def system_proxy_url() -> str | None:
+    proxies = getproxies()
+    for scheme in ("https", "http", "all"):
+        value = proxies.get(scheme)
+        if value:
+            return str(value)
+    return None
+
+
 def websocket_option_attempts(proxy_url: str | None = None) -> list[dict[str, Any]]:
     direct_options = direct_websocket_options()
-    if proxy_url and "proxy" in direct_options:
-        # Prefer the operating-system proxy.  It reflects live Windows proxy
-        # changes even when a configured local proxy port has gone stale.
-        return [{}, {"proxy": proxy_url}, direct_options]
-    if "proxy" in direct_options:
-        return [{}, direct_options]
-    return [{}]
+    if "proxy" not in direct_options:
+        return [{}]
+    detected_proxy = system_proxy_url()
+    attempts = [{"proxy": detected_proxy}] if detected_proxy else [{}]
+    if proxy_url and proxy_url != detected_proxy:
+        attempts.append({"proxy": proxy_url})
+    attempts.append(direct_options)
+    return attempts
 
 
 def http_option_attempts(proxy_url: str | None = None) -> list[tuple[str | None, bool]]:
-    # Use the live OS proxy first, then an explicitly configured proxy, and
-    # only then direct networking.
-    attempts = [(None, True)]
-    if proxy_url:
+    detected_proxy = system_proxy_url()
+    attempts = [(detected_proxy, False)] if detected_proxy else [(None, True)]
+    if proxy_url and proxy_url != detected_proxy:
         attempts.append((proxy_url, False))
     attempts.append((None, False))
     return attempts
