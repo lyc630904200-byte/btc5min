@@ -181,6 +181,73 @@ def test_formula_uses_chainlink_relative_move_not_binance_absolute_price(tmp_pat
     other_registry.close()
 
 
+def test_unverified_rtds_open_candidate_updates_chainlink_diagnostics_only(tmp_path) -> None:
+    start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(tmp_path, start)
+    current.threshold_price = None
+    current.threshold_source = "threshold_verification_failed"
+    current.threshold_verified = False
+    current.threshold_fetched_at = start + timedelta(seconds=3)
+    current.threshold_candidate_price = 100_000.0
+    current.threshold_candidate_source = "polymarket_rtds_start_tick"
+    current.threshold_candidate_observed_at = start
+    current.threshold_candidate_received_at = start + timedelta(seconds=1)
+
+    now = start + timedelta(seconds=270)
+    feed_prices(strategy, start, now)
+    strategy.evaluate(current, books(current, now), now)
+
+    assert strategy.status == "chainlink_open_unverified"
+    assert strategy.diagnostics["chainlink_open_price"] == 100_000.0
+    assert strategy.diagnostics["chainlink_open_verified"] is False
+    assert strategy.diagnostics["chainlink_current_price"] == 100_250.0
+    assert strategy.current_round is not None
+    assert strategy.current_round.online_order is None
+    assert strategy.candidates == {}
+    registry.close()
+
+
+def test_first_after_start_chainlink_tick_is_diagnostic_open_fallback(tmp_path) -> None:
+    start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(tmp_path, start)
+    current.threshold_price = None
+    current.threshold_source = "threshold_verification_failed"
+    current.threshold_verified = False
+
+    strategy.add_chainlink_tick(
+        PriceTick(
+            source="polymarket_rtds",
+            symbol="BTC/USD",
+            price=99_990.0,
+            exchange_timestamp=start - timedelta(seconds=1),
+            received_at=start + timedelta(milliseconds=200),
+        )
+    )
+    strategy.add_chainlink_tick(
+        PriceTick(
+            source="polymarket_rtds",
+            symbol="BTC/USD",
+            price=100_005.0,
+            exchange_timestamp=start + timedelta(seconds=1),
+            received_at=start + timedelta(seconds=2),
+        )
+    )
+    now = start + timedelta(seconds=3)
+    strategy.evaluate(current, books(current, now), now)
+
+    assert strategy.status == "chainlink_open_unverified"
+    assert strategy.diagnostics["chainlink_open_price"] == 100_005.0
+    assert (
+        strategy.diagnostics["chainlink_open_source"]
+        == "polymarket_rtds_first_tick_after_start_unverified"
+    )
+    assert strategy.diagnostics["chainlink_open_verified"] is False
+    assert strategy.current_round is not None
+    assert strategy.current_round.online_order is None
+    assert strategy.candidates == {}
+    registry.close()
+
+
 def test_places_online_and_formula_orders_and_holds_for_settlement(tmp_path) -> None:
     start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
     strategy, registry, current = engine(tmp_path, start)
@@ -261,4 +328,18 @@ def test_model_reset_is_deferred_until_next_market(tmp_path) -> None:
     strategy.set_market(next_market, next_market.start_time)
     assert strategy.model.trained_markets == 0
     assert strategy.model.bias == 0
+    registry.close()
+
+
+def test_dashboard_state_exposes_model_before_market_diagnostics(tmp_path) -> None:
+    start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, _ = engine(tmp_path, start)
+    strategy.model = DynamicModel(version=7, trained_markets=6)
+    strategy.diagnostics = {}
+
+    state = strategy.dashboard_state()
+
+    assert state["diagnostics"] == {}
+    assert state["model"]["version"] == 7
+    assert state["model"]["trained_markets"] == 6
     registry.close()

@@ -632,17 +632,24 @@ class DashboardHub:
         return {**self.config_json(), **self.config_status_json()}
 
     def pending_config_ready_for_snapshot(self, snapshot: dict[str, Any], asset: str) -> bool:
+        market = snapshot.get("market") or {}
+        if not isinstance(market, dict):
+            return False
+        return self.pending_config_ready_for_markets({asset: market})
+
+    def pending_config_ready_for_markets(
+        self, market_updates: dict[str, dict[str, Any]]
+    ) -> bool:
         if not self.pending_config:
             return False
         if self.pending_config_scope == "btc":
-            if asset != "BTC":
-                return False
-            market = snapshot.get("market") or {}
+            market = market_updates.get("BTC")
             if not isinstance(market, dict) or not market.get("condition_id"):
                 return False
             return str(market["condition_id"]) not in self.pending_after_market_ids
         prospective = dict(self.asset_snapshots)
-        prospective[asset] = snapshot
+        for asset, market in market_updates.items():
+            prospective[asset] = {"market": market}
         markets: list[dict[str, Any]] = []
         for required_asset in self.config.sources.enabled_assets:
             market = prospective.get(required_asset, {}).get("market") or {}
@@ -655,6 +662,27 @@ class DashboardHub:
         starts = {market.get("start_time") for market in markets}
         ends = {market.get("end_time") for market in markets}
         return len(starts) == 1 and len(ends) == 1
+
+    def apply_pending_config_before_markets(
+        self, market_updates: dict[str, Any]
+    ) -> bool:
+        serialized: dict[str, dict[str, Any]] = {}
+        for asset, market in market_updates.items():
+            if isinstance(market, dict):
+                payload = market
+            elif hasattr(market, "model_dump"):
+                payload = market.model_dump(mode="json")
+            else:
+                continue
+            serialized[str(asset).upper()] = payload
+        if not self.pending_config_ready_for_markets(serialized):
+            return False
+        market_ids = [
+            str(market["condition_id"])
+            for market in serialized.values()
+            if market.get("condition_id")
+        ]
+        return self.apply_pending_config_for_market(market_ids[0] if market_ids else None)
 
     async def publish(self, snapshot: dict[str, Any]) -> None:
         message: str
@@ -963,6 +991,7 @@ async def run_dashboard(
                     config,
                     max_seconds=max_seconds,
                     on_update=hub.publish,
+                    before_market_updates=hub.apply_pending_config_before_markets,
                     control_commands=hub.control_commands,
                     live_credentials=live_credentials,
                 )

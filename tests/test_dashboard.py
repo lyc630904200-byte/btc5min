@@ -3,12 +3,14 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from polybtc.btc_dynamic import BtcDynamicEngine, BtcDynamicRegistry
 from polybtc.config import AppConfig
 from polybtc.dashboard import DashboardHub, DashboardRequestHandler
+from polybtc.models import MarketState
 
 
 def test_recovery_orders_table_uses_merged_order_columns() -> None:
@@ -721,6 +723,42 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
     )
     assert reloaded.config.btc_dynamic.enabled is True
     assert reloaded.config.btc_dynamic.quantity == 12
+
+
+def test_btc_dynamic_config_applies_before_next_round_is_created(tmp_path) -> None:
+    config = AppConfig(
+        data_dir=tmp_path,
+        btc_dynamic={"enabled": True, "max_probability_correction_points": 10},
+    )
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+    hub.asset_snapshots["BTC"] = {
+        "market": {"asset": "BTC", "condition_id": "btc-old"}
+    }
+    hub.set_runtime_config(
+        {"btc_dynamic": {"max_probability_correction_points": 50}}
+    )
+    start = datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
+    next_market = MarketState(
+        asset="BTC",
+        condition_id="btc-new",
+        slug=f"btc-updown-5m-{int(start.timestamp())}",
+        question="Bitcoin Up or Down",
+        threshold_price=None,
+        start_time=start,
+        end_time=start + timedelta(minutes=5),
+        up_token_id="up",
+        down_token_id="down",
+    )
+
+    assert hub.apply_pending_config_before_markets({"BTC": next_market}) is True
+    registry = BtcDynamicRegistry(tmp_path / "btc-dynamic-ledger.sqlite3")
+    try:
+        engine = BtcDynamicEngine(config, registry)
+        engine.set_market(next_market, now=start)
+        assert engine.current_round is not None
+        assert engine.current_round.settings.max_probability_correction_points == 50
+    finally:
+        registry.close()
 
 
 def test_btc_dynamic_model_reset_requires_confirmation(tmp_path) -> None:

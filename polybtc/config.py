@@ -20,7 +20,7 @@ class SourceConfig(BaseModel):
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     rtds_stale_seconds: float = 10.0
     threshold_page_timeout_seconds: float = 4.0
-    threshold_page_retry_seconds: float = 2.0
+    threshold_page_retry_seconds: float = 0.75
     poly_book_poll_ms: int = 200
     market_refresh_seconds: float = 0.5
     max_start_price_lag_ms: int = 2000

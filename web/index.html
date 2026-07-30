@@ -1464,7 +1464,7 @@
       dynamic = dynamic || {};
       const market = btcSnapshot?.market;
       const diagnostics = dynamic.diagnostics || {};
-      const model = diagnostics.model || {};
+      const model = dynamic.model || diagnostics.model || {};
       const enabled = Boolean((dynamic.config || {}).enabled);
       setText('dynamicState', enabled ? dynamicReasonText(dynamic.status) : '关闭');
       setClass('dynamicState', `tag ${enabled ? 'green' : 'blue'}`);

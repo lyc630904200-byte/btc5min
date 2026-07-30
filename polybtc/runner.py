@@ -33,6 +33,7 @@ from .real_trading import (
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+BeforeMarketUpdatesCallback = Callable[[dict[str, MarketState]], bool | None]
 BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
 # Keep a sub-second REST safety net when the CLOB WebSocket is quiet.  The
 # strategy freshness limit is one second, so a two-second fallback was too slow.
@@ -41,7 +42,7 @@ BOOK_REST_RECONCILE_AFTER = timedelta(seconds=2)
 LIVE_EVENT_COALESCE_SECONDS = 0.02
 BOOK_PUBLISH_HEARTBEAT = timedelta(milliseconds=250)
 THRESHOLD_MATCH_TOLERANCE_USD = 0.01
-THRESHOLD_FINALIZATION_DELAY = timedelta(seconds=1)
+THRESHOLD_FINALIZATION_DELAY = timedelta(milliseconds=250)
 
 
 def run_dir(base: Path) -> Path:
@@ -253,29 +254,41 @@ async def apply_polymarket_page_threshold(
     market.threshold_verified = False
     market.threshold_fetched_at = None
 
-    event_threshold = getattr(client, "event_threshold", None)
-    gamma_threshold: float | None = None
-    if event_threshold is not None:
-        try:
-            gamma_threshold = await asyncio.wait_for(event_threshold(market.slug), timeout=timeout_seconds)
-        except Exception:
-            gamma_threshold = None
     page_data = getattr(client, "market_page_data", None)
-    try:
+
+    async def fetch_gamma_threshold() -> float | None:
+        event_threshold = getattr(client, "event_threshold", None)
+        if event_threshold is None:
+            return None
+        try:
+            return await asyncio.wait_for(event_threshold(market.slug), timeout=timeout_seconds)
+        except Exception:
+            return None
+
+    async def fetch_page_data():
         if page_data is not None:
-            outcome_price, results = await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)
-        else:
-            outcome_result, results_result = await asyncio.gather(
-                asyncio.wait_for(client.outcome_price(market.slug), timeout=timeout_seconds),
-                asyncio.wait_for(client.past_results(market.slug), timeout=timeout_seconds),
-                return_exceptions=True,
-            )
-            if isinstance(outcome_result, Exception) and isinstance(results_result, Exception):
-                raise outcome_result
-            outcome_price = None if isinstance(outcome_result, Exception) else outcome_result
-            results = [] if isinstance(results_result, Exception) else results_result
-    except Exception:
+            return await asyncio.wait_for(page_data(market.slug), timeout=timeout_seconds)
+        outcome_result, results_result = await asyncio.gather(
+            asyncio.wait_for(client.outcome_price(market.slug), timeout=timeout_seconds),
+            asyncio.wait_for(client.past_results(market.slug), timeout=timeout_seconds),
+            return_exceptions=True,
+        )
+        if isinstance(outcome_result, Exception) and isinstance(results_result, Exception):
+            raise outcome_result
+        outcome_price = None if isinstance(outcome_result, Exception) else outcome_result
+        results = [] if isinstance(results_result, Exception) else results_result
+        return outcome_price, results
+
+    gamma_result, page_result = await asyncio.gather(
+        fetch_gamma_threshold(),
+        fetch_page_data(),
+        return_exceptions=True,
+    )
+    gamma_threshold = None if isinstance(gamma_result, Exception) else gamma_result
+    if isinstance(page_result, Exception):
         outcome_price, results = None, []
+    else:
+        outcome_price, results = page_result
 
     completed_at = now or datetime.now(timezone.utc)
     market.threshold_fetched_at = completed_at
@@ -861,6 +874,7 @@ async def run_live(
     config: AppConfig,
     max_seconds: int | None = None,
     on_update: UpdateCallback | None = None,
+    before_market_updates: BeforeMarketUpdatesCallback | None = None,
     control_commands: ThreadQueue[tuple[str, Any]] | None = None,
     live_credentials: RealTradingCredentials | None = None,
 ) -> Path:
@@ -1020,6 +1034,14 @@ async def run_live(
                 await asyncio.sleep(LIVE_EVENT_COALESCE_SECONDS)
                 while not queue.empty() and len(pending_events) < 500:
                     pending_events.append(queue.get_nowait())
+            if before_market_updates is not None:
+                market_updates = {
+                    asset: payload
+                    for asset, event_type, payload in pending_events
+                    if event_type == "market" and isinstance(payload, MarketState)
+                }
+                if market_updates:
+                    before_market_updates(market_updates)
             pair_input_changed = False
             recovery_input_changed = timer_tick or recovery_control_changed
             dynamic_input_changed = timer_tick or dynamic_control_changed
@@ -1045,6 +1067,8 @@ async def run_live(
                         engine.set_market(market)
                         if asset == "BTC":
                             dynamic_engine.set_market(market)
+                            if engine.polymarket_tick is not None:
+                                dynamic_engine.add_chainlink_tick(engine.polymarket_tick)
                         journal.market(market)
                     elif event_type == "tick":
                         tick: PriceTick = payload

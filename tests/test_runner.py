@@ -4,6 +4,7 @@ from polybtc.config import AppConfig
 from polybtc.engine import PaperEngine
 from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot
 from polybtc.runner import (
+    THRESHOLD_FINALIZATION_DELAY,
     apply_polymarket_page_threshold,
     books_need_rest_refresh,
     coalesce_live_events,
@@ -363,19 +364,23 @@ def test_apply_polymarket_page_threshold_does_not_fetch_before_start() -> None:
     assert upcoming.threshold_verified is False
 
 
-def test_apply_polymarket_page_threshold_waits_one_second_after_start() -> None:
+def test_apply_polymarket_page_threshold_waits_finalization_delay_after_start() -> None:
     start = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     client = FakePolymarketClient()
     current = interval_market(start)
 
     __import__("asyncio").run(
-        apply_polymarket_page_threshold(client, current, now=start + timedelta(milliseconds=999))
+        apply_polymarket_page_threshold(
+            client,
+            current,
+            now=start + THRESHOLD_FINALIZATION_DELAY - timedelta(milliseconds=1),
+        )
     )
     assert client.outcome_calls == 0
     assert current.threshold_verified is False
 
     __import__("asyncio").run(
-        apply_polymarket_page_threshold(client, current, now=start + timedelta(seconds=1))
+        apply_polymarket_page_threshold(client, current, now=start + THRESHOLD_FINALIZATION_DELAY)
     )
     assert client.outcome_calls == 1
     assert current.threshold_verified is True

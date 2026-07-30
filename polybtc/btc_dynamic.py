@@ -609,6 +609,7 @@ class BtcDynamicEngine:
         self.model = registry.load_model()
         self.current_round: DynamicRound | None = None
         self.chainlink_ticks: list[tuple[datetime, float]] = []
+        self.chainlink_open_fallback: tuple[datetime, float] | None = None
         self.binance_ticks: list[tuple[datetime, float]] = []
         self.status = "disabled" if not config.btc_dynamic.enabled else "waiting_for_btc_market"
         self.last_reason = self.status
@@ -657,6 +658,7 @@ class BtcDynamicEngine:
         if existing is None:
             self.registry.save_round(self.current_round)
         self.chainlink_ticks = self.registry.load_ticks(market.condition_id, "chainlink")
+        self.chainlink_open_fallback = None
         self.binance_ticks = self.registry.load_ticks(market.condition_id, "binance")
         self.snapshot_seconds = {
             snapshot.snapshot_second
@@ -679,6 +681,22 @@ class BtcDynamicEngine:
             return
         if tick.received_at < round_.start_time - timedelta(seconds=2):
             return
+        if source == "chainlink":
+            observed_at = tick.exchange_timestamp or tick.received_at
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            else:
+                observed_at = observed_at.astimezone(timezone.utc)
+            if (
+                round_.start_time
+                <= observed_at
+                <= round_.start_time + timedelta(seconds=2)
+                and (
+                    self.chainlink_open_fallback is None
+                    or observed_at < self.chainlink_open_fallback[0]
+                )
+            ):
+                self.chainlink_open_fallback = (observed_at, tick.price)
         target = self.chainlink_ticks if source == "chainlink" else self.binance_ticks
         second = int(tick.received_at.timestamp())
         if target and int(target[-1][0].timestamp()) == second:
@@ -690,6 +708,84 @@ class BtcDynamicEngine:
         while target and target[0][0] < cutoff:
             target.pop(0)
         self.registry.save_tick(round_.market_id, source, tick)
+
+    @staticmethod
+    def _valid_rtds_start_candidate(market: MarketState) -> bool:
+        if market.start_time is None:
+            return False
+        return bool(
+            not market.threshold_candidate_conflicted
+            and market.threshold_candidate_price is not None
+            and math.isfinite(market.threshold_candidate_price)
+            and market.threshold_candidate_source == "polymarket_rtds_start_tick"
+            and market.threshold_candidate_observed_at == market.start_time
+            and market.threshold_candidate_received_at is not None
+            and market.start_time - timedelta(seconds=1)
+            <= market.threshold_candidate_received_at
+            <= market.start_time + timedelta(seconds=2)
+        )
+
+    @classmethod
+    def _chainlink_open_for_display(
+        cls, market: MarketState
+    ) -> tuple[float | None, str | None, bool]:
+        if (
+            market.threshold_verified is True
+            and market.threshold_price is not None
+            and market.threshold_price > 0
+        ):
+            return market.threshold_price, market.threshold_source, True
+        if cls._valid_rtds_start_candidate(market):
+            return (
+                market.threshold_candidate_price,
+                market.threshold_candidate_source,
+                False,
+            )
+        return None, None, False
+
+    def _chainlink_open_for_diagnostics(
+        self, market: MarketState
+    ) -> tuple[float | None, str | None, bool]:
+        open_price, open_source, open_verified = self._chainlink_open_for_display(market)
+        if open_price is not None:
+            return open_price, open_source, open_verified
+        if self.chainlink_open_fallback is not None:
+            return (
+                self.chainlink_open_fallback[1],
+                "polymarket_rtds_first_tick_after_start_unverified",
+                False,
+            )
+        return None, None, False
+
+    def _set_chainlink_waiting_diagnostics(
+        self,
+        market: MarketState,
+        now: datetime,
+        reason: str,
+    ) -> None:
+        open_price, open_source, open_verified = self._chainlink_open_for_diagnostics(market)
+        current_time: datetime | None = None
+        current_price: float | None = None
+        if self.chainlink_ticks:
+            current_time, current_price = self.chainlink_ticks[-1]
+        diagnostics: dict[str, Any] = {
+            "chainlink_open_price": open_price,
+            "chainlink_open_source": open_source,
+            "chainlink_open_verified": open_verified,
+            "chainlink_current_price": current_price,
+            "chainlink_tick_at": current_time.isoformat() if current_time else None,
+            "remaining_seconds": max(0.0, (market.end_time - now).total_seconds()),
+            "reason": reason,
+            "threshold_source": market.threshold_source,
+            "threshold_fetched_at": (
+                market.threshold_fetched_at.isoformat()
+                if market.threshold_fetched_at is not None
+                else None
+            ),
+        }
+        if open_price is not None and current_price is not None and open_price > 0 and current_price > 0:
+            diagnostics["chainlink_log_return"] = math.log(current_price / open_price)
+        self.diagnostics = diagnostics
 
     @staticmethod
     def _window_ticks(
@@ -741,17 +837,28 @@ class BtcDynamicEngine:
         books: dict[Direction, OrderBookSnapshot],
         now: datetime,
     ) -> tuple[float, float, dict[str, float], dict[str, Any]] | None:
-        if (
-            market.threshold_verified is not True
-            or market.threshold_price is None
-            or market.threshold_price <= 0
-            or not self.chainlink_ticks
-        ):
-            self.last_reason = "chainlink_open_unavailable"
+        open_price, open_source, open_verified = self._chainlink_open_for_display(market)
+        if open_price is None:
+            diagnostic_open, _, _ = self._chainlink_open_for_diagnostics(market)
+            self.last_reason = (
+                "chainlink_open_unverified"
+                if diagnostic_open is not None
+                else "chainlink_open_unavailable"
+            )
+            self._set_chainlink_waiting_diagnostics(market, now, self.last_reason)
+            return None
+        if not self.chainlink_ticks:
+            self.last_reason = "chainlink_current_unavailable"
+            self._set_chainlink_waiting_diagnostics(market, now, self.last_reason)
             return None
         current_time, current_price = self.chainlink_ticks[-1]
         if (now - current_time).total_seconds() > self.config.sources.rtds_stale_seconds:
             self.last_reason = "chainlink_stale"
+            self._set_chainlink_waiting_diagnostics(market, now, self.last_reason)
+            return None
+        if not open_verified:
+            self.last_reason = "chainlink_open_unverified"
+            self._set_chainlink_waiting_diagnostics(market, now, self.last_reason)
             return None
         settings = self.current_round.settings if self.current_round else self.config.btc_dynamic
         short_ticks = self._window_ticks(
@@ -765,7 +872,7 @@ class BtcDynamicEngine:
         floor = settings.volatility_floor_bps / 10_000.0
         sigma = max(short_volatility, long_volatility, floor)
         remaining = max(0.001, (market.end_time - now).total_seconds())
-        log_return = math.log(current_price / market.threshold_price)
+        log_return = math.log(current_price / open_price)
         z_score = log_return / (sigma * math.sqrt(remaining))
         formula_up = clamp(normal_cdf(z_score), 0.01, 0.99)
         up_imbalance, up_spread, up_midpoint = self._book_features(books.get(Direction.UP))
@@ -773,7 +880,7 @@ class BtcDynamicEngine:
         crossings = 0
         prior_side: bool | None = None
         for _, price in long_ticks:
-            side = price >= market.threshold_price
+            side = price >= open_price
             if prior_side is not None and side != prior_side:
                 crossings += 1
             prior_side = side
@@ -826,7 +933,9 @@ class BtcDynamicEngine:
         maximum_correction = settings.max_probability_correction_points / 100.0
         online_up = self.model.probability(formula_up, features, maximum_correction)
         diagnostics = {
-            "chainlink_open_price": market.threshold_price,
+            "chainlink_open_price": open_price,
+            "chainlink_open_source": open_source,
+            "chainlink_open_verified": open_verified,
             "chainlink_current_price": current_price,
             "chainlink_tick_at": current_time.isoformat(),
             "chainlink_log_return": log_return,
@@ -1188,6 +1297,7 @@ class BtcDynamicEngine:
                 if self.current_round is not None
                 else None
             ),
+            "model": self.model.model_dump(mode="json"),
             "diagnostics": self.diagnostics,
             "candidates": self.candidates,
             "confirmations": {
