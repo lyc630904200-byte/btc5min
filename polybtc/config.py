@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class SourceConfig(BaseModel):
     enabled_assets: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
-    proxy_url: str | None = "http://127.0.0.1:10808"
+    proxy_url: str | None = None
     market_slug: str | None = None
     binance_symbol: str = "BTCUSDT"
     binance_rest_url: str = "https://api.binance.com"
@@ -301,7 +301,9 @@ class BtcRecoveryConfig(BaseModel):
 
 class BtcDynamicConfig(BaseModel):
     enabled: bool = False
+    sizing_mode: Literal["quantity", "quote"] = "quantity"
     quantity: float = 10.0
+    quote_amount_usd: float = 5.0
     entry_seconds_after_open: float = 270.0
     exit_seconds_after_open: float = 290.0
     min_net_edge_cents: float = 3.0
@@ -313,11 +315,11 @@ class BtcDynamicConfig(BaseModel):
     volatility_floor_bps: float = 0.5
     max_probability_correction_points: float = 10.0
 
-    @field_validator("quantity")
+    @field_validator("quantity", "quote_amount_usd")
     @classmethod
-    def positive_dynamic_quantity(cls, value: float) -> float:
+    def positive_dynamic_order_size(cls, value: float) -> float:
         if value <= 0:
-            raise ValueError("BTC dynamic quantity must be positive")
+            raise ValueError("BTC dynamic order size must be positive")
         return value
 
     @field_validator("entry_seconds_after_open", "exit_seconds_after_open")

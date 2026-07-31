@@ -62,6 +62,10 @@
     .asset-switch { display: inline-flex; gap: 4px; max-width: 100%; overflow-x: auto; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
     .asset-tab { border: 0; border-radius: 5px; background: transparent; color: var(--muted); padding: 6px 12px; font-weight: 800; cursor: pointer; }
     .asset-tab.active { background: var(--ink); color: #fff; }
+    .refresh-switch { display: inline-flex; gap: 2px; height: 30px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .refresh-option { min-width: 48px; height: 22px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); padding: 0 6px; font: inherit; font-size: 11px; font-weight: 760; cursor: pointer; font-variant-numeric: tabular-nums; }
+    .refresh-option.active { background: var(--ink); color: #fff; }
+    .refresh-option:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
     .pair-only { display: none; }
     .recovery-only { display: none; }
     .real-only { display: none; }
@@ -125,6 +129,7 @@
 
     .stack { display: grid; gap: 14px; align-content: start; min-width: 0; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
+    .pair-only, .recovery-only, .real-only, .dynamic-only { display: none; }
     .panel-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 13px; border-bottom: 1px solid var(--line); background: var(--panel-soft); }
     .panel-title { font-size: 13px; font-weight: 760; color: var(--ink); white-space: nowrap; }
     .panel-body { padding: 13px; }
@@ -149,6 +154,12 @@
     .setting-input:disabled { cursor: not-allowed; opacity: .55; background: var(--panel-soft); color: var(--muted); }
     .setting-toggle { min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); cursor: pointer; font-size: 12px; }
     .setting-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
+    .sizing-switch { display: grid; grid-template-columns: 1fr 1fr; height: 32px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .sizing-option { position: relative; display: grid; place-items: center; min-width: 0; cursor: pointer; }
+    .sizing-option input { position: absolute; opacity: 0; pointer-events: none; }
+    .sizing-option span { width: 100%; height: 24px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); font-size: 12px; font-weight: 760; }
+    .sizing-option input:checked + span { background: var(--ink); color: #fff; }
+    .sizing-option input:focus-visible + span { outline: 2px solid var(--blue); outline-offset: 1px; }
     .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
     .settings-note { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .settings-save { height: 32px; border: 0; border-radius: 6px; padding: 0 12px; background: var(--blue); color: #fff; font: inherit; font-size: 12px; font-weight: 760; cursor: pointer; white-space: nowrap; }
@@ -226,7 +237,13 @@
     .pair-market-slug { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .pair-market-card .pair-line strong { min-width: 0; overflow-wrap: anywhere; word-break: break-all; }
 
+    @media (max-width: 1399px) {
+      .ws-address-pill { display: none; }
+    }
+
     @media (max-width: 1180px) {
+      .app { grid-template-rows: auto 1fr; }
+      header { min-height: 58px; height: auto; padding-top: 8px; padding-bottom: 8px; }
       .shell { grid-template-columns: 320px 1fr; }
       body.recovery-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr); }
       body.real-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
@@ -267,8 +284,14 @@
           <button class="asset-tab" id="assetREAL" type="button" role="tab" aria-selected="false">真实交易</button>
           <button class="asset-tab" id="assetDYNAMIC" type="button" role="tab" aria-selected="false">BTC动态胜率</button>
         </div>
+        <div class="refresh-switch" role="group" aria-label="前端刷新频率">
+          <button class="refresh-option active" type="button" data-refresh-ms="250" aria-pressed="true">250ms</button>
+          <button class="refresh-option" type="button" data-refresh-ms="500" aria-pressed="false">500ms</button>
+          <button class="refresh-option" type="button" data-refresh-ms="750" aria-pressed="false">750ms</button>
+          <button class="refresh-option" type="button" data-refresh-ms="1000" aria-pressed="false">1000ms</button>
+        </div>
         <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
-        <div class="pill"><span id="wsText">WebSocket</span></div>
+        <div class="pill ws-address-pill"><span id="wsText">WebSocket</span></div>
         <div class="pill"><span id="updatedAt">--</span></div>
       </div>
     </header>
@@ -401,8 +424,13 @@
             <div class="kv-row"><div class="kv-label">Chainlink当前</div><div class="kv-value" id="dynamicCurrentPrice">--</div></div>
             <div class="kv-row"><div class="kv-label">Z值 / 波动率</div><div class="kv-value" id="dynamicZVol">--</div></div>
             <div class="kv-row"><div class="kv-label">训练快照</div><div class="kv-value" id="dynamicSnapshotSchedule">--</div></div>
+            <div class="kv-row"><div class="kv-label">当前模型</div><div class="kv-value" id="dynamicModelKey">--</div></div>
+            <div class="kv-row"><div class="kv-label">对比模型</div><div class="kv-value" id="dynamicComparisonModelKey">下一场启用</div></div>
+            <div class="kv-row"><div class="kv-label">待启用模型</div><div class="kv-value" id="dynamicPendingModel">--</div></div>
             <div class="kv-row"><div class="kv-label">模型版本</div><div class="kv-value" id="dynamicModelVersion">--</div></div>
-            <div class="kv-row"><div class="kv-label">已训练市场</div><div class="kv-value" id="dynamicTrainedMarkets">0</div></div>
+            <div class="kv-row"><div class="kv-label">下单方式</div><div class="kv-value" id="dynamicSizingMode">--</div></div>
+            <div class="kv-row"><div class="kv-label">对比单</div><div class="kv-value" id="dynamicComparisonOrder">--</div></div>
+            <div class="kv-row"><div class="kv-label" id="dynamicTrainedMarketsLabel">模型训练场次</div><div class="kv-value" id="dynamicTrainedMarkets">0</div></div>
           </div>
         </div>
 
@@ -411,13 +439,26 @@
           <div class="panel-body metrics">
             <div class="metric"><div class="metric-name">公式 UP</div><div class="metric-value" id="dynamicFormulaUp">--</div></div>
             <div class="metric"><div class="metric-name">在线 UP</div><div class="metric-value" id="dynamicOnlineUp">--</div></div>
+            <div class="metric"><div class="metric-name">对比模型 UP</div><div class="metric-value" id="dynamicComparisonUp">--</div></div>
             <div class="metric"><div class="metric-name">修正</div><div class="metric-value" id="dynamicCorrection">--</div></div>
             <div class="metric"><div class="metric-name">Binance特征</div><div class="metric-value" id="dynamicBinanceState">--</div></div>
-            <div class="metric"><div class="metric-name">在线盈亏</div><div class="metric-value" id="dynamicOnlinePnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">当前模型盈亏</div><div class="metric-value" id="dynamicOnlinePnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">历史在线盈亏</div><div class="metric-value" id="dynamicAllOnlinePnl">0.00</div></div>
             <div class="metric"><div class="metric-name">公式盈亏</div><div class="metric-value" id="dynamicFormulaPnl">0.00</div></div>
-            <div class="metric"><div class="metric-name">在线Brier</div><div class="metric-value" id="dynamicOnlineBrier">--</div></div>
+            <div class="metric"><div class="metric-name">当前模型Brier</div><div class="metric-value" id="dynamicOnlineBrier">--</div></div>
             <div class="metric"><div class="metric-name">公式Brier</div><div class="metric-value" id="dynamicFormulaBrier">--</div></div>
-            <div class="metric metric-wide"><div class="metric-name">前向准确率</div><div class="metric-value" id="dynamicAccuracy">--</div></div>
+            <div class="metric metric-wide"><div class="metric-name">当前模型准确率</div><div class="metric-value" id="dynamicAccuracy">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel dynamic-only">
+          <div class="panel-head"><div class="panel-title">V1 / V2 同场对比</div><div class="tag blue">paper A/B</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">同场市场 / 快照</div><div class="metric-value" id="dynamicHeadCounts">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">V1 / V2 Brier</div><div class="metric-value" id="dynamicHeadBrier">-- / --</div></div>
+            <div class="metric"><div class="metric-name">V1 / V2 准确率</div><div class="metric-value" id="dynamicHeadAccuracy">-- / --</div></div>
+            <div class="metric"><div class="metric-name">V1 / V2 订单</div><div class="metric-value" id="dynamicHeadOrders">0 / 0</div></div>
+            <div class="metric metric-wide"><div class="metric-name">V1 / V2 同场盈亏</div><div class="metric-value" id="dynamicHeadPnl">0.00 / 0.00</div></div>
           </div>
         </div>
 
@@ -598,8 +639,11 @@
               <div class="pair-card">
                 <div class="pair-card-head"><span>UP</span><span class="tag blue" id="dynamicUpStatus">等待</span></div>
                 <div class="pair-line"><span>在线概率</span><strong id="dynamicUpProbability">--</strong></div>
+                <div class="pair-line"><span>对比概率</span><strong id="dynamicUpComparisonProbability">--</strong></div>
                 <div class="pair-line"><span>动态最高限价</span><strong id="dynamicUpLimit">--</strong></div>
                 <div class="pair-line"><span>完整成交均价</span><strong id="dynamicUpAverage">--</strong></div>
+                <div class="pair-line"><span>计划份数</span><strong id="dynamicUpQuantity">--</strong></div>
+                <div class="pair-line"><span>计划本金</span><strong id="dynamicUpQuote">--</strong></div>
                 <div class="pair-line"><span>手续费</span><strong id="dynamicUpFee">--</strong></div>
                 <div class="pair-line"><span>实际净优势</span><strong id="dynamicUpEdge">--</strong></div>
                 <div class="pair-line"><span>原因</span><strong id="dynamicUpReason">--</strong></div>
@@ -607,8 +651,11 @@
               <div class="pair-card">
                 <div class="pair-card-head"><span>DOWN</span><span class="tag blue" id="dynamicDownStatus">等待</span></div>
                 <div class="pair-line"><span>在线概率</span><strong id="dynamicDownProbability">--</strong></div>
+                <div class="pair-line"><span>对比概率</span><strong id="dynamicDownComparisonProbability">--</strong></div>
                 <div class="pair-line"><span>动态最高限价</span><strong id="dynamicDownLimit">--</strong></div>
                 <div class="pair-line"><span>完整成交均价</span><strong id="dynamicDownAverage">--</strong></div>
+                <div class="pair-line"><span>计划份数</span><strong id="dynamicDownQuantity">--</strong></div>
+                <div class="pair-line"><span>计划本金</span><strong id="dynamicDownQuote">--</strong></div>
                 <div class="pair-line"><span>手续费</span><strong id="dynamicDownFee">--</strong></div>
                 <div class="pair-line"><span>实际净优势</span><strong id="dynamicDownEdge">--</strong></div>
                 <div class="pair-line"><span>原因</span><strong id="dynamicDownReason">--</strong></div>
@@ -620,17 +667,17 @@
 
         <div class="panel dynamic-only">
           <div class="panel-head"><div class="panel-title">最近市场</div><div class="tag amber" id="dynamicRoundCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>场次</th><th>在线单</th><th>公式单</th><th>官方结果</th><th>已训练</th></tr></thead><tbody id="dynamicRounds"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>场次</th><th>在线单</th><th>对比单</th><th>公式单</th><th>官方结果</th><th>已训练</th></tr></thead><tbody id="dynamicRounds"></tbody></table></div></div>
         </div>
 
         <div class="panel dynamic-only">
           <div class="panel-head"><div class="panel-title">每日统计</div><div class="tag amber" id="dynamicDayCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>日期</th><th>在线订单</th><th>在线盈亏</th><th>公式订单</th><th>公式盈亏</th></tr></thead><tbody id="dynamicDaily"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>日期</th><th>在线订单</th><th>在线盈亏</th><th>对比订单</th><th>对比盈亏</th><th>公式订单</th><th>公式盈亏</th></tr></thead><tbody id="dynamicDaily"></tbody></table></div></div>
         </div>
 
         <div class="panel dynamic-only">
           <div class="panel-head"><div class="panel-title">最近订单</div><div class="tag amber" id="dynamicOrderCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>版本</th><th>时间</th><th>方向</th><th>模型概率</th><th>动态限价</th><th>成交均价</th><th>数量</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="dynamicOrders"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>版本</th><th>模型</th><th>时间</th><th>方向</th><th>模型概率</th><th>动态限价</th><th>成交均价</th><th>数量</th><th>本金</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="dynamicOrders"></tbody></table></div></div>
         </div>
       </section>
 
@@ -744,7 +791,12 @@
           <form class="panel-body" id="dynamicForm">
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">在线模拟</span><span class="setting-toggle"><input id="dynamicEnabled" type="checkbox">启用并暂停其他BTC新入场</span></label>
+              <div class="setting"><span class="setting-label">下单方式（二选一）</span><div class="sizing-switch" role="radiogroup" aria-label="动态策略下单方式">
+                <label class="sizing-option"><input id="dynamicSizingQuantity" name="dynamicSizingMode" type="radio" value="quantity"><span>按份数</span></label>
+                <label class="sizing-option"><input id="dynamicSizingQuote" name="dynamicSizingMode" type="radio" value="quote"><span>按金额</span></label>
+              </div></div>
               <label class="setting"><span class="setting-label">数量（份）</span><input class="setting-input" id="dynamicQuantity" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">固定金额（美元，手续费另计）</span><input class="setting-input" id="dynamicQuoteAmount" type="number" min="0.01" step="0.01" required></label>
               <label class="setting"><span class="setting-label">入场开始（开盘后秒）</span><input class="setting-input" id="dynamicEntrySeconds" type="number" min="0" max="299" step="1" required></label>
               <label class="setting"><span class="setting-label">入场截止（开盘后秒）</span><input class="setting-input" id="dynamicExitSeconds" type="number" min="1" max="300" step="1" required></label>
               <label class="setting"><span class="setting-label">最低净优势（美分/份）</span><input class="setting-input" id="dynamicMinEdge" type="number" min="0" step="0.01" required></label>
@@ -756,7 +808,7 @@
               <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="dynamicVolFloor" type="number" min="0" step="0.01" required></label>
               <label class="setting"><span class="setting-label">最大概率修正（百分点）</span><input class="setting-input" id="dynamicMaxCorrection" type="number" min="0" max="100" step="0.1" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">模型概率同时决定方向和最高限价；仅完整深度成交，买入后持有到官方结算。本页永远只做本地模拟。</span><button class="settings-save" id="saveDynamic" type="submit">保存动态参数</button></div>
+            <div class="settings-actions"><span class="settings-note">按份数或按金额只能选择一种；金额为买入本金，手续费另计。仅完整深度成交，买入后持有到官方结算。本页永远只做本地模拟。</span><button class="settings-save" id="saveDynamic" type="submit">保存动态参数</button></div>
           </form>
         </div>
         <div class="panel">
@@ -780,6 +832,19 @@
     let activeSocket = null;
     let lastSocketMessageAt = 0;
     let renderScheduled = false;
+    let renderTimer = null;
+    let lastRenderAt = Number.NEGATIVE_INFINITY;
+    let pendingSocketPayload = null;
+    const REFRESH_INTERVALS = [250, 500, 750, 1000];
+    const REFRESH_STORAGE_KEY = 'polybtc.frontendRefreshIntervalMs';
+    let refreshIntervalMs = (() => {
+      try {
+        const stored = Number(localStorage.getItem(REFRESH_STORAGE_KEY));
+        return REFRESH_INTERVALS.includes(stored) ? stored : 250;
+      } catch {
+        return 250;
+      }
+    })();
     let bookSide = 'BUY';
     let selectedAsset = 'BTC';
     let configFormInitialized = false;
@@ -843,6 +908,7 @@
     };
     const dynamicInputs = {
       quantity: 'dynamicQuantity',
+      quote_amount_usd: 'dynamicQuoteAmount',
       entry_seconds_after_open: 'dynamicEntrySeconds',
       exit_seconds_after_open: 'dynamicExitSeconds',
       min_net_edge_cents: 'dynamicMinEdge',
@@ -914,14 +980,48 @@
       renderCache[cacheKey] = signature;
     }
 
-    function scheduleRender(snapshot) {
-      latest = snapshot;
-      if (renderScheduled) return;
-      renderScheduled = true;
-      requestAnimationFrame(() => {
-        renderScheduled = false;
-        if (latest) render(latest);
+    function updateRefreshButtons() {
+      document.querySelectorAll('[data-refresh-ms]').forEach((button) => {
+        const active = Number(button.dataset.refreshMs) === refreshIntervalMs;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
       });
+    }
+
+    function setRefreshInterval(milliseconds) {
+      if (!REFRESH_INTERVALS.includes(milliseconds)) return;
+      refreshIntervalMs = milliseconds;
+      try {
+        localStorage.setItem(REFRESH_STORAGE_KEY, String(milliseconds));
+      } catch {
+        // Browser storage is optional; the selected interval still applies now.
+      }
+      updateRefreshButtons();
+      if (renderTimer !== null) {
+        clearTimeout(renderTimer);
+        renderTimer = null;
+      }
+      scheduleRender();
+    }
+
+    function scheduleRender(snapshot) {
+      if (snapshot !== undefined) latest = snapshot;
+      if (renderScheduled || renderTimer !== null) return;
+      const wait = Math.max(0, refreshIntervalMs - (performance.now() - lastRenderAt));
+      renderTimer = setTimeout(() => {
+        renderTimer = null;
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+          renderScheduled = false;
+          lastRenderAt = performance.now();
+          if (pendingSocketPayload !== null) {
+            const payload = pendingSocketPayload;
+            pendingSocketPayload = null;
+            latest = JSON.parse(payload);
+          }
+          if (latest) render(latest);
+        });
+      }, wait);
     }
 
     function fmtNumber(value, digits = 2) {
@@ -1020,12 +1120,21 @@
       $('recoveryReverseLimit').value = '触发后按盘口';
     }
 
+    function syncDynamicSizingState() {
+      const quoteMode = $('dynamicSizingQuote').checked;
+      $('dynamicSizingQuantity').checked = !quoteMode;
+      $('dynamicQuantity').disabled = quoteMode;
+      $('dynamicQuantity').required = !quoteMode;
+      $('dynamicQuoteAmount').disabled = !quoteMode;
+      $('dynamicQuoteAmount').required = quoteMode;
+    }
+
     function renderDynamicConfig(snapshot, force = false) {
       const active = snapshot.btc_dynamic?.config || {};
       const dynamic = snapshot.pending_btc_dynamic || active;
       const configKey = JSON.stringify(
         Object.fromEntries(Object.keys(dynamicInputs).map((field) => [field, dynamic[field]])),
-      ) + String(dynamic.enabled);
+      ) + String(dynamic.enabled) + String(dynamic.sizing_mode || 'quantity');
       if (
         force
         || !dynamicFormInitialized
@@ -1033,6 +1142,9 @@
       ) {
         Object.entries(dynamicInputs).forEach(([field, id]) => setRuntimeInput(id, dynamic[field]));
         $('dynamicEnabled').checked = Boolean(dynamic.enabled);
+        $('dynamicSizingQuote').checked = dynamic.sizing_mode === 'quote';
+        $('dynamicSizingQuantity').checked = dynamic.sizing_mode !== 'quote';
+        syncDynamicSizingState();
         renderedDynamicConfigKey = configKey;
         dynamicFormInitialized = true;
       }
@@ -1465,6 +1577,8 @@
       const market = btcSnapshot?.market;
       const diagnostics = dynamic.diagnostics || {};
       const model = dynamic.model || diagnostics.model || {};
+      const comparison = diagnostics.comparison || {};
+      const comparisonModel = dynamic.comparison_model || comparison.model || {};
       const enabled = Boolean((dynamic.config || {}).enabled);
       setText('dynamicState', enabled ? dynamicReasonText(dynamic.status) : '关闭');
       setClass('dynamicState', `tag ${enabled ? 'green' : 'blue'}`);
@@ -1483,13 +1597,57 @@
       setText(
         'dynamicSnapshotSchedule',
         (diagnostics.training_snapshot_seconds || []).length
-          ? diagnostics.training_snapshot_seconds.map((value) => `${fmtNumber(value, 1)}s`).join(' / ')
+          ? `策略 v${diagnostics.snapshot_policy_version || dynamic.round?.snapshot_policy_version || 1} · ${
+              diagnostics.training_snapshot_seconds
+                .map((value) => `${fmtNumber(value, 1)}s`)
+                .join(' / ')
+            }`
+          : '--',
+      );
+      const modelKey = dynamic.model_key || dynamic.active_model_key || 'online';
+      const schemaVersion = model.feature_schema_version || 1;
+      const comparisonModelKey =
+        dynamic.round?.comparison_model_key || comparison.model_key || null;
+      const comparisonSchemaVersion =
+        dynamic.round?.comparison_feature_schema_version ||
+        comparison.feature_schema_version ||
+        comparisonModel.feature_schema_version ||
+        null;
+      setText('dynamicModelKey', `${modelKey} / schema ${schemaVersion}`);
+      setText(
+        'dynamicComparisonModelKey',
+        comparisonModelKey
+          ? `${comparisonModelKey} / schema ${comparisonSchemaVersion || 1}`
+          : '下一场启用',
+      );
+      setText(
+        'dynamicPendingModel',
+        dynamic.pending_model
+          ? `${dynamic.pending_model.model_key} / 下一场`
           : '--',
       );
       setText('dynamicModelVersion', model.version == null ? '--' : `v${model.version}`);
+      const sizingSettings = dynamic.config || {};
+      setText(
+        'dynamicSizingMode',
+        sizingSettings.sizing_mode === 'quote'
+          ? `按金额 $${fmtNumber(sizingSettings.quote_amount_usd, 2)}`
+          : `按份数 ${fmtNumber(sizingSettings.quantity, 2)}份`,
+      );
+      setText(
+        'dynamicComparisonOrder',
+        dynamic.round?.comparison_order
+          ? `${dynamic.round.comparison_order.direction} ${fmtCents(dynamic.round.comparison_order.avg_price)}`
+          : comparisonModelKey
+          ? dynamicReasonText(dynamic.status)
+          : '下一场启用',
+      );
+      const modelGeneration = modelKey === 'online_v2' ? 'V2' : modelKey === 'online' ? 'V1' : modelKey;
+      setText('dynamicTrainedMarketsLabel', `${modelGeneration}训练场次`);
       setText('dynamicTrainedMarkets', model.trained_markets || 0);
       setText('dynamicFormulaUp', diagnostics.formula_probability_up == null ? '--' : fmtProb(diagnostics.formula_probability_up));
       setText('dynamicOnlineUp', diagnostics.online_probability_up == null ? '--' : fmtProb(diagnostics.online_probability_up));
+      setText('dynamicComparisonUp', comparison.probability_up == null ? '--' : fmtProb(comparison.probability_up));
       setText(
         'dynamicCorrection',
         diagnostics.probability_correction_points == null
@@ -1511,28 +1669,75 @@
         setText(`${prefix}Status`, candidate.eligible ? '达标' : '等待');
         setClass(`${prefix}Status`, `tag ${candidate.eligible ? 'green' : 'amber'}`);
         setText(`${prefix}Probability`, candidate.probability == null ? '--' : fmtProb(candidate.probability));
+        const comparisonCandidate = dynamic.candidates?.[`comparison_${direction}`] || {};
+        setText(
+          `${prefix}ComparisonProbability`,
+          comparisonCandidate.probability == null ? '--' : fmtProb(comparisonCandidate.probability),
+        );
         setText(`${prefix}Limit`, candidate.dynamic_max_price == null ? '--' : fmtCents(candidate.dynamic_max_price));
         setText(`${prefix}Average`, candidate.avg_price == null ? '--' : fmtCents(candidate.avg_price));
+        setText(`${prefix}Quantity`, candidate.quantity == null ? '--' : `${fmtNumber(candidate.quantity, 2)}份`);
+        setText(`${prefix}Quote`, candidate.quote == null ? '--' : `$${fmtNumber(candidate.quote, 2)}`);
         setText(`${prefix}Fee`, candidate.fee_usd == null ? '--' : `$${fmtNumber(candidate.fee_usd, 4)}`);
         setText(`${prefix}Edge`, candidate.net_edge_per_share == null ? '--' : `${fmtNumber(candidate.net_edge_per_share * 100, 2)}¢`);
         setText(`${prefix}Reason`, dynamicReasonText(candidate.reason));
       });
       const confirmation = dynamic.confirmations?.online;
+      const comparisonConfirmation = dynamic.confirmations?.comparison;
+      const requiredConfirmations = dynamic.config?.confirmation_updates || 2;
+      const confirmationParts = [];
+      if (confirmation) {
+        confirmationParts.push(
+          `${modelKey} ${confirmation.direction} · ${confirmation.updates}/${requiredConfirmations}次`,
+        );
+      }
+      if (comparisonConfirmation) {
+        confirmationParts.push(
+          `${comparisonModelKey || '对比'} ${comparisonConfirmation.direction} · ${comparisonConfirmation.updates}/${requiredConfirmations}次`,
+        );
+      }
       setText(
         'dynamicConfirmation',
-        confirmation
-          ? `${confirmation.direction} · ${confirmation.updates}/${dynamic.config?.confirmation_updates || 2}次`
-          : '--',
+        confirmationParts.join(' / ') || '--',
       );
       setText('dynamicDecision', dynamic.round?.online_order ? `已买 ${dynamic.round.online_order.direction}` : dynamicReasonText(dynamic.status));
       setClass('dynamicDecision', `tag ${dynamic.round?.online_order ? 'green' : 'blue'}`);
 
       const summary = dynamic.summary || {};
-      setPnl('dynamicOnlinePnl', summary.online?.realized_pnl || 0);
+      const modelSummary = summary.models?.[modelKey] || {};
+      setPnl('dynamicOnlinePnl', summary.active_online?.realized_pnl || 0);
+      setPnl('dynamicAllOnlinePnl', summary.online?.realized_pnl || 0);
       setPnl('dynamicFormulaPnl', summary.formula?.realized_pnl || 0);
-      setText('dynamicOnlineBrier', summary.brier_online == null ? '--' : fmtNumber(summary.brier_online, 4));
+      setText('dynamicOnlineBrier', modelSummary.brier_online == null ? '--' : fmtNumber(modelSummary.brier_online, 4));
       setText('dynamicFormulaBrier', summary.brier_formula == null ? '--' : fmtNumber(summary.brier_formula, 4));
-      setText('dynamicAccuracy', summary.forward_accuracy == null ? '--' : `${fmtNumber(summary.forward_accuracy * 100, 1)}%`);
+      setText('dynamicAccuracy', modelSummary.forward_accuracy == null ? '--' : `${fmtNumber(modelSummary.forward_accuracy * 100, 1)}%`);
+      const headToHead = summary.head_to_head || {};
+      const v1Head = headToHead.models?.online || {};
+      const v2Head = headToHead.models?.online_v2 || {};
+      setText(
+        'dynamicHeadCounts',
+        `${headToHead.markets || 0} / ${headToHead.evaluated_snapshots || 0}`,
+      );
+      setText(
+        'dynamicHeadBrier',
+        `${v1Head.brier_online == null ? '--' : fmtNumber(v1Head.brier_online, 4)} / ${
+          v2Head.brier_online == null ? '--' : fmtNumber(v2Head.brier_online, 4)
+        }`,
+      );
+      setText(
+        'dynamicHeadAccuracy',
+        `${v1Head.forward_accuracy == null ? '--' : `${fmtNumber(v1Head.forward_accuracy * 100, 1)}%`} / ${
+          v2Head.forward_accuracy == null ? '--' : `${fmtNumber(v2Head.forward_accuracy * 100, 1)}%`
+        }`,
+      );
+      setText(
+        'dynamicHeadOrders',
+        `${v1Head.orders || 0} / ${v2Head.orders || 0}`,
+      );
+      setText(
+        'dynamicHeadPnl',
+        `${fmtSigned(v1Head.realized_pnl || 0, 2)} / ${fmtSigned(v2Head.realized_pnl || 0, 2)}`,
+      );
       const daily = summary.daily || [];
       setText('dynamicDayCount', daily.length);
       updateHtmlWhenChanged(
@@ -1541,9 +1746,10 @@
         JSON.stringify(daily),
         daily.map((day) => `<tr>
           <td>${day.date}</td><td>${day.online_orders || 0}</td>
-          <td>${pnlHtml(day.online_pnl || 0)}</td><td>${day.formula_orders || 0}</td>
+          <td>${pnlHtml(day.online_pnl || 0)}</td><td>${day.comparison_orders || 0}</td>
+          <td>${pnlHtml(day.comparison_pnl || 0)}</td><td>${day.formula_orders || 0}</td>
           <td>${pnlHtml(day.formula_pnl || 0)}</td>
-        </tr>`).join('') || '<tr><td colspan="5">暂无每日统计</td></tr>',
+        </tr>`).join('') || '<tr><td colspan="7">暂无每日统计</td></tr>',
       );
 
       const rounds = dynamic.recent_rounds || [];
@@ -1555,9 +1761,10 @@
         rounds.map((round) => `<tr>
           <td>${fmtTime(round.start_time)}</td>
           <td>${round.online_order ? `${round.online_order.direction} ${fmtCents(round.online_order.avg_price)}` : '--'}</td>
+          <td>${round.comparison_order ? `${round.comparison_order.direction} ${fmtCents(round.comparison_order.avg_price)}` : '--'}</td>
           <td>${round.formula_order ? `${round.formula_order.direction} ${fmtCents(round.formula_order.avg_price)}` : '--'}</td>
           <td>${round.official_outcome || '--'}</td><td>${round.trained ? '是' : '否'}</td>
-        </tr>`).join('') || '<tr><td colspan="5">暂无动态市场</td></tr>',
+        </tr>`).join('') || '<tr><td colspan="6">暂无动态市场</td></tr>',
       );
       const orders = dynamic.recent_orders || [];
       setText('dynamicOrderCount', orders.length);
@@ -1567,13 +1774,14 @@
         JSON.stringify(orders),
         orders.map((order) => `<tr>
           <td>#${String(order.order_number || 0).padStart(6, '0')}</td>
-          <td>${order.variant === 'online' ? '在线' : '公式'}</td>
+          <td>${order.variant === 'online' ? '在线' : order.variant === 'comparison' ? '对比' : '公式'}</td>
+          <td>${order.model_key || 'online'} / s${order.feature_schema_version || 1}</td>
           <td>${fmtTime(order.created_at)}</td><td>${order.direction || '--'}</td>
           <td>${fmtProb(order.model_probability)}</td><td>${fmtCents(order.max_price)}</td>
           <td>${fmtCents(order.avg_price)}</td><td>${fmtNumber(order.quantity, 2)}</td>
-          <td>$${fmtNumber(order.fee_usd, 4)}</td><td>${order.official_outcome || '--'}</td>
+          <td>$${fmtNumber(order.quote, 2)}</td><td>$${fmtNumber(order.fee_usd, 4)}</td><td>${order.official_outcome || '--'}</td>
           <td>${order.realized_pnl == null ? '--' : pnlHtml(order.realized_pnl)}</td>
-        </tr>`).join('') || '<tr><td colspan="11">暂无动态订单</td></tr>',
+        </tr>`).join('') || '<tr><td colspan="13">暂无动态订单</td></tr>',
       );
       setText('dynamicResetState', dynamic.model_reset_pending ? '模型重置待生效' : '保留历史');
       renderDynamicConfig(
@@ -2064,6 +2272,7 @@
         activeSocket.onclose = null;
         activeSocket.close();
       }
+      pendingSocketPayload = null;
       setConnection('pending');
       $('wsText').textContent = url;
       const ws = new WebSocket(url);
@@ -2077,8 +2286,8 @@
       ws.onmessage = (event) => {
         if (activeSocket !== ws) return;
         lastSocketMessageAt = Date.now();
-        const state = JSON.parse(event.data);
-        scheduleRender(state);
+        pendingSocketPayload = event.data;
+        scheduleRender();
       };
       ws.onclose = () => {
         if (activeSocket !== ws) return;
@@ -2349,6 +2558,7 @@
     });
     $('dynamicForm').addEventListener('input', () => {
       dynamicFormDirty = true;
+      syncDynamicSizingState();
       $('dynamicConfigStatus').textContent = '有修改，尚未保存';
       $('dynamicConfigStatus').className = 'tag amber';
     });
@@ -2363,7 +2573,9 @@
         const payload = {
           btc_dynamic: {
             enabled: $('dynamicEnabled').checked,
+            sizing_mode: $('dynamicSizingQuote').checked ? 'quote' : 'quantity',
             quantity: runtimeNumber('dynamicQuantity'),
+            quote_amount_usd: runtimeNumber('dynamicQuoteAmount'),
             entry_seconds_after_open: runtimeNumber('dynamicEntrySeconds'),
             exit_seconds_after_open: runtimeNumber('dynamicExitSeconds'),
             min_net_edge_cents: runtimeNumber('dynamicMinEdge'),
@@ -2536,6 +2748,12 @@
       'shadow-reset',
       '重置20次影子验证进度？历史记录不会删除。',
     ));
+    document.querySelectorAll('[data-refresh-ms]').forEach((button) => {
+      button.addEventListener('click', () => {
+        setRefreshInterval(Number(button.dataset.refreshMs));
+      });
+    });
+    updateRefreshButtons();
     setInterval(monitorConnection, 1000);
     loadInitial();
   </script>

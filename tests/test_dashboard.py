@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from polybtc.btc_dynamic import BtcDynamicEngine, BtcDynamicRegistry
+from polybtc.btc_dynamic import (
+    BtcDynamicEngine,
+    BtcDynamicRegistry,
+    V2_MODEL_KEY,
+)
 from polybtc.config import AppConfig
 from polybtc.dashboard import DashboardHub, DashboardRequestHandler
 from polybtc.models import MarketState
@@ -30,6 +34,88 @@ def test_recovery_orders_table_uses_merged_order_columns() -> None:
     assert "${recoveryReasonText(order.reason)}" not in html
     assert 'id="recoveryTargetPrice" type="number" min="1" max="100"' in html
     assert 'id="recoveryTriggerPrice" type="number" min="0" max="99"' in html
+
+
+def test_dynamic_dashboard_exposes_model_generation_fields() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="dynamicModelKey"' in html
+    assert 'id="dynamicComparisonModelKey"' in html
+    assert 'id="dynamicComparisonOrder"' in html
+    assert 'id="dynamicSizingMode"' in html
+    assert 'id="dynamicSizingQuantity"' in html
+    assert 'id="dynamicSizingQuote"' in html
+    assert 'id="dynamicQuoteAmount"' in html
+    assert 'id="dynamicPendingModel"' in html
+    assert 'id="dynamicAllOnlinePnl"' in html
+    assert 'id="dynamicTrainedMarketsLabel"' in html
+    assert 'id="dynamicHeadBrier"' in html
+    assert 'id="dynamicHeadAccuracy"' in html
+    assert 'id="dynamicUpComparisonProbability"' in html
+    assert 'id="dynamicDownComparisonProbability"' in html
+    assert "setText('dynamicTrainedMarketsLabel', `${modelGeneration}训练场次`);" in html
+    assert "${order.model_key || 'online'} / s${order.feature_schema_version || 1}" in html
+    assert "const comparison = diagnostics.comparison || {};" in html
+    assert "const headToHead = summary.head_to_head || {};" in html
+    assert "headToHead.models?.online || {}" in html
+    assert "headToHead.models?.online_v2 || {}" in html
+    assert "day.comparison_orders || 0" in html
+    assert "round.comparison_order" in html
+    assert "order.variant === 'comparison' ? '对比' : '公式'" in html
+    assert "function syncDynamicSizingState()" in html
+    assert "sizing_mode: $('dynamicSizingQuote').checked ? 'quote' : 'quantity'" in html
+    assert "quote_amount_usd: runtimeNumber('dynamicQuoteAmount')" in html
+    assert "diagnostics.snapshot_policy_version" in html
+    assert "const modelSummary = summary.models?.[modelKey] || {};" in html
+    assert (
+        "modelSummary.brier_online == null ? '--' "
+        ": fmtNumber(modelSummary.brier_online, 4)"
+    ) in html
+    assert (
+        "modelSummary.forward_accuracy == null ? '--' "
+        ": `${fmtNumber(modelSummary.forward_accuracy * 100, 1)}%`"
+    ) in html
+    assert (
+        "summary.brier_online == null ? '--' : fmtNumber(summary.brier_online, 4)"
+        not in html
+    )
+    assert "summary.forward_accuracy == null" not in html
+
+
+def test_dashboard_throttles_high_frequency_updates_to_250_milliseconds() -> None:
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+
+    assert hub.push_interval == timedelta(milliseconds=250)
+
+
+def test_dashboard_frontend_offers_refresh_interval_steps() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'aria-label="前端刷新频率"' in html
+    for interval in (250, 500, 750, 1000):
+        assert f'data-refresh-ms="{interval}"' in html
+    assert "const REFRESH_INTERVALS = [250, 500, 750, 1000];" in html
+    assert "localStorage.setItem(REFRESH_STORAGE_KEY, String(milliseconds));" in html
+    assert "pendingSocketPayload = event.data;" in html
+    assert "const state = JSON.parse(event.data);" not in html
+
+
+def test_dashboard_hides_inactive_mode_panels_after_base_panel_styles() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    base_panel = ".panel { background: var(--panel);"
+    hidden_modes = (
+        ".pair-only, .recovery-only, .real-only, .dynamic-only { display: none; }"
+    )
+    assert base_panel in html
+    assert hidden_modes in html
+    assert html.index(hidden_modes) > html.index(base_panel)
 
 
 def test_compact_market_exposes_threshold_verification() -> None:
@@ -694,7 +780,9 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert hub.config.btc_dynamic.enabled is False
+    assert hub.config.btc_dynamic.sizing_mode == "quantity"
     assert hub.config.btc_dynamic.quantity == 10
+    assert hub.config.btc_dynamic.quote_amount_usd == 5
     assert hub.config.btc_dynamic.slippage_reserve_cents == 1.35
 
     hub.asset_snapshots["BTC"] = {
@@ -704,7 +792,9 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
         {
             "btc_dynamic": {
                 "enabled": True,
+                "sizing_mode": "quote",
                 "quantity": 12,
+                "quote_amount_usd": 7.5,
                 "min_net_edge_cents": 4,
             }
         }
@@ -712,7 +802,9 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
     assert response["config_status"] == "pending_next_btc_market"
     assert response["btc_dynamic"]["enabled"] is False
     assert response["pending_btc_dynamic"]["enabled"] is True
+    assert response["pending_btc_dynamic"]["sizing_mode"] == "quote"
     assert response["pending_btc_dynamic"]["quantity"] == 12
+    assert response["pending_btc_dynamic"]["quote_amount_usd"] == 7.5
     assert hub.apply_pending_config_for_market("btc-old") is False
     assert hub.apply_pending_config_for_market("btc-new") is True
     assert hub.config.btc_dynamic.enabled is True
@@ -722,7 +814,9 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert reloaded.config.btc_dynamic.enabled is True
+    assert reloaded.config.btc_dynamic.sizing_mode == "quote"
     assert reloaded.config.btc_dynamic.quantity == 12
+    assert reloaded.config.btc_dynamic.quote_amount_usd == 7.5
 
 
 def test_btc_dynamic_config_applies_before_next_round_is_created(tmp_path) -> None:
@@ -796,6 +890,48 @@ def test_btc_dynamic_model_reset_requires_confirmation(tmp_path) -> None:
         command, requested_at = hub.control_commands.get_nowait()
         assert command == "btc_dynamic_model_reset"
         assert isinstance(requested_at, datetime)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_btc_dynamic_model_reset_conflicts_with_pending_activation(tmp_path) -> None:
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    hub.btc_dynamic_state = {
+        "pending_model": {
+            "model_key": V2_MODEL_KEY,
+            "not_before": "2026-07-30T00:00:00+00:00",
+        }
+    }
+    handler = type(
+        "TestPendingDynamicDashboardRequestHandler",
+        (DashboardRequestHandler,),
+        {"hub": hub},
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    endpoint = (
+        f"http://127.0.0.1:{server.server_address[1]}/api/btc-dynamic/model/reset"
+    )
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps({"confirmation": "RESET_DYNAMIC_MODEL"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        try:
+            urllib.request.urlopen(request, timeout=2)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 409
+        else:
+            raise AssertionError("pending activation should reject model reset")
+        assert hub.control_commands.empty()
     finally:
         server.shutdown()
         server.server_close()

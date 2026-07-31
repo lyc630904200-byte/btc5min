@@ -7,8 +7,8 @@ sources:
   enabled_assets:
     - BTC
     - ETH
-  # Windows system proxy is tried first; this explicit proxy is the fallback.
-  proxy_url: http://127.0.0.1:10808
+  # Windows system proxy is detected automatically, then direct access is tried.
+  proxy_url: null
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
   binance_rest_url: https://api.binance.com
@@ -96,7 +96,9 @@ btc_dynamic:
   # Online probability controls both direction and a per-direction dynamic limit.
   # This strategy is local simulation only and holds every fill to official settlement.
   enabled: false
+  sizing_mode: quantity
   quantity: 10
+  quote_amount_usd: 5
   entry_seconds_after_open: 270
   exit_seconds_after_open: 290
   min_net_edge_cents: 3

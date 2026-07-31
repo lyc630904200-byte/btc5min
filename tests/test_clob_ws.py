@@ -285,6 +285,24 @@ def test_connections_prefer_system_proxy_before_configured_proxy_and_direct(monk
     ]
 
 
+def test_default_source_uses_system_proxy_then_direct(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "polybtc.clients.system_proxy_url",
+        lambda: "http://127.0.0.1:7897",
+    )
+
+    assert SourceConfig().proxy_url is None
+    if "proxy" in websocket_option_attempts()[0]:
+        assert websocket_option_attempts() == [
+            {"proxy": "http://127.0.0.1:7897"},
+            {"proxy": None},
+        ]
+    assert http_option_attempts() == [
+        ("http://127.0.0.1:7897", False),
+        (None, False),
+    ]
+
+
 def test_clob_parser_ignores_plain_text_heartbeat() -> None:
     books = {}
 

@@ -122,16 +122,17 @@ origin https://github.com/lyc630904200-byte/btc5min.git
 仓库本地 Git 代理：
 
 ```text
-http.proxy  = http://127.0.0.1:10808
-https.proxy = http://127.0.0.1:10808
+http.proxy  = http://127.0.0.1:7897
+https.proxy = http://127.0.0.1:7897
 ```
 
-当前开发分支 `jiaoyi02` 位于 `0e868b6`，并与 `origin/jiaoyi02` 一致。
+当前开发分支 `jiaoyi02` 位于 `f5ef5f5`，工作区有尚未提交的后续改动。
 
-程序持久配置仍为 `http://127.0.0.1:10808`，但该端口没有监听。`polybtc.clients.system_proxy_url()` 会显式读取 Windows 系统代理，HTTP 和外部 WebSocket 均按“Windows 系统代理 → 手工配置代理 → 直连”的顺序尝试；当前系统代理为 Clash Verge mixed 入口 `127.0.0.1:7897`。仓库 Git 代理仍是 10808；最近一次推送使用单次命令参数走 Clash，未修改 Git 持久配置：
+程序默认不再写死代理端口。`polybtc.clients.system_proxy_url()` 会读取 Windows 系统代理，HTTP 和外部 WebSocket 均按“Windows 系统代理 → 直连”的顺序尝试；当前系统代理为 Clash Verge mixed 入口 `127.0.0.1:7897`。仓库 Git 默认代理也已同步为 `127.0.0.1:7897`：
 
 ```powershell
-git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin jiaoyi02
+git config --local http.proxy http://127.0.0.1:7897
+git config --local https.proxy http://127.0.0.1:7897
 ```
 
 用户所说的 `21079` 是旧 v2rayN 节点的远端服务器端口，不是本机监听端口，不要把程序配置直接改成 `127.0.0.1:21079`。

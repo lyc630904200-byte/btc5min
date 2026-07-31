@@ -194,6 +194,8 @@ class DashboardHub:
             "btc_dynamic_statistics_reset",
             "btc_dynamic_model_reset",
             "btc_dynamic_model_reset_pending",
+            "btc_dynamic_model_reset_rejected",
+            "btc_dynamic_model_activated",
         }:
             return {"type": event_type, "payload": {}}
         return event
@@ -529,7 +531,9 @@ class DashboardHub:
         }
         dynamic_fields = {
             "enabled",
+            "sizing_mode",
             "quantity",
+            "quote_amount_usd",
             "entry_seconds_after_open",
             "exit_seconds_after_open",
             "min_net_edge_cents",
@@ -808,6 +812,10 @@ class DashboardHub:
         }
 
     def request_btc_dynamic_model_reset(self) -> dict[str, Any]:
+        if (self.btc_dynamic_state or {}).get("pending_model"):
+            raise ValueError(
+                "cannot reset BTC dynamic model while activation is pending"
+            )
         requested_at = datetime.now(timezone.utc)
         self.control_commands.put(("btc_dynamic_model_reset", requested_at))
         return {
@@ -921,7 +929,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             if payload.get("confirmation") != "RESET_DYNAMIC_MODEL":
                 self.send_json(400, {"error": "explicit confirmation required"})
                 return
-            self.send_json(202, self.hub.request_btc_dynamic_model_reset())
+            try:
+                response = self.hub.request_btc_dynamic_model_reset()
+            except ValueError as exc:
+                self.send_json(409, {"error": str(exc)})
+                return
+            self.send_json(202, response)
             return
         if not self.path.startswith("/api/config"):
             self.send_error(404)

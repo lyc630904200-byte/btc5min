@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +10,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .btc_dynamic import (
+    BtcDynamicRegistry,
+    LEGACY_MODEL_KEY,
+    V2_MODEL_KEY,
+)
 from .config import load_config
 from .dashboard import run_dashboard
 from .journal import RunJournal
@@ -134,6 +140,66 @@ def replay(
         journal.position(position)
     journal.summary(engine.summary())
     print_json({"output_dir": str(output_dir), **engine.summary()})
+
+
+@app.command("btc-dynamic-train-v2")
+def btc_dynamic_train_v2(
+    config: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="YAML config path",
+    ),
+) -> None:
+    """Train remaining-time V2 from settled snapshots and stage next-market activation."""
+    cfg = load_config(config)
+    ledger_path = cfg.data_dir / "btc-dynamic-ledger.sqlite3"
+    registry = BtcDynamicRegistry(ledger_path)
+    try:
+        if registry.model_exists(V2_MODEL_KEY):
+            raise typer.BadParameter(
+                f"{V2_MODEL_KEY} already exists; preserved models are never overwritten"
+            )
+        now = datetime.now(timezone.utc)
+        backup_path = cfg.data_dir / (
+            "btc-dynamic-ledger.pre-v2-"
+            f"{now.strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
+        )
+        registry.backup(backup_path)
+        result = registry.train_v2_from_history(now)
+    finally:
+        registry.close()
+    print_json({"backup_path": str(backup_path), **result})
+
+
+@app.command("btc-dynamic-activate-model")
+def btc_dynamic_activate_model(
+    model: str = typer.Option(
+        ...,
+        "--model",
+        help=f"Model key: {LEGACY_MODEL_KEY} or {V2_MODEL_KEY}",
+    ),
+    config: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="YAML config path",
+    ),
+) -> None:
+    """Stage an existing BTC dynamic model for activation on the next market."""
+    if model not in {LEGACY_MODEL_KEY, V2_MODEL_KEY}:
+        raise typer.BadParameter(
+            f"model must be {LEGACY_MODEL_KEY} or {V2_MODEL_KEY}"
+        )
+    cfg = load_config(config)
+    registry = BtcDynamicRegistry(
+        cfg.data_dir / "btc-dynamic-ledger.sqlite3"
+    )
+    try:
+        result = registry.stage_model_activation(model)
+    finally:
+        registry.close()
+    print_json({"accepted": True, **result})
 
 
 @app.command()
