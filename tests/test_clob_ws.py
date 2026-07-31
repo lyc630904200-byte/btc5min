@@ -1,9 +1,11 @@
 import asyncio
 import json
+import os
 
 from polybtc.clients import (
     PolymarketClient,
     ProxySafeClientConnection,
+    configure_system_proxy_environment,
     http_option_attempts,
     update_books_from_market_message,
     websocket_option_attempts,
@@ -283,6 +285,29 @@ def test_connections_prefer_system_proxy_before_configured_proxy_and_direct(monk
         ("http://127.0.0.1:10808", False),
         (None, False),
     ]
+
+
+def test_default_source_config_uses_system_proxy_without_manual_fallback() -> None:
+    assert SourceConfig().proxy_url is None
+
+
+def test_system_proxy_is_exported_for_third_party_clients(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "polybtc.clients.system_proxy_url",
+        lambda: "http://127.0.0.1:7897",
+    )
+    for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(variable, raising=False)
+
+    assert configure_system_proxy_environment() == "http://127.0.0.1:7897"
+    assert {
+        variable: os.environ[variable]
+        for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+    } == {
+        "HTTP_PROXY": "http://127.0.0.1:7897",
+        "HTTPS_PROXY": "http://127.0.0.1:7897",
+        "ALL_PROXY": "http://127.0.0.1:7897",
+    }
 
 
 def test_clob_parser_ignores_plain_text_heartbeat() -> None:

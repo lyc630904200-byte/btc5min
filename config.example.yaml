@@ -7,8 +7,8 @@ sources:
   enabled_assets:
     - BTC
     - ETH
-  # Windows system proxy is tried first; this explicit proxy is the fallback.
-  proxy_url: http://127.0.0.1:10808
+  # Windows system proxy is used by default; set this only for a manual fallback.
+  proxy_url:
   market_slug: btc-updown-5m-1783704300
   binance_symbol: BTCUSDT
   binance_rest_url: https://api.binance.com

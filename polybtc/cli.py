@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .clients import configure_system_proxy_environment
 from .config import load_config
 from .dashboard import run_dashboard
 from .journal import RunJournal
@@ -39,6 +40,7 @@ def format_value(value: object, digits: int = 4) -> str:
 @app.command()
 def check(config: Optional[Path] = typer.Option(None, "--config", "-c", help="YAML config path")) -> None:
     """Check Binance, Gamma, CLOB, and local clock connectivity."""
+    configure_system_proxy_environment()
     cfg = load_config(config)
     result = asyncio.run(check_connectivity(cfg))
     table = Table(title="polybtc check")
@@ -58,6 +60,7 @@ def run(
     max_seconds: Optional[int] = typer.Option(None, "--max-seconds", help="Optional run duration for smoke tests"),
 ) -> None:
     """Run live paper trading."""
+    configure_system_proxy_environment()
     cfg = load_config(config)
     output_dir = asyncio.run(run_live(cfg, max_seconds=max_seconds))
     console.print(f"run output: {output_dir}")
@@ -77,6 +80,7 @@ def dashboard(
     ),
 ) -> None:
     """Run paper trading and the local realtime dashboard."""
+    configure_system_proxy_environment()
     cfg = load_config(config)
     live_credentials: RealTradingCredentials | None = None
     if prompt_live_credentials:

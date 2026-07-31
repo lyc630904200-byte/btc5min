@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -88,6 +89,15 @@ def system_proxy_url() -> str | None:
         if value:
             return str(value)
     return None
+
+
+def configure_system_proxy_environment() -> str | None:
+    proxy_url = system_proxy_url()
+    if not proxy_url:
+        return None
+    for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        os.environ.setdefault(variable, proxy_url)
+    return proxy_url
 
 
 def websocket_option_attempts(proxy_url: str | None = None) -> list[dict[str, Any]]:
