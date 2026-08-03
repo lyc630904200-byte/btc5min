@@ -714,6 +714,7 @@
             <div class="reason"><strong>持仓方向 / 均价</strong><span class="mono" id="v8PositionDirection">空仓</span></div>
             <div class="reason"><strong>数量 / 成本</strong><span class="mono" id="v8PositionSize">--</span></div>
             <div class="reason"><strong>开仓时间</strong><span class="mono" id="v8PositionTime">--</span></div>
+            <div class="reason"><strong>回撤止盈</strong><span class="mono" id="v8ChaseProfitState">--</span></div>
           </div>
         </div>
 
@@ -899,6 +900,9 @@
               <label class="setting"><span class="setting-label">重新入场冷却（秒）</span><input class="setting-input" id="v8ReentryCooldown" type="number" min="0.1" step="0.1" value="3" required></label>
               <label class="setting"><span class="setting-label">每场最多买入</span><input class="setting-input" id="v8MaxEntries" type="number" min="1" step="1" value="3" required></label>
               <label class="setting"><span class="setting-label">单仓可执行止损（USD）</span><input class="setting-input" id="v8MaxLoss" type="number" min="0.01" step="0.01" value="2.5" required></label>
+              <label class="setting"><span class="setting-label">追赶止盈启动（USD）</span><input class="setting-input" id="v8ChaseProfitArm" type="number" min="0.01" step="0.01" value="0.25" required></label>
+              <label class="setting"><span class="setting-label">追赶固定回撤（USD）</span><input class="setting-input" id="v8ChaseProfitDrawdown" type="number" min="0.01" step="0.01" value="0.15" required></label>
+              <label class="setting"><span class="setting-label">追赶比例回撤</span><input class="setting-input" id="v8ChaseProfitFraction" type="number" min="0.01" max="1" step="0.01" value="0.35" required></label>
               <label class="setting"><span class="setting-label">模型评估间隔（ms）</span><input class="setting-input" id="v8EvalMs" type="number" min="1" step="1" value="250" required></label>
               <label class="setting"><span class="setting-label">训练快照间隔（秒）</span><input class="setting-input" id="v8SnapshotSeconds" type="number" min="1" step="1" value="1" required></label>
               <label class="setting"><span class="setting-label">Binance 现货</span><span class="setting-toggle"><input id="v8UseBinance" type="checkbox" checked>计入现货共识</span></label>
@@ -913,7 +917,7 @@
               <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="v8VolFloor" type="number" min="0" step="0.01" value="0.5" required></label>
               <label class="setting"><span class="setting-label">最大概率修正（百分点）</span><input class="setting-input" id="v8MaxCorrection" type="number" min="0" max="100" step="0.1" value="10" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">盘口追赶与自动决策互斥；追赶模式固定确认0.25秒且至少两次更新、最多持仓5秒，并按完整盘口扣除双边手续费和滑点。保存后下一场BTC生效。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
+            <div class="settings-actions"><span class="settings-note">追赶利润达到启动值后记录最高可执行利润；回撤达到固定金额与最高利润比例两者中的较大值时整仓退出。保存后下一场BTC生效。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
           </form>
         </div>
 
@@ -1031,6 +1035,9 @@
       reentry_cooldown_seconds: 'v8ReentryCooldown',
       max_entries_per_market: 'v8MaxEntries',
       max_loss_usd: 'v8MaxLoss',
+      chase_take_profit_arm_usd: 'v8ChaseProfitArm',
+      chase_take_profit_drawdown_usd: 'v8ChaseProfitDrawdown',
+      chase_take_profit_drawdown_fraction: 'v8ChaseProfitFraction',
       evaluation_interval_ms: 'v8EvalMs',
       snapshot_interval_seconds: 'v8SnapshotSeconds',
       min_fresh_spot_exchanges: 'v8MinFresh',
@@ -1239,6 +1246,11 @@
         'v8MaxLoss',
       ].forEach((id) => { $(id).disabled = automatic || chase; });
       $('v8AutoEmergencyLoss').disabled = !automatic;
+      [
+        'v8ChaseProfitArm',
+        'v8ChaseProfitDrawdown',
+        'v8ChaseProfitFraction',
+      ].forEach((id) => { $(id).disabled = !chase; });
     }
 
     function renderDynamicConfig(snapshot, force = false) {
@@ -1931,6 +1943,7 @@
         chase_caught_up: '追赶模式：盘口已追上并盈利',
         chase_signal_reversed: '追赶模式：领先信号反转',
         chase_signal_decayed: '追赶模式：领先信号衰减',
+        chase_profit_trailing: '追赶模式：可执行利润回撤止盈',
         chase_timeout: '追赶模式：持仓5秒超时退出',
         chase_holding: '追赶模式：等待盘口追赶',
         max_loss: '达到可执行止损',
@@ -2067,6 +2080,19 @@
       setText('v8PositionDirection', position ? `${position.direction} · ${positionPrice}` : '空仓');
       setText('v8PositionSize', position ? `${fmtNumber(position.quantity, 3)}份 / $${fmtNumber(position.entry_quote + position.entry_fee_usd, 4)}` : '--');
       setText('v8PositionTime', position ? fmtTime(position.opened_at) : '--');
+      const sellCandidate = v8.candidates?.SELL;
+      let chaseProfitState = '--';
+      if (position?.strategy_mode === 'orderbook_chase' && sellCandidate) {
+        const currentPnl = Number(sellCandidate.pnl || 0);
+        const peakPnl = Number(sellCandidate.peak_unrealized_pnl ?? currentPnl);
+        const drawdown = Number(sellCandidate.profit_drawdown_usd || 0);
+        const requiredDrawdown = Number(sellCandidate.required_profit_drawdown_usd || 0);
+        const arm = Number(sellCandidate.take_profit_arm_usd ?? settings.chase_take_profit_arm_usd ?? 0.25);
+        chaseProfitState = sellCandidate.take_profit_armed
+          ? `已启动 · 当前 $${fmtNumber(currentPnl, 3)} · 最高 $${fmtNumber(peakPnl, 3)} · 回撤 $${fmtNumber(drawdown, 3)} / $${fmtNumber(requiredDrawdown, 3)}`
+          : `未启动 · 当前 $${fmtNumber(currentPnl, 3)} / $${fmtNumber(arm, 3)}`;
+      }
+      setText('v8ChaseProfitState', chaseProfitState);
 
       const timeMetrics = summary.brier_by_time || {};
       updateHtmlWhenChanged(
@@ -3062,6 +3088,9 @@
             reentry_cooldown_seconds: runtimeNumber('v8ReentryCooldown'),
             max_entries_per_market: runtimeNumber('v8MaxEntries'),
             max_loss_usd: runtimeNumber('v8MaxLoss'),
+            chase_take_profit_arm_usd: runtimeNumber('v8ChaseProfitArm'),
+            chase_take_profit_drawdown_usd: runtimeNumber('v8ChaseProfitDrawdown'),
+            chase_take_profit_drawdown_fraction: runtimeNumber('v8ChaseProfitFraction'),
             evaluation_interval_ms: runtimeNumber('v8EvalMs'),
             snapshot_interval_seconds: runtimeNumber('v8SnapshotSeconds'),
             spot_exchanges: spotExchanges,

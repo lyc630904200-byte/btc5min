@@ -81,6 +81,7 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert '<strong>持仓方向 / 均价</strong>' in html
     assert 'id="v8ChaseLead"' in html
     assert 'id="v8ChaseTarget"' in html
+    assert 'id="v8ChaseProfitState"' in html
     assert "`${position.direction} · ${positionPrice}`" in html
     assert 'id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5"' in html
     assert 'id="v8BuyEdge" type="number" min="0" step="0.01" value="5"' in html
@@ -92,6 +93,10 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert "spot_exchanges: spotExchanges" in html
     assert "buy_edge_cents: runtimeNumber('v8BuyEdge')" in html
     assert "sell_edge_cents: runtimeNumber('v8SellEdge')" in html
+    assert "chase_take_profit_arm_usd: runtimeNumber('v8ChaseProfitArm')" in html
+    assert "chase_take_profit_drawdown_usd: runtimeNumber('v8ChaseProfitDrawdown')" in html
+    assert "chase_take_profit_drawdown_fraction: runtimeNumber('v8ChaseProfitFraction')" in html
+    assert "chase_profit_trailing: '追赶模式：可执行利润回撤止盈'" in html
 
 
 def test_compact_market_exposes_threshold_verification() -> None:
@@ -861,6 +866,9 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
                 "quote_amount_usd": 6,
                 "buy_edge_cents": 6.5,
                 "sell_edge_cents": 2.5,
+                "chase_take_profit_arm_usd": 0.30,
+                "chase_take_profit_drawdown_usd": 0.20,
+                "chase_take_profit_drawdown_fraction": 0.40,
                 "spot_exchanges": ["binance", "coinbase"],
                 "min_fresh_spot_exchanges": 2,
             }
@@ -873,6 +881,9 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     assert response["pending_btc_v8"]["orderbook_chase_mode"] is False
     assert response["pending_btc_v8"]["auto_emergency_loss_enabled"] is False
     assert response["pending_btc_v8"]["quote_amount_usd"] == 6
+    assert response["pending_btc_v8"]["chase_take_profit_arm_usd"] == 0.30
+    assert response["pending_btc_v8"]["chase_take_profit_drawdown_usd"] == 0.20
+    assert response["pending_btc_v8"]["chase_take_profit_drawdown_fraction"] == 0.40
     assert response["pending_pair_match"]["enabled"] is False
     assert response["pending_btc_recovery"]["enabled"] is False
     assert response["pending_btc_dynamic"]["enabled"] is False
@@ -907,6 +918,9 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         assert engine.current_round.settings.auto_emergency_loss_enabled is False
         assert engine.current_round.settings.quote_amount_usd == 6
         assert engine.current_round.settings.buy_edge_cents == 6.5
+        assert engine.current_round.settings.chase_take_profit_arm_usd == 0.30
+        assert engine.current_round.settings.chase_take_profit_drawdown_usd == 0.20
+        assert engine.current_round.settings.chase_take_profit_drawdown_fraction == 0.40
         assert engine.current_round.settings.spot_exchanges == ["binance", "coinbase"]
     finally:
         registry.close()
@@ -919,6 +933,9 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     assert reloaded.config.btc_v8.orderbook_chase_mode is False
     assert reloaded.config.btc_v8.auto_emergency_loss_enabled is False
     assert reloaded.config.btc_v8.quote_amount_usd == 6
+    assert reloaded.config.btc_v8.chase_take_profit_arm_usd == 0.30
+    assert reloaded.config.btc_v8.chase_take_profit_drawdown_usd == 0.20
+    assert reloaded.config.btc_v8.chase_take_profit_drawdown_fraction == 0.40
     assert reloaded.config.btc_v8.spot_exchanges == ["binance", "coinbase"]
     assert reloaded.config.pair_match.enabled is False
     assert reloaded.config.btc_recovery.enabled is False

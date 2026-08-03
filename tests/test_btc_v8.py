@@ -355,6 +355,10 @@ def test_orderbook_chase_policy_is_short_horizon_and_mutually_exclusive() -> Non
                 "orderbook_chase_mode": True,
             }
         )
+    with pytest.raises(ValueError, match="drawdown fraction"):
+        AppConfig(btc_v8={"chase_take_profit_drawdown_fraction": 1.01})
+    with pytest.raises(ValueError, match="must be positive"):
+        AppConfig(btc_v8={"chase_take_profit_arm_usd": 0})
 
 
 def test_orderbook_chase_signal_uses_received_spot_lead_and_consensus() -> None:
@@ -432,6 +436,70 @@ def test_orderbook_chase_does_not_sell_only_because_lead_signal_decays() -> None
     assert decision["eligible"] is False
     assert decision["reason"] == "chase_holding"
     assert decision["signal_decayed"] is True
+
+
+def test_orderbook_chase_arms_and_executes_trailing_profit_exit() -> None:
+    opened = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    diagnostics = {
+        "orderbook_chase": {
+            "eligible": True,
+            "direction": "UP",
+            "signal_strength": 1.0,
+        }
+    }
+    position = auto_position(
+        strategy_mode="orderbook_chase",
+        entry_target_probability=0.90,
+        entry_signal_strength=1.0,
+        peak_unrealized_pnl=0.80,
+        opened_at=opened,
+    )
+
+    decision = v8_orderbook_chase_exit_decision(
+        position,
+        0.50,
+        0.40,
+        diagnostics,
+        opened + timedelta(seconds=2),
+    )
+
+    assert decision["eligible"] is True
+    assert decision["reason"] == "chase_profit_trailing"
+    assert decision["take_profit_armed"] is True
+    assert decision["peak_unrealized_pnl"] == pytest.approx(0.80)
+    assert decision["profit_drawdown_usd"] == pytest.approx(0.40)
+    assert decision["required_profit_drawdown_usd"] == pytest.approx(0.28)
+
+
+def test_orderbook_chase_trailing_profit_waits_for_arm_and_drawdown() -> None:
+    opened = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    diagnostics = {
+        "orderbook_chase": {
+            "eligible": True,
+            "direction": "UP",
+            "signal_strength": 1.0,
+        }
+    }
+    position = auto_position(
+        strategy_mode="orderbook_chase",
+        entry_target_probability=0.90,
+        entry_signal_strength=1.0,
+        peak_unrealized_pnl=0.40,
+        opened_at=opened,
+    )
+
+    decision = v8_orderbook_chase_exit_decision(
+        position,
+        0.50,
+        0.30,
+        diagnostics,
+        opened + timedelta(seconds=2),
+    )
+
+    assert decision["eligible"] is False
+    assert decision["take_profit_armed"] is True
+    assert decision["profit_drawdown_usd"] == pytest.approx(0.10)
+    assert decision["required_profit_drawdown_usd"] == pytest.approx(0.15)
 
 
 def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(tmp_path) -> None:

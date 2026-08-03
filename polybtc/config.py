@@ -423,6 +423,9 @@ class BtcV8Config(BaseModel):
     reentry_cooldown_seconds: float = 3.0
     max_entries_per_market: int = 3
     max_loss_usd: float = 2.5
+    chase_take_profit_arm_usd: float = 0.25
+    chase_take_profit_drawdown_usd: float = 0.15
+    chase_take_profit_drawdown_fraction: float = 0.35
     evaluation_interval_ms: int = 250
     snapshot_interval_seconds: int = 1
     spot_exchanges: list[Literal["binance", "coinbase", "kraken"]] = Field(
@@ -443,6 +446,8 @@ class BtcV8Config(BaseModel):
         "sell_confirmation_seconds",
         "reentry_cooldown_seconds",
         "max_loss_usd",
+        "chase_take_profit_arm_usd",
+        "chase_take_profit_drawdown_usd",
         "spot_stale_seconds",
         "chainlink_stale_seconds",
         "raw_retention_hours",
@@ -464,6 +469,13 @@ class BtcV8Config(BaseModel):
     def non_negative_v8_value(cls, value: float) -> float:
         if value < 0:
             raise ValueError("BTC V8 thresholds must not be negative")
+        return value
+
+    @field_validator("chase_take_profit_drawdown_fraction")
+    @classmethod
+    def valid_v8_fraction(cls, value: float) -> float:
+        if not 0 < value <= 1:
+            raise ValueError("BTC V8 drawdown fraction must be within (0, 1]")
         return value
 
     @field_validator("entry_end_seconds", "sell_end_seconds")

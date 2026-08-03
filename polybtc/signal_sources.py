@@ -444,11 +444,21 @@ def _kraken_number(value: Any) -> str:
 
 
 def kraken_book_checksum(bids: list[BookLevel], asks: list[BookLevel]) -> int:
-    ordered_asks = sorted(asks, key=lambda level: level.price)[:10]
-    ordered_bids = sorted(bids, key=lambda level: level.price, reverse=True)[:10]
+    return _kraken_book_checksum_values(
+        [(Decimal(str(level.price)), Decimal(str(level.size))) for level in bids],
+        [(Decimal(str(level.price)), Decimal(str(level.size))) for level in asks],
+    )
+
+
+def _kraken_book_checksum_values(
+    bids: list[tuple[Decimal, Decimal]],
+    asks: list[tuple[Decimal, Decimal]],
+) -> int:
+    ordered_asks = sorted(asks, key=lambda level: level[0])[:10]
+    ordered_bids = sorted(bids, key=lambda level: level[0], reverse=True)[:10]
     payload = "".join(
-        _kraken_number(level.price) + _kraken_number(level.size)
-        for level in (*ordered_asks, *ordered_bids)
+        _kraken_number(price) + _kraken_number(size)
+        for price, size in (*ordered_asks, *ordered_bids)
     )
     return zlib.crc32(payload.encode("ascii")) & 0xFFFFFFFF
 
@@ -457,7 +467,12 @@ class KrakenSignalClient:
     def __init__(self, config: SourceConfig):
         self.config = config
         self.symbol = "BTC/USD"
-        self.books: dict[str, dict[float, float]] = {"bids": {}, "asks": {}}
+        self.books: dict[str, dict[Decimal, Decimal]] = {"bids": {}, "asks": {}}
+        self.book_resync_required = False
+
+    def reset_book_for_resync(self) -> None:
+        self.books = {"bids": {}, "asks": {}}
+        self.book_resync_required = False
 
     def parse(self, payload: dict[str, Any], received_at: datetime) -> list[SignalEvent]:
         channel = payload.get("channel")
@@ -493,29 +508,33 @@ class KrakenSignalClient:
             return []
         if event_type == "snapshot":
             self.books = {
-                "bids": {float(item["price"]): float(item["qty"]) for item in row.get("bids") or []},
-                "asks": {float(item["price"]): float(item["qty"]) for item in row.get("asks") or []},
+                "bids": {
+                    Decimal(str(item["price"])): Decimal(str(item["qty"]))
+                    for item in row.get("bids") or []
+                },
+                "asks": {
+                    Decimal(str(item["price"])): Decimal(str(item["qty"]))
+                    for item in row.get("asks") or []
+                },
             }
         else:
             for side in ("bids", "asks"):
                 for item in row.get(side) or []:
-                    price, size = float(item["price"]), float(item["qty"])
+                    price = Decimal(str(item["price"]))
+                    size = Decimal(str(item["qty"]))
                     if size <= 0:
                         self.books[side].pop(price, None)
                     else:
                         self.books[side][price] = size
-        bids = [
-            BookLevel(price=p, size=s)
-            for p, s in sorted(self.books["bids"].items(), reverse=True)[:25]
-        ]
-        asks = [
-            BookLevel(price=p, size=s)
-            for p, s in sorted(self.books["asks"].items())[:25]
-        ]
+        bid_values = sorted(self.books["bids"].items(), reverse=True)[:25]
+        ask_values = sorted(self.books["asks"].items())[:25]
+        bids = [BookLevel(price=float(price), size=float(size)) for price, size in bid_values]
+        asks = [BookLevel(price=float(price), size=float(size)) for price, size in ask_values]
         expected = row.get("checksum")
         valid = bool(bids and asks)
         if expected is not None:
-            valid = valid and kraken_book_checksum(bids, asks) == int(expected)
+            valid = valid and _kraken_book_checksum_values(bid_values, ask_values) == int(expected)
+        self.book_resync_required = not valid
         return [
             SignalEvent(
                 source="kraken",
@@ -558,8 +577,13 @@ class KrakenSignalClient:
                             await websocket.send(json.dumps(request))
                         async for message in websocket:
                             received_at = utc_now()
-                            for event in self.parse(json.loads(message), received_at):
+                            for event in self.parse(
+                                json.loads(message, parse_float=str), received_at
+                            ):
                                 yield event
+                            if self.book_resync_required:
+                                self.reset_book_for_resync()
+                                break
                     break
                 except asyncio.CancelledError:
                     raise

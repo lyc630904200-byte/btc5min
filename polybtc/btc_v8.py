@@ -607,6 +607,9 @@ def v8_orderbook_chase_exit_decision(
     pnl: float,
     diagnostics: dict[str, Any],
     now: datetime,
+    take_profit_arm_usd: float = 0.25,
+    take_profit_drawdown_usd: float = 0.15,
+    take_profit_drawdown_fraction: float = 0.35,
 ) -> dict[str, Any]:
     chase = diagnostics.get("orderbook_chase") or {}
     held_seconds = max(0.0, (_ensure_utc(now) - _ensure_utc(position.opened_at)).total_seconds())
@@ -626,6 +629,22 @@ def v8_orderbook_chase_exit_decision(
             or current_strength < max(CHASE_MIN_SIGNAL_SIGMA, entry_strength * 0.40)
         )
     )
+    peak_pnl = max(
+        position.peak_unrealized_pnl
+        if position.peak_unrealized_pnl is not None
+        else pnl,
+        pnl,
+    )
+    take_profit_armed = peak_pnl + 1e-12 >= take_profit_arm_usd
+    profit_drawdown = max(0.0, peak_pnl - pnl)
+    required_profit_drawdown = max(
+        take_profit_drawdown_usd,
+        peak_pnl * take_profit_drawdown_fraction,
+    )
+    trailing_profit_exit = bool(
+        take_profit_armed
+        and profit_drawdown + 1e-12 >= required_profit_drawdown
+    )
     target_reached = net_value + 0.005 >= target
     reason = None
     if held_seconds + 1e-12 >= CHASE_MAX_HOLD_SECONDS:
@@ -634,6 +653,8 @@ def v8_orderbook_chase_exit_decision(
         reason = "chase_caught_up"
     elif signal_reversed:
         reason = "chase_signal_reversed"
+    elif trailing_profit_exit:
+        reason = "chase_profit_trailing"
     return {
         "eligible": reason is not None,
         "reason": reason or "chase_holding",
@@ -644,6 +665,13 @@ def v8_orderbook_chase_exit_decision(
         "target_reached": target_reached,
         "signal_reversed": signal_reversed,
         "signal_decayed": signal_decayed,
+        "take_profit_armed": take_profit_armed,
+        "take_profit_arm_usd": take_profit_arm_usd,
+        "peak_unrealized_pnl": peak_pnl,
+        "profit_drawdown_usd": profit_drawdown,
+        "required_profit_drawdown_usd": required_profit_drawdown,
+        "take_profit_drawdown_usd": take_profit_drawdown_usd,
+        "take_profit_drawdown_fraction": take_profit_drawdown_fraction,
         "entry_signal_strength": entry_strength,
         "current_signal_strength": current_strength,
         "current_chase_direction": current_direction,
@@ -2179,12 +2207,18 @@ class BtcV8Engine:
         exit_reason = None
         decision_details: dict[str, Any] = {}
         if position.strategy_mode == "orderbook_chase":
+            if position.peak_unrealized_pnl is None or pnl > position.peak_unrealized_pnl:
+                position.peak_unrealized_pnl = pnl
+                self.registry.save_position(position)
             decision_details = v8_orderbook_chase_exit_decision(
                 position=position,
                 net_value=net_value,
                 pnl=pnl,
                 diagnostics=diagnostics,
                 now=now,
+                take_profit_arm_usd=settings.chase_take_profit_arm_usd,
+                take_profit_drawdown_usd=settings.chase_take_profit_drawdown_usd,
+                take_profit_drawdown_fraction=settings.chase_take_profit_drawdown_fraction,
             )
             if decision_details["eligible"]:
                 exit_reason = str(decision_details["reason"])

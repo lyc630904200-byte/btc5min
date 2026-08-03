@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import zlib
 from datetime import datetime, timezone
 
 from polybtc.config import SourceConfig
@@ -157,6 +159,36 @@ def test_kraken_book_checksum_is_enforced() -> None:
     invalid = client.parse(payload, NOW)[0]
     assert invalid.valid is False
     assert invalid.reason == "checksum_mismatch"
+    assert client.book_resync_required is True
+    client.reset_book_for_resync()
+    assert client.book_resync_required is False
+    assert client.books == {"bids": {}, "asks": {}}
+
+
+def test_kraken_checksum_preserves_wire_decimal_precision() -> None:
+    client = KrakenSignalClient(SourceConfig())
+    checksum_payload = "1010030001000020000"
+    checksum = zlib.crc32(checksum_payload.encode("ascii")) & 0xFFFFFFFF
+    event = client.parse(
+        {
+            "channel": "book",
+            "type": "snapshot",
+            "data": [
+                {
+                    "symbol": "BTC/USD",
+                    "bids": [{"price": "100.00", "qty": "2.0000"}],
+                    "asks": [{"price": "101.00", "qty": "3.000"}],
+                    "checksum": checksum,
+                    "timestamp": NOW.isoformat(),
+                }
+            ],
+        },
+        NOW,
+    )[0]
+
+    assert event.valid is True
+    assert client.book_resync_required is False
+    json.dumps(event.model_dump(mode="json"))
 
 
 def test_binance_futures_parses_trade_book_mark_funding_and_liquidation() -> None:
