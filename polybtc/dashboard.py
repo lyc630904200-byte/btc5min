@@ -617,6 +617,8 @@ class DashboardHub:
         v8_fields = {
             "enabled",
             "auto_decision_mode",
+            "orderbook_chase_mode",
+            "auto_emergency_loss_enabled",
             "quote_amount_usd",
             "buy_edge_cents",
             "sell_edge_cents",

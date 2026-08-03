@@ -451,7 +451,12 @@
             <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="v8MarketSlug">--</div></div>
             <div class="kv-row"><div class="kv-label">当前动作</div><div class="kv-value" id="v8Action">--</div></div>
             <div class="kv-row"><div class="kv-label">拒绝原因</div><div class="kv-value" id="v8Reason">--</div></div>
+            <div class="kv-row"><div class="kv-label">决策模式</div><div class="kv-value" id="v8DecisionMode">--</div></div>
+            <div class="kv-row"><div class="kv-label">现货领先</div><div class="kv-value" id="v8ChaseLead">--</div></div>
+            <div class="kv-row"><div class="kv-label">追赶目标</div><div class="kv-value" id="v8ChaseTarget">--</div></div>
             <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="v8TimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink开盘</div><div class="kv-value" id="v8ChainlinkOpen">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink当前</div><div class="kv-value" id="v8ChainlinkCurrent">--</div></div>
             <div class="kv-row"><div class="kv-label">模型版本</div><div class="kv-value" id="v8ModelVersion">--</div></div>
             <div class="kv-row"><div class="kv-label">已训练市场</div><div class="kv-value" id="v8TrainedMarkets">0</div></div>
             <div class="kv-row"><div class="kv-label">本场买入次数</div><div class="kv-value" id="v8EntryCount">0 / 3</div></div>
@@ -879,6 +884,8 @@
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">本地自主模拟</span><span class="setting-toggle"><input id="v8Enabled" type="checkbox">启用并停止其他策略新入场</span></label>
               <label class="setting"><span class="setting-label">自动决策模式</span><span class="setting-toggle"><input id="v8AutoDecision" type="checkbox">模型实时决定买入、卖出和止损</span></label>
+              <label class="setting"><span class="setting-label">盘口追赶模式</span><span class="setting-toggle"><input id="v8OrderbookChase" type="checkbox">捕捉现货领先后的短时盘口追赶</span></label>
+              <label class="setting"><span class="setting-label">紧急亏损保护</span><span class="setting-toggle"><input id="v8AutoEmergencyLoss" type="checkbox">亏损达到本金50%时立即整仓退出</span></label>
               <label class="setting"><span class="setting-label">固定金额（USD）</span><input class="setting-input" id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5" required></label>
               <label class="setting"><span class="setting-label">买入净优势（美分/份）</span><input class="setting-input" id="v8BuyEdge" type="number" min="0" step="0.01" value="5" required></label>
               <label class="setting"><span class="setting-label">卖出价值差（美分/份）</span><input class="setting-input" id="v8SellEdge" type="number" min="0" step="0.01" value="2" required></label>
@@ -906,7 +913,7 @@
               <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="v8VolFloor" type="number" min="0" step="0.01" value="0.5" required></label>
               <label class="setting"><span class="setting-label">最大概率修正（百分点）</span><input class="setting-input" id="v8MaxCorrection" type="number" min="0" max="100" step="0.1" value="10" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">自动模式按实时模型概率与完整盘口清仓价值决定买卖和止损，忽略手动优势、确认和固定止损参数；金额、数据可信度、深度、交易次数及时间边界仍为硬风控。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
+            <div class="settings-actions"><span class="settings-note">盘口追赶与自动决策互斥；追赶模式固定确认0.25秒且至少两次更新、最多持仓5秒，并按完整盘口扣除双边手续费和滑点。保存后下一场BTC生效。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
           </form>
         </div>
 
@@ -1221,6 +1228,7 @@
 
     function syncV8DecisionModeState() {
       const automatic = $('v8AutoDecision').checked;
+      const chase = $('v8OrderbookChase').checked;
       [
         'v8BuyEdge',
         'v8SellEdge',
@@ -1229,7 +1237,8 @@
         'v8SellConfirmSeconds',
         'v8SellConfirmUpdates',
         'v8MaxLoss',
-      ].forEach((id) => { $(id).disabled = automatic; });
+      ].forEach((id) => { $(id).disabled = automatic || chase; });
+      $('v8AutoEmergencyLoss').disabled = !automatic;
     }
 
     function renderDynamicConfig(snapshot, force = false) {
@@ -1270,6 +1279,8 @@
       const configKey = JSON.stringify({
         enabled: v8.enabled,
         auto_decision_mode: v8.auto_decision_mode,
+        orderbook_chase_mode: v8.orderbook_chase_mode,
+        auto_emergency_loss_enabled: v8.auto_emergency_loss_enabled,
         spot_exchanges: v8.spot_exchanges,
         values: Object.fromEntries(Object.keys(v8Inputs).map((field) => [field, v8[field]])),
       });
@@ -1281,6 +1292,8 @@
         Object.entries(v8Inputs).forEach(([field, id]) => setRuntimeInput(id, v8[field]));
         $('v8Enabled').checked = Boolean(v8.enabled);
         $('v8AutoDecision').checked = Boolean(v8.auto_decision_mode);
+        $('v8OrderbookChase').checked = Boolean(v8.orderbook_chase_mode);
+        $('v8AutoEmergencyLoss').checked = Boolean(v8.auto_emergency_loss_enabled);
         syncV8DecisionModeState();
         const exchanges = new Set(v8.spot_exchanges || ['binance', 'coinbase', 'kraken']);
         $('v8UseBinance').checked = exchanges.has('binance');
@@ -1897,9 +1910,29 @@
         actual_edge_below_threshold: '完整成交后净优势不足',
         depth_below_limit: '限价内深度不足',
         quantity_below_market_minimum: '低于市场最小份数',
+        auto_exit_depth_unavailable: '自动风控：买入后无法整仓退出',
+        auto_liquidation_risk: '自动风控：即时退出损失过大',
         sell_depth_unavailable: '买盘深度不足，无法整仓卖出',
         model_value_sell: '盘口价值高于模型持有价值',
         auto_model_sell: '自动决策：清仓价值高于持有价值',
+        auto_emergency_loss: '自动决策：紧急亏损保护',
+        auto_terminal_exit: '自动决策：临近结算风险退出',
+        auto_trailing_exit: '自动决策：浮盈回撤退出',
+        auto_thesis_exit: '自动决策：原持仓判断失效',
+        auto_risk_exit: '自动决策：多信号风险退出',
+        auto_hold: '自动决策：综合信号继续持有',
+        chase_waiting_history: '追赶模式：等待完整1秒历史',
+        chase_consensus_insufficient: '追赶模式：同向现货源不足',
+        chase_signal_weak: '追赶模式：领先信号较弱',
+        chase_probability_move_small: '追赶模式：预计盘口变化不足',
+        chase_signal: '追赶模式：发现现货领先',
+        chase_opposite_direction: '追赶模式：仅评估领先方向',
+        chase_buy: '追赶模式：模拟买入',
+        chase_caught_up: '追赶模式：盘口已追上并盈利',
+        chase_signal_reversed: '追赶模式：领先信号反转',
+        chase_signal_decayed: '追赶模式：领先信号衰减',
+        chase_timeout: '追赶模式：持仓5秒超时退出',
+        chase_holding: '追赶模式：等待盘口追赶',
         max_loss: '达到可执行止损',
         hold_value_higher: '模型持有价值更高',
         eligible: '满足交易条件',
@@ -1920,11 +1953,15 @@
 
     function v8CandidateText(candidate, sell = false) {
       if (!candidate || Object.keys(candidate).length === 0) return '--';
-      const probability = candidate.probability == null ? '--' : fmtProb(candidate.probability);
+      const shownProbability = candidate.valuation_probability ?? candidate.probability;
+      const probability = shownProbability == null ? '--' : fmtProb(shownProbability);
       const price = candidate.avg_price == null ? '--' : fmtCents(candidate.avg_price);
       const edge = sell ? candidate.value_edge_per_share : candidate.edge_per_share;
       const edgeText = edge == null ? '--' : `${fmtNumber(Number(edge) * 100, 2)}¢`;
-      return `${candidate.eligible ? '可执行' : '等待'} · 概率 ${probability} · 均价 ${price} · 差值 ${edgeText} · ${v8ReasonText(candidate.reason)}`;
+      const riskText = sell && candidate.risk_score != null
+        ? ` · 风险 ${fmtNumber(Number(candidate.risk_score) * 100, 1)}/${fmtNumber(Number(candidate.risk_threshold) * 100, 1)}`
+        : '';
+      return `${candidate.eligible ? '可执行' : '等待'} · 概率 ${probability} · 均价 ${price} · 差值 ${edgeText}${riskText} · ${v8ReasonText(candidate.reason)}`;
     }
 
     function groupV8Trades(trades) {
@@ -1958,6 +1995,7 @@
       v8 = v8 || {};
       const market = btcSnapshot?.market;
       const diagnostics = v8.diagnostics || {};
+      const chase = diagnostics.orderbook_chase || {};
       const model = v8.model || diagnostics.model || {};
       const modelControl = v8.model_control || {};
       const summary = v8.summary || {};
@@ -1968,8 +2006,26 @@
       setText('v8MarketSlug', market?.slug || v8.round?.market_slug || '--');
       setText('v8Action', v8ReasonText(v8.status));
       setText('v8Reason', v8ReasonText(v8.last_reason));
+      const decisionMode = settings.orderbook_chase_mode
+        ? '盘口追赶'
+        : settings.auto_decision_mode ? '自动决策' : '手动参数';
+      setText('v8DecisionMode', decisionMode);
+      setText(
+        'v8ChaseLead',
+        chase.lead_bps_1s == null
+          ? '--'
+          : `${Number(chase.lead_bps_1s) >= 0 ? '+' : ''}${fmtNumber(chase.lead_bps_1s, 2)} bps · ${chase.supporting_sources || 0}/${chase.required_sources || 2}所`,
+      );
+      setText(
+        'v8ChaseTarget',
+        chase.direction && chase.target_probability != null
+          ? `${chase.direction} · ${fmtProb(chase.target_probability)}`
+          : '--',
+      );
       const left = secondsLeft(market);
       setText('v8TimeLeft', left == null ? '--' : `${left}s`);
+      setText('v8ChainlinkOpen', diagnostics.chainlink_open_price == null ? '--' : fmtPrice(diagnostics.chainlink_open_price));
+      setText('v8ChainlinkCurrent', diagnostics.chainlink_current_price == null ? '--' : fmtPrice(diagnostics.chainlink_current_price));
       setText(
         'v8ModelVersion',
         model.version == null
@@ -2956,6 +3012,17 @@
         dynamicControlBusy = false;
       }
     });
+    $('v8AutoDecision').addEventListener('change', () => {
+      if ($('v8AutoDecision').checked) $('v8OrderbookChase').checked = false;
+      syncV8DecisionModeState();
+    });
+    $('v8OrderbookChase').addEventListener('change', () => {
+      if ($('v8OrderbookChase').checked) {
+        $('v8AutoDecision').checked = false;
+        $('v8AutoEmergencyLoss').checked = false;
+      }
+      syncV8DecisionModeState();
+    });
     $('v8Form').addEventListener('input', () => {
       syncV8DecisionModeState();
       v8FormDirty = true;
@@ -2980,6 +3047,8 @@
           btc_v8: {
             enabled: $('v8Enabled').checked,
             auto_decision_mode: $('v8AutoDecision').checked,
+            orderbook_chase_mode: $('v8OrderbookChase').checked,
+            auto_emergency_loss_enabled: $('v8AutoEmergencyLoss').checked,
             quote_amount_usd: runtimeNumber('v8QuoteAmount'),
             buy_edge_cents: runtimeNumber('v8BuyEdge'),
             sell_edge_cents: runtimeNumber('v8SellEdge'),

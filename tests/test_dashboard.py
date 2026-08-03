@@ -71,10 +71,16 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert 'id="v8Calibration"' in html
     assert 'id="v8Form"' in html
     assert 'id="v8AutoDecision" type="checkbox"' in html
+    assert 'id="v8OrderbookChase" type="checkbox"' in html
+    assert 'id="v8AutoEmergencyLoss" type="checkbox"' in html
     assert "auto_decision_mode: $('v8AutoDecision').checked" in html
+    assert "orderbook_chase_mode: $('v8OrderbookChase').checked" in html
+    assert "auto_emergency_loss_enabled: $('v8AutoEmergencyLoss').checked" in html
     assert "function syncV8DecisionModeState()" in html
     assert "'v8MaxLoss'," in html
     assert '<strong>持仓方向 / 均价</strong>' in html
+    assert 'id="v8ChaseLead"' in html
+    assert 'id="v8ChaseTarget"' in html
     assert "`${position.direction} · ${positionPrice}`" in html
     assert 'id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5"' in html
     assert 'id="v8BuyEdge" type="number" min="0" step="0.01" value="5"' in html
@@ -850,6 +856,8 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
             "btc_v8": {
                 "enabled": True,
                 "auto_decision_mode": True,
+                "orderbook_chase_mode": False,
+                "auto_emergency_loss_enabled": False,
                 "quote_amount_usd": 6,
                 "buy_edge_cents": 6.5,
                 "sell_edge_cents": 2.5,
@@ -862,6 +870,8 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     assert response["btc_v8"]["enabled"] is False
     assert response["pending_btc_v8"]["enabled"] is True
     assert response["pending_btc_v8"]["auto_decision_mode"] is True
+    assert response["pending_btc_v8"]["orderbook_chase_mode"] is False
+    assert response["pending_btc_v8"]["auto_emergency_loss_enabled"] is False
     assert response["pending_btc_v8"]["quote_amount_usd"] == 6
     assert response["pending_pair_match"]["enabled"] is False
     assert response["pending_btc_recovery"]["enabled"] is False
@@ -893,6 +903,8 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         engine.set_market(next_market, start)
         assert engine.current_round is not None
         assert engine.current_round.settings.auto_decision_mode is True
+        assert engine.current_round.settings.orderbook_chase_mode is False
+        assert engine.current_round.settings.auto_emergency_loss_enabled is False
         assert engine.current_round.settings.quote_amount_usd == 6
         assert engine.current_round.settings.buy_edge_cents == 6.5
         assert engine.current_round.settings.spot_exchanges == ["binance", "coinbase"]
@@ -904,6 +916,8 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     )
     assert reloaded.config.btc_v8.enabled is True
     assert reloaded.config.btc_v8.auto_decision_mode is True
+    assert reloaded.config.btc_v8.orderbook_chase_mode is False
+    assert reloaded.config.btc_v8.auto_emergency_loss_enabled is False
     assert reloaded.config.btc_v8.quote_amount_usd == 6
     assert reloaded.config.btc_v8.spot_exchanges == ["binance", "coinbase"]
     assert reloaded.config.pair_match.enabled is False

@@ -408,6 +408,8 @@ class RealTradingConfig(BaseModel):
 class BtcV8Config(BaseModel):
     enabled: bool = False
     auto_decision_mode: bool = False
+    orderbook_chase_mode: bool = False
+    auto_emergency_loss_enabled: bool = False
     quote_amount_usd: float = 5.0
     buy_edge_cents: float = 5.0
     sell_edge_cents: float = 2.0
@@ -497,6 +499,8 @@ class BtcV8Config(BaseModel):
 
     @model_validator(mode="after")
     def valid_v8_shape(self) -> "BtcV8Config":
+        if self.auto_decision_mode and self.orderbook_chase_mode:
+            raise ValueError("BTC V8 automatic and orderbook chase modes are mutually exclusive")
         if self.entry_end_seconds >= self.sell_end_seconds:
             raise ValueError("BTC V8 entry end must be before sell end")
         if self.short_volatility_window_seconds >= self.long_volatility_window_seconds:

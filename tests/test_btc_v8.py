@@ -6,11 +6,15 @@ import pytest
 
 from polybtc.btc_v8 import (
     BtcV8Engine,
-    V8Model,
     BtcV8Registry,
+    V8Model,
+    V8Position,
     V8Snapshot,
     normalized_remaining_time,
+    v8_auto_exit_decision,
     v8_decision_policy,
+    v8_orderbook_chase_exit_decision,
+    v8_orderbook_chase_signal,
 )
 from polybtc.config import AppConfig
 from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceTick
@@ -251,7 +255,7 @@ def test_fixed_five_dollar_buy_and_value_sell_charge_both_fees(tmp_path) -> None
     registry.close()
 
 
-def test_auto_decision_mode_controls_buy_sell_and_ignores_fixed_stop(tmp_path) -> None:
+def test_auto_decision_mode_controls_buy_sell_and_uses_internal_risk(tmp_path) -> None:
     start = datetime(2026, 8, 3, tzinfo=timezone.utc)
     current = market(start, "auto-decision")
     engine, registry = make_engine(
@@ -287,7 +291,8 @@ def test_auto_decision_mode_controls_buy_sell_and_ignores_fixed_stop(tmp_path) -
     feed_inputs(engine, current, adverse_second, adverse_books)
     engine.evaluate(current, adverse_books, adverse_second, force=True)
     assert engine.candidates["SELL"]["pnl"] < -0.01
-    assert engine.candidates["SELL"]["reason"] == "hold_value_higher"
+    assert engine.candidates["SELL"]["reason"] == "auto_hold"
+    assert engine.candidates["SELL"]["risk_score"] < engine.candidates["SELL"]["risk_threshold"]
     assert engine.position is not None
 
     exit_first = adverse_second + timedelta(seconds=1)
@@ -301,6 +306,398 @@ def test_auto_decision_mode_controls_buy_sell_and_ignores_fixed_stop(tmp_path) -
     assert engine.position is None
     assert registry.recent_trades()[0]["reason"] == "auto_model_sell"
     registry.close()
+
+
+def test_auto_mode_rejects_buy_that_cannot_exit_inside_loss_budget(tmp_path) -> None:
+    start = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    current = market(start, "auto-wide-spread")
+    current.tick_size = 0.001
+    engine, registry = make_engine(tmp_path, auto_decision_mode=True)
+    engine.set_market(current, start)
+
+    for offset in (10.0, 12.01):
+        now = start + timedelta(seconds=offset)
+        books = poly_books(
+            current,
+            now,
+            up_bid=0.002,
+            up_ask=0.009,
+            down_bid=0.99,
+            down_ask=0.998,
+        )
+        books[Direction.UP].tick_size = 0.001
+        books[Direction.UP].bids[0].size = 10_000
+        books[Direction.UP].asks[0].size = 10_000
+        feed_inputs(engine, current, now, books)
+        engine.evaluate(current, books, now, force=True)
+
+    assert engine.position is None
+    assert engine.candidates["UP"]["reason"] == "auto_liquidation_risk"
+    assert engine.candidates["UP"]["immediate_liquidation_pnl"] < -2.5
+    registry.close()
+
+
+def test_orderbook_chase_policy_is_short_horizon_and_mutually_exclusive() -> None:
+    config = AppConfig(
+        btc_v8={"enabled": True, "orderbook_chase_mode": True}
+    )
+    policy = v8_decision_policy(config.btc_v8)
+
+    assert policy["orderbook_chase_mode"] is True
+    assert policy["automated_mode"] is True
+    assert policy["buy_confirmation_seconds"] == pytest.approx(0.25)
+    assert policy["buy_confirmation_updates"] == 2
+    assert policy["buy_edge_cents"] == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        AppConfig(
+            btc_v8={
+                "auto_decision_mode": True,
+                "orderbook_chase_mode": True,
+            }
+        )
+
+
+def test_orderbook_chase_signal_uses_received_spot_lead_and_consensus() -> None:
+    diagnostics = {
+        "sigma": 0.001,
+        "remaining_seconds": 100,
+        "chainlink_open_price": 100_000,
+        "chainlink_current_price": 100_000,
+        "spot_chainlink_lead_return_1s": 0.001,
+        "spot_positive_return_sources_1s": 2,
+        "spot_negative_return_sources_1s": 0,
+        "required_fresh_spot_count": 2,
+    }
+
+    signal_result = v8_orderbook_chase_signal(0.50, diagnostics)
+
+    assert signal_result["eligible"] is True
+    assert signal_result["direction"] == "UP"
+    assert signal_result["supporting_sources"] == 2
+    assert signal_result["target_probability"] > 0.50
+    diagnostics["spot_positive_return_sources_1s"] = 1
+    weak_consensus = v8_orderbook_chase_signal(0.50, diagnostics)
+    assert weak_consensus["eligible"] is False
+    assert weak_consensus["reason"] == "chase_consensus_insufficient"
+
+
+def test_orderbook_chase_exit_takes_catchup_and_enforces_timeout() -> None:
+    opened = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    position = auto_position(
+        strategy_mode="orderbook_chase",
+        entry_target_probability=0.58,
+        entry_signal_strength=1.0,
+        opened_at=opened,
+    )
+    diagnostics = {
+        "orderbook_chase": {
+            "eligible": True,
+            "direction": "UP",
+            "signal_strength": 0.8,
+        }
+    }
+
+    caught_up = v8_orderbook_chase_exit_decision(
+        position, 0.58, 0.03, diagnostics, opened + timedelta(seconds=1)
+    )
+    assert caught_up["reason"] == "chase_caught_up"
+
+    timed_out = v8_orderbook_chase_exit_decision(
+        position, 0.50, -0.20, diagnostics, opened + timedelta(seconds=5)
+    )
+    assert timed_out["reason"] == "chase_timeout"
+
+
+def test_orderbook_chase_does_not_sell_only_because_lead_signal_decays() -> None:
+    opened = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    position = auto_position(
+        strategy_mode="orderbook_chase",
+        entry_target_probability=0.58,
+        entry_signal_strength=2.0,
+        opened_at=opened,
+    )
+    diagnostics = {
+        "orderbook_chase": {
+            "eligible": False,
+            "reason": "chase_signal_weak",
+            "direction": "UP",
+            "signal_strength": 0.1,
+        }
+    }
+
+    decision = v8_orderbook_chase_exit_decision(
+        position, 0.50, -0.20, diagnostics, opened + timedelta(seconds=2)
+    )
+
+    assert decision["eligible"] is False
+    assert decision["reason"] == "chase_holding"
+    assert decision["signal_decayed"] is True
+
+
+def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(tmp_path) -> None:
+    start = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    current = market(start, "chase-market")
+    engine, registry = make_engine(
+        tmp_path,
+        orderbook_chase_mode=True,
+        slippage_reserve_cents=0,
+        max_entries_per_market=1,
+    )
+    engine.set_market(current, start)
+
+    history_at = start + timedelta(seconds=9)
+    engine.add_chainlink_tick(
+        PriceTick(
+            source="polymarket_rtds",
+            symbol="BTCUSD",
+            price=100_000,
+            exchange_timestamp=history_at,
+            received_at=history_at,
+        )
+    )
+    for source in ("binance", "coinbase"):
+        engine.add_signal(signal(source, "trade", history_at, price=100_000))
+        engine.add_signal(signal(source, "book", history_at, price=100_000))
+
+    for offset in (10.0, 10.6):
+        now = start + timedelta(seconds=offset)
+        books = poly_books(
+            current, now, up_bid=0.45, up_ask=0.46, down_bid=0.53, down_ask=0.54
+        )
+        engine.add_chainlink_tick(
+            PriceTick(
+                source="polymarket_rtds",
+                symbol="BTCUSD",
+                price=100_000,
+                exchange_timestamp=now,
+                received_at=now,
+            )
+        )
+        for source in ("binance", "coinbase"):
+            engine.add_signal(signal(source, "trade", now, price=100_100))
+            engine.add_signal(signal(source, "book", now, price=100_100))
+        for direction, book in books.items():
+            engine.add_polymarket_book(direction, book)
+        engine.evaluate(current, books, now, force=True)
+
+    assert engine.diagnostics["timestamp_basis"] == "received_at"
+    assert engine.diagnostics["orderbook_chase"]["direction"] == "UP"
+    assert engine.position is not None
+    assert engine.position.strategy_mode == "orderbook_chase"
+    position_id = engine.position.position_id
+
+    for offset in (11.0, 11.3):
+        now = start + timedelta(seconds=offset)
+        books = poly_books(
+            current, now, up_bid=0.60, up_ask=0.61, down_bid=0.38, down_ask=0.39
+        )
+        engine.add_chainlink_tick(
+            PriceTick(
+                source="polymarket_rtds",
+                symbol="BTCUSD",
+                price=100_100,
+                exchange_timestamp=now,
+                received_at=now,
+            )
+        )
+        for source in ("binance", "coinbase"):
+            engine.add_signal(signal(source, "trade", now, price=100_100))
+            engine.add_signal(signal(source, "book", now, price=100_100))
+        for direction, book in books.items():
+            engine.add_polymarket_book(direction, book)
+        engine.evaluate(current, books, now, force=True)
+
+    assert engine.position is None
+    closed = registry.get_position(position_id)
+    assert closed is not None and closed.realized_pnl is not None
+    assert closed.realized_pnl > 0
+    assert closed.exit_reason == "chase_caught_up"
+    trades = registry.recent_trades()
+    assert trades[0]["strategy_mode"] == "orderbook_chase"
+    assert trades[0]["reason"] == "chase_caught_up"
+    assert trades[1]["reason"] == "chase_buy"
+    registry.close()
+
+
+def auto_position(**overrides) -> V8Position:
+    now = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    values = {
+        "market_id": "exit-market",
+        "market_slug": "btc-updown-5m-exit",
+        "direction": Direction.UP,
+        "quantity": 10,
+        "entry_price": 0.50,
+        "entry_quote": 5.0,
+        "entry_fee_usd": 0.10,
+        "entry_model_probability": 0.70,
+        "entry_formula_probability": 0.70,
+        "peak_unrealized_pnl": 0.0,
+        "opened_at": now,
+    }
+    values.update(overrides)
+    return V8Position(**values)
+
+
+def auto_exit(
+    position: V8Position,
+    *,
+    probability: float = 0.70,
+    formula_probability: float = 0.70,
+    pnl: float = -0.25,
+    elapsed: float = 120.0,
+    support: float = 0.0,
+    emergency_loss_enabled: bool = False,
+) -> dict:
+    features = {}
+    for seconds in (1, 3, 5, 10):
+        features[f"cross_median_return_{seconds}s"] = support
+        features[f"cross_direction_agreement_{seconds}s"] = support
+        features[f"cross_cvd_consensus_{seconds}s"] = support
+    features.update(
+        {
+            "futures_return_1s": support,
+            "futures_return_5s": support,
+            "futures_return_30s": support,
+            "futures_cvd_5s": support,
+            "futures_book_imbalance": support,
+            "futures_ofi_5s": support,
+            "poly_up_depth_imbalance": support,
+            "poly_up_microprice": support,
+            "poly_up_ofi_5s": support,
+            "poly_up_trade_flow_5s": support,
+        }
+    )
+    return v8_auto_exit_decision(
+        position=position,
+        probability=probability,
+        formula_probability=formula_probability,
+        net_value=0.20,
+        pnl=pnl,
+        features=features,
+        diagnostics={
+            "z_score": support * 2,
+            "fresh_spot_count": 2,
+            "required_fresh_spot_count": 2,
+        },
+        elapsed_seconds=elapsed,
+        sell_end_seconds=298,
+        trained_markets=100,
+        emergency_loss_enabled=emergency_loss_enabled,
+    )
+
+
+def test_auto_exit_has_immediate_emergency_loss_protection() -> None:
+    decision = auto_exit(
+        auto_position(), pnl=-2.50, emergency_loss_enabled=True
+    )
+
+    assert decision["eligible"] is True
+    assert decision["reason"] == "auto_emergency_loss"
+    assert decision["loss_limit_usd"] == pytest.approx(2.50)
+
+
+def test_auto_emergency_loss_executes_without_waiting_for_confirmation(tmp_path) -> None:
+    start = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    current = market(start, "auto-emergency")
+    engine, registry = make_engine(
+        tmp_path,
+        auto_decision_mode=True,
+        auto_emergency_loss_enabled=True,
+        max_entries_per_market=1,
+    )
+    engine.set_market(current, start)
+
+    first = start + timedelta(seconds=10)
+    books = poly_books(current, first)
+    feed_inputs(engine, current, first, books)
+    engine.evaluate(current, books, first, force=True)
+    second = first + timedelta(seconds=2.01)
+    books = poly_books(current, second)
+    feed_inputs(engine, current, second, books)
+    engine.evaluate(current, books, second, force=True)
+    assert engine.position is not None
+    position_id = engine.position.position_id
+
+    adverse = second + timedelta(seconds=0.25)
+    books = poly_books(current, adverse, up_bid=0.10, up_ask=0.11)
+    feed_inputs(engine, current, adverse, books)
+    engine.evaluate(current, books, adverse, force=True)
+
+    assert engine.position is None
+    closed = registry.get_position(position_id)
+    assert closed is not None
+    assert closed.exit_reason == "auto_emergency_loss"
+    sell = registry.recent_trades()[0]
+    assert sell["reason"] == "auto_emergency_loss"
+    assert sell["decision_details"]["risk_score"] > 0
+    registry.close()
+
+
+def test_auto_emergency_loss_can_be_disabled() -> None:
+    decision = auto_exit(auto_position(), pnl=-2.50)
+
+    assert decision["reason"] != "auto_emergency_loss"
+    assert decision["emergency_loss_enabled"] is False
+
+
+def test_auto_exit_uses_probability_decay_and_adverse_market_signals() -> None:
+    decision = auto_exit(
+        auto_position(),
+        probability=0.30,
+        formula_probability=0.35,
+        pnl=-1.0,
+        support=-1.0,
+    )
+
+    assert decision["eligible"] is True
+    assert decision["reason"] == "auto_thesis_exit"
+    assert decision["probability_decay"] > 0.50
+    assert decision["signal_support"] < 0
+
+
+def test_auto_exit_protects_peak_profit_drawdown() -> None:
+    decision = auto_exit(
+        auto_position(peak_unrealized_pnl=2.0),
+        probability=0.65,
+        formula_probability=0.65,
+        pnl=0.50,
+    )
+
+    assert decision["eligible"] is True
+    assert decision["reason"] == "auto_trailing_exit"
+    assert decision["drawdown_usd"] == pytest.approx(1.50)
+
+
+def test_auto_exit_reduces_losing_settlement_tail() -> None:
+    decision = auto_exit(
+        auto_position(),
+        probability=0.45,
+        formula_probability=0.45,
+        pnl=-1.0,
+        elapsed=289.0,
+    )
+
+    assert decision["eligible"] is True
+    assert decision["reason"] == "auto_terminal_exit"
+
+
+def test_legacy_position_json_loads_without_auto_exit_state() -> None:
+    position = V8Position.model_validate(
+        {
+            "market_id": "legacy",
+            "market_slug": "btc-updown-5m-legacy",
+            "direction": "UP",
+            "quantity": 10,
+            "entry_price": 0.50,
+            "entry_quote": 5.0,
+            "entry_fee_usd": 0.1,
+            "opened_at": "2026-08-03T00:00:00Z",
+        }
+    )
+
+    assert position.entry_model_probability is None
+    assert position.entry_formula_probability is None
+    assert position.peak_unrealized_pnl is None
 
 
 def test_open_position_can_sell_when_all_spot_sources_are_stale(tmp_path) -> None:
