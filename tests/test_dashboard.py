@@ -62,10 +62,18 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert 'id="v8SourceKraken"' in html
     assert 'id="v8SourceFutures"' in html
     assert 'id="v8Trades"' in html
+    assert '<th>买入：时间 / 均价 / 金额</th>' in html
+    assert '<th>卖出或结算：时间 / 均价 / 金额</th>' in html
+    assert "function groupV8Trades(trades)" in html
+    assert "const tradeGroups = groupV8Trades(trades);" in html
     assert 'id="v8SourceMetrics"' in html
     assert 'id="v8Contributions"' in html
     assert 'id="v8Calibration"' in html
     assert 'id="v8Form"' in html
+    assert 'id="v8AutoDecision" type="checkbox"' in html
+    assert "auto_decision_mode: $('v8AutoDecision').checked" in html
+    assert "function syncV8DecisionModeState()" in html
+    assert "'v8MaxLoss'," in html
     assert '<strong>持仓方向 / 均价</strong>' in html
     assert "`${position.direction} · ${positionPrice}`" in html
     assert 'id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5"' in html
@@ -841,6 +849,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         {
             "btc_v8": {
                 "enabled": True,
+                "auto_decision_mode": True,
                 "quote_amount_usd": 6,
                 "buy_edge_cents": 6.5,
                 "sell_edge_cents": 2.5,
@@ -852,6 +861,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     assert response["config_status"] == "pending_next_btc_market"
     assert response["btc_v8"]["enabled"] is False
     assert response["pending_btc_v8"]["enabled"] is True
+    assert response["pending_btc_v8"]["auto_decision_mode"] is True
     assert response["pending_btc_v8"]["quote_amount_usd"] == 6
     assert response["pending_pair_match"]["enabled"] is False
     assert response["pending_btc_recovery"]["enabled"] is False
@@ -882,6 +892,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         engine = BtcV8Engine(config, registry)
         engine.set_market(next_market, start)
         assert engine.current_round is not None
+        assert engine.current_round.settings.auto_decision_mode is True
         assert engine.current_round.settings.quote_amount_usd == 6
         assert engine.current_round.settings.buy_edge_cents == 6.5
         assert engine.current_round.settings.spot_exchanges == ["binance", "coinbase"]
@@ -892,6 +903,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert reloaded.config.btc_v8.enabled is True
+    assert reloaded.config.btc_v8.auto_decision_mode is True
     assert reloaded.config.btc_v8.quote_amount_usd == 6
     assert reloaded.config.btc_v8.spot_exchanges == ["binance", "coinbase"]
     assert reloaded.config.pair_match.enabled is False

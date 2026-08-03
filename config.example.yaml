@@ -121,6 +121,8 @@ btc_dynamic:
 btc_v8:
   # Independent multi-exchange local simulation; no real-order adapter is used.
   enabled: false
+  # When enabled, model EV controls buy/sell thresholds; hard risk controls remain active.
+  auto_decision_mode: false
   quote_amount_usd: 5
   buy_edge_cents: 5
   sell_edge_cents: 2

@@ -724,7 +724,7 @@
 
         <div class="panel v8-only">
           <div class="panel-head"><div class="panel-title">V8 最近成交</div><div class="tag amber" id="v8TradeCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>编号</th><th>时间</th><th>动作</th><th>方向</th><th>概率</th><th>均价</th><th>数量</th><th>金额</th><th>手续费</th><th>原因</th><th>盈亏</th></tr></thead><tbody id="v8Trades"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>方向</th><th>买入：时间 / 均价 / 金额</th><th>买入概率</th><th>卖出或结算：时间 / 均价 / 金额</th><th>数量</th><th>双边手续费</th><th>结果</th><th>净盈亏</th></tr></thead><tbody id="v8Trades"></tbody></table></div></div>
         </div>
       </section>
 
@@ -878,6 +878,7 @@
           <form class="panel-body" id="v8Form">
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">本地自主模拟</span><span class="setting-toggle"><input id="v8Enabled" type="checkbox">启用并停止其他策略新入场</span></label>
+              <label class="setting"><span class="setting-label">自动决策模式</span><span class="setting-toggle"><input id="v8AutoDecision" type="checkbox">模型实时决定买入、卖出和止损</span></label>
               <label class="setting"><span class="setting-label">固定金额（USD）</span><input class="setting-input" id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5" required></label>
               <label class="setting"><span class="setting-label">买入净优势（美分/份）</span><input class="setting-input" id="v8BuyEdge" type="number" min="0" step="0.01" value="5" required></label>
               <label class="setting"><span class="setting-label">卖出价值差（美分/份）</span><input class="setting-input" id="v8SellEdge" type="number" min="0" step="0.01" value="2" required></label>
@@ -905,7 +906,7 @@
               <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="v8VolFloor" type="number" min="0" step="0.01" value="0.5" required></label>
               <label class="setting"><span class="setting-label">最大概率修正（百分点）</span><input class="setting-input" id="v8MaxCorrection" type="number" min="0" max="100" step="0.1" value="10" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">V8 使用独立账本，只做本地模拟。启用时会关闭配对、70/40、动态胜率和真实交易，并暂停普通策略新入场；已有记录和结算不受影响。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
+            <div class="settings-actions"><span class="settings-note">自动模式按实时模型概率与完整盘口清仓价值决定买卖和止损，忽略手动优势、确认和固定止损参数；金额、数据可信度、深度、交易次数及时间边界仍为硬风控。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
           </form>
         </div>
 
@@ -1218,6 +1219,19 @@
       $('dynamicQuoteAmount').required = quoteMode;
     }
 
+    function syncV8DecisionModeState() {
+      const automatic = $('v8AutoDecision').checked;
+      [
+        'v8BuyEdge',
+        'v8SellEdge',
+        'v8BuyConfirmSeconds',
+        'v8BuyConfirmUpdates',
+        'v8SellConfirmSeconds',
+        'v8SellConfirmUpdates',
+        'v8MaxLoss',
+      ].forEach((id) => { $(id).disabled = automatic; });
+    }
+
     function renderDynamicConfig(snapshot, force = false) {
       const active = snapshot.btc_dynamic?.config || {};
       const dynamic = snapshot.pending_btc_dynamic || active;
@@ -1255,6 +1269,7 @@
       const v8 = snapshot.pending_btc_v8 || active;
       const configKey = JSON.stringify({
         enabled: v8.enabled,
+        auto_decision_mode: v8.auto_decision_mode,
         spot_exchanges: v8.spot_exchanges,
         values: Object.fromEntries(Object.keys(v8Inputs).map((field) => [field, v8[field]])),
       });
@@ -1265,6 +1280,8 @@
       ) {
         Object.entries(v8Inputs).forEach(([field, id]) => setRuntimeInput(id, v8[field]));
         $('v8Enabled').checked = Boolean(v8.enabled);
+        $('v8AutoDecision').checked = Boolean(v8.auto_decision_mode);
+        syncV8DecisionModeState();
         const exchanges = new Set(v8.spot_exchanges || ['binance', 'coinbase', 'kraken']);
         $('v8UseBinance').checked = exchanges.has('binance');
         $('v8UseCoinbase').checked = exchanges.has('coinbase');
@@ -1882,6 +1899,7 @@
         quantity_below_market_minimum: '低于市场最小份数',
         sell_depth_unavailable: '买盘深度不足，无法整仓卖出',
         model_value_sell: '盘口价值高于模型持有价值',
+        auto_model_sell: '自动决策：清仓价值高于持有价值',
         max_loss: '达到可执行止损',
         hold_value_higher: '模型持有价值更高',
         eligible: '满足交易条件',
@@ -1907,6 +1925,33 @@
       const edge = sell ? candidate.value_edge_per_share : candidate.edge_per_share;
       const edgeText = edge == null ? '--' : `${fmtNumber(Number(edge) * 100, 2)}¢`;
       return `${candidate.eligible ? '可执行' : '等待'} · 概率 ${probability} · 均价 ${price} · 差值 ${edgeText} · ${v8ReasonText(candidate.reason)}`;
+    }
+
+    function groupV8Trades(trades) {
+      const groups = new Map();
+      (trades || []).forEach((trade, index) => {
+        const key = trade.position_id || trade.trade_id || `trade-${index}`;
+        const group = groups.get(key) || {
+          positionId: key,
+          buy: null,
+          exit: null,
+          latestNumber: 0,
+        };
+        const tradeNumber = Number(trade.trade_number || 0);
+        group.latestNumber = Math.max(group.latestNumber, tradeNumber);
+        if (trade.action === 'BUY') {
+          group.buy = trade;
+        } else if (!group.exit || tradeNumber > Number(group.exit.trade_number || 0)) {
+          group.exit = trade;
+        }
+        groups.set(key, group);
+      });
+      return Array.from(groups.values()).sort((left, right) => right.latestNumber - left.latestNumber);
+    }
+
+    function v8TradeLegText(trade) {
+      if (!trade) return '--';
+      return `${fmtTime(trade.created_at)} / ${fmtNumber(Number(trade.avg_price) * 100, 2)}¢ / $${fmtNumber(trade.quote, 3)}`;
     }
 
     function renderV8(v8, btcSnapshot, configStatus, pendingV8) {
@@ -1985,17 +2030,29 @@
         sourceMetricRows.join('') || '<tr><td colspan="5">暂无已结算快照</td></tr>',
       );
       const trades = v8.recent_trades || [];
-      setText('v8TradeCount', trades.length);
+      const tradeGroups = groupV8Trades(trades);
+      setText('v8TradeCount', tradeGroups.length);
       updateHtmlWhenChanged(
         'v8Trades',
         'v8Trades',
         JSON.stringify(trades),
-        trades.map((trade) => `<tr>
-          <td>#${String(trade.trade_number || 0).padStart(6, '0')}</td><td>${fmtTime(trade.created_at)}</td>
-          <td>${trade.action || '--'}</td><td>${trade.direction || '--'}</td><td>${fmtProb(trade.model_probability)}</td>
-          <td>${fmtCents(trade.avg_price)}</td><td>${fmtNumber(trade.quantity, 3)}</td><td>$${fmtNumber(trade.quote, 3)}</td>
-          <td>$${fmtNumber(trade.fee_usd, 4)}</td><td>${v8ReasonText(trade.reason)}</td><td>${trade.realized_pnl == null ? '--' : pnlHtml(trade.realized_pnl)}</td>
-        </tr>`).join('') || '<tr><td colspan="11">暂无 V8 成交</td></tr>',
+        tradeGroups.map((group) => {
+          const buy = group.buy;
+          const exit = group.exit;
+          const primary = buy || exit || {};
+          const orderNumber = buy?.trade_number || exit?.trade_number || 0;
+          const fees = Number(buy?.fee_usd || 0) + Number(exit?.fee_usd || 0);
+          const result = exit
+            ? (exit.action === 'SETTLE' ? '官方结算' : `已卖出 · ${v8ReasonText(exit.reason)}`)
+            : '持仓中';
+          return `<tr>
+            <td>#${String(orderNumber).padStart(6, '0')}</td><td>${escapeHtml(primary.direction || '--')}</td>
+            <td>${v8TradeLegText(buy)}</td><td>${buy ? fmtProb(buy.model_probability) : '--'}</td>
+            <td>${v8TradeLegText(exit)}</td><td>${fmtNumber(primary.quantity, 3)}</td>
+            <td>$${fmtNumber(fees, 4)}</td><td>${result}</td>
+            <td>${exit?.realized_pnl == null ? '--' : pnlHtml(exit.realized_pnl)}</td>
+          </tr>`;
+        }).join('') || '<tr><td colspan="9">暂无 V8 成交</td></tr>',
       );
       const contributions = diagnostics.feature_contributions || [];
       updateHtmlWhenChanged(
@@ -2900,6 +2957,7 @@
       }
     });
     $('v8Form').addEventListener('input', () => {
+      syncV8DecisionModeState();
       v8FormDirty = true;
       $('v8ConfigStatus').textContent = '有修改，尚未保存';
       $('v8ConfigStatus').className = 'tag amber';
@@ -2921,6 +2979,7 @@
         const payload = {
           btc_v8: {
             enabled: $('v8Enabled').checked,
+            auto_decision_mode: $('v8AutoDecision').checked,
             quote_amount_usd: runtimeNumber('v8QuoteAmount'),
             buy_edge_cents: runtimeNumber('v8BuyEdge'),
             sell_edge_cents: runtimeNumber('v8SellEdge'),

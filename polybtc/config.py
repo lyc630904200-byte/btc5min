@@ -407,6 +407,7 @@ class RealTradingConfig(BaseModel):
 
 class BtcV8Config(BaseModel):
     enabled: bool = False
+    auto_decision_mode: bool = False
     quote_amount_usd: float = 5.0
     buy_edge_cents: float = 5.0
     sell_edge_cents: float = 2.0

@@ -10,6 +10,7 @@ from polybtc.btc_v8 import (
     BtcV8Registry,
     V8Snapshot,
     normalized_remaining_time,
+    v8_decision_policy,
 )
 from polybtc.config import AppConfig
 from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceTick
@@ -247,6 +248,58 @@ def test_fixed_five_dollar_buy_and_value_sell_charge_both_fees(tmp_path) -> None
     feed_inputs(engine, current, after_cooldown, new_books)
     engine.evaluate(current, new_books, after_cooldown, force=True)
     assert engine.last_reason == "market_entry_limit"
+    registry.close()
+
+
+def test_auto_decision_mode_controls_buy_sell_and_ignores_fixed_stop(tmp_path) -> None:
+    start = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    current = market(start, "auto-decision")
+    engine, registry = make_engine(
+        tmp_path,
+        auto_decision_mode=True,
+        buy_edge_cents=99,
+        sell_edge_cents=99,
+        max_loss_usd=0.01,
+        max_entries_per_market=1,
+    )
+    policy = v8_decision_policy(engine.config.btc_v8)
+    assert policy["buy_edge_cents"] == 0
+    assert policy["sell_edge_cents"] == 0
+    assert policy["use_fixed_max_loss"] is False
+    engine.set_market(current, start)
+
+    first = start + timedelta(seconds=10)
+    books = poly_books(current, first)
+    feed_inputs(engine, current, first, books)
+    engine.evaluate(current, books, first, force=True)
+    second = first + timedelta(seconds=2.01)
+    books = poly_books(current, second)
+    feed_inputs(engine, current, second, books)
+    engine.evaluate(current, books, second, force=True)
+    assert engine.position is not None
+
+    adverse_first = second + timedelta(seconds=1)
+    adverse_books = poly_books(current, adverse_first, up_bid=0.28, up_ask=0.29)
+    feed_inputs(engine, current, adverse_first, adverse_books)
+    engine.evaluate(current, adverse_books, adverse_first, force=True)
+    adverse_second = adverse_first + timedelta(seconds=1.01)
+    adverse_books = poly_books(current, adverse_second, up_bid=0.28, up_ask=0.29)
+    feed_inputs(engine, current, adverse_second, adverse_books)
+    engine.evaluate(current, adverse_books, adverse_second, force=True)
+    assert engine.candidates["SELL"]["pnl"] < -0.01
+    assert engine.candidates["SELL"]["reason"] == "hold_value_higher"
+    assert engine.position is not None
+
+    exit_first = adverse_second + timedelta(seconds=1)
+    exit_books = poly_books(current, exit_first, up_bid=0.80, up_ask=0.81)
+    feed_inputs(engine, current, exit_first, exit_books)
+    engine.evaluate(current, exit_books, exit_first, force=True)
+    exit_second = exit_first + timedelta(seconds=1.01)
+    exit_books = poly_books(current, exit_second, up_bid=0.80, up_ask=0.81)
+    feed_inputs(engine, current, exit_second, exit_books)
+    engine.evaluate(current, exit_books, exit_second, force=True)
+    assert engine.position is None
+    assert registry.recent_trades()[0]["reason"] == "auto_model_sell"
     registry.close()
 
 

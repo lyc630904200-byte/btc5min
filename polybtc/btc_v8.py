@@ -23,6 +23,34 @@ SPOT_EXCHANGES = ("binance", "coinbase", "kraken")
 RETURN_WINDOWS = (1, 3, 5, 10, 30)
 V8_MODEL_KEY = "v8"
 V8_FEATURE_SCHEMA_VERSION = 1
+AUTO_BUY_CONFIRMATION_SECONDS = 2.0
+AUTO_BUY_CONFIRMATION_UPDATES = 2
+AUTO_SELL_CONFIRMATION_SECONDS = 1.0
+AUTO_SELL_CONFIRMATION_UPDATES = 2
+
+
+def v8_decision_policy(settings: BtcV8Config) -> dict[str, float | int | bool]:
+    if settings.auto_decision_mode:
+        return {
+            "auto_decision_mode": True,
+            "buy_edge_cents": 0.0,
+            "sell_edge_cents": 0.0,
+            "buy_confirmation_seconds": AUTO_BUY_CONFIRMATION_SECONDS,
+            "buy_confirmation_updates": AUTO_BUY_CONFIRMATION_UPDATES,
+            "sell_confirmation_seconds": AUTO_SELL_CONFIRMATION_SECONDS,
+            "sell_confirmation_updates": AUTO_SELL_CONFIRMATION_UPDATES,
+            "use_fixed_max_loss": False,
+        }
+    return {
+        "auto_decision_mode": False,
+        "buy_edge_cents": settings.buy_edge_cents,
+        "sell_edge_cents": settings.sell_edge_cents,
+        "buy_confirmation_seconds": settings.buy_confirmation_seconds,
+        "buy_confirmation_updates": settings.buy_confirmation_updates,
+        "sell_confirmation_seconds": settings.sell_confirmation_seconds,
+        "sell_confirmation_updates": settings.sell_confirmation_updates,
+        "use_fixed_max_loss": True,
+    }
 
 
 def _feature_names() -> tuple[str, ...]:
@@ -1551,13 +1579,14 @@ class BtcV8Engine:
         now: datetime,
     ) -> dict[str, Any]:
         settings = self.current_round.settings
+        policy = v8_decision_policy(settings)
         book = books.get(direction)
         reason = self._book_ready(market, direction, book, now)
         limit = dynamic_max_price(
             probability,
             self.config.strategy.taker_fee_rate,
             settings.slippage_reserve_cents / 100.0,
-            settings.buy_edge_cents / 100.0,
+            float(policy["buy_edge_cents"]) / 100.0,
             book.tick_size if book else market.tick_size,
         )
         result: dict[str, Any] = {
@@ -1567,6 +1596,8 @@ class BtcV8Engine:
             "limit": limit,
             "eligible": False,
             "reason": reason,
+            "auto_decision_mode": policy["auto_decision_mode"],
+            "required_edge_cents": policy["buy_edge_cents"],
         }
         if reason is not None or limit is None or book is None:
             result["reason"] = reason or "model_edge_below_threshold"
@@ -1590,7 +1621,7 @@ class BtcV8Engine:
             - settings.slippage_reserve_cents / 100.0
         )
         result["edge_per_share"] = edge
-        if edge + 1e-12 < settings.buy_edge_cents / 100.0:
+        if edge + 1e-12 < float(policy["buy_edge_cents"]) / 100.0:
             result["reason"] = "actual_edge_below_threshold"
             return result
         result["eligible"] = True
@@ -1687,6 +1718,7 @@ class BtcV8Engine:
         if position is None:
             return False
         settings = self.current_round.settings
+        policy = v8_decision_policy(settings)
         book = books.get(position.direction)
         reason = self._book_ready(market, position.direction, book, now)
         if reason is not None or book is None:
@@ -1706,9 +1738,11 @@ class BtcV8Engine:
         value_edge = net_value - probability
         pnl = execution.quote - execution.fee_usd - position.entry_quote - position.entry_fee_usd
         exit_reason = None
-        if value_edge + 1e-12 >= settings.sell_edge_cents / 100.0:
-            exit_reason = "model_value_sell"
-        elif pnl <= -settings.max_loss_usd + 1e-12:
+        if value_edge + 1e-12 >= float(policy["sell_edge_cents"]) / 100.0:
+            exit_reason = (
+                "auto_model_sell" if policy["auto_decision_mode"] else "model_value_sell"
+            )
+        elif policy["use_fixed_max_loss"] and pnl <= -settings.max_loss_usd + 1e-12:
             exit_reason = "max_loss"
         self.candidates["SELL"] = {
             "direction": position.direction.value,
@@ -1722,14 +1756,16 @@ class BtcV8Engine:
             "pnl": pnl,
             "eligible": exit_reason is not None,
             "reason": exit_reason or "hold_value_higher",
+            "auto_decision_mode": policy["auto_decision_mode"],
+            "required_edge_cents": policy["sell_edge_cents"],
         }
         confirmed = self._confirmation(
             "sell",
             exit_reason,
             update_key,
             now,
-            settings.sell_confirmation_seconds,
-            settings.sell_confirmation_updates,
+            float(policy["sell_confirmation_seconds"]),
+            int(policy["sell_confirmation_updates"]),
         )
         if not confirmed:
             self.status = self.last_reason = "confirming_sell" if exit_reason else "holding"
@@ -1798,11 +1834,13 @@ class BtcV8Engine:
             self.status = self.last_reason
             return
         formula_up, model_up, features, diagnostics = probabilities
+        decision_policy = v8_decision_policy(self.current_round.settings)
         self.diagnostics = {
             **diagnostics,
             "model_probability_down": 1.0 - model_up,
             "formula_probability_down": 1.0 - formula_up,
             "model": self.model.model_dump(mode="json"),
+            "decision_policy": decision_policy,
             "feature_contributions": sorted(
                 (
                     {
@@ -1870,8 +1908,8 @@ class BtcV8Engine:
             choice["direction"] if choice else None,
             update_key,
             now,
-            settings.buy_confirmation_seconds,
-            settings.buy_confirmation_updates,
+            float(decision_policy["buy_confirmation_seconds"]),
+            int(decision_policy["buy_confirmation_updates"]),
         )
         if choice is not None and confirmed:
             self._open_position(choice, now)

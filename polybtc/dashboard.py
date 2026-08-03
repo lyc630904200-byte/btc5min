@@ -616,6 +616,7 @@ class DashboardHub:
         }
         v8_fields = {
             "enabled",
+            "auto_decision_mode",
             "quote_amount_usd",
             "buy_edge_cents",
             "sell_edge_cents",
