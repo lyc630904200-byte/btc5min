@@ -14,6 +14,7 @@ from polybtc.runner import (
     should_keep_current_market,
     should_retry_threshold,
     should_publish_book_update,
+    standard_entry_enabled,
 )
 
 
@@ -54,6 +55,17 @@ def test_should_not_keep_current_market_after_expiry() -> None:
     engine.set_market(market(now, threshold=64000, end_delta=timedelta(seconds=-1)))
 
     assert should_keep_current_market(engine, now=now) is False
+
+
+def test_v8_pauses_standard_entry_for_every_asset() -> None:
+    config = AppConfig()
+    assert standard_entry_enabled(config, "BTC") is True
+    assert standard_entry_enabled(config, "ETH") is True
+
+    config.btc_v8.enabled = True
+
+    assert standard_entry_enabled(config, "BTC") is False
+    assert standard_entry_enabled(config, "ETH") is False
 
 
 def interval_market(start: datetime, *, condition_id: str = "m1", threshold: float | None = None) -> MarketState:
@@ -529,6 +541,27 @@ def test_coalesce_live_events_keeps_latest_tick_and_books() -> None:
         ("market", {"slug": "m1"}),
         ("tick", {"price": 3}),
         ("book", (Direction.DOWN, "new-down")),
+    ]
+
+
+def test_coalesce_live_events_preserves_polymarket_last_trade_frames() -> None:
+    now = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    trade_book = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now,
+        raw={"_last_trade": {"price": "0.52", "size": "3", "side": "BUY"}},
+    )
+    newer = trade_book.model_copy(deep=True)
+    newer.received_at = now + timedelta(milliseconds=1)
+    newer.raw = {"event_type": "price_change"}
+
+    assert coalesce_live_events(
+        [("book", (Direction.UP, trade_book)), ("book", (Direction.UP, newer))]
+    ) == [
+        ("book", (Direction.UP, trade_book)),
+        ("book", (Direction.UP, newer)),
     ]
 
 

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from .btc_recovery import simulate_buy_quantity_limit
 from .config import AppConfig, BtcDynamicConfig
 from .models import Direction, MarketState, OrderBookSnapshot, PriceTick
+from .orderbook import simulate_buy
 
 
 FEATURE_NAMES = (
@@ -32,6 +33,16 @@ FEATURE_NAMES = (
     "momentum_gap_5s",
     "binance_missing",
 )
+LOSS_COOLDOWN_CONTROL = "online_loss_cooldown_state"
+DEFAULT_MODEL_KEY = "online"
+ACTIVE_MODEL_CONTROL = "active_model_key"
+PENDING_MODEL_CONTROL = "pending_model_key"
+PENDING_MODEL_NOT_BEFORE_CONTROL = "pending_model_not_before"
+
+
+def local_calendar_date(value: datetime) -> str:
+    """Return the calendar date shown by the computer's local clock."""
+    return value.astimezone().date().isoformat()
 
 
 def training_snapshot_seconds(settings: BtcDynamicConfig) -> tuple[float, ...]:
@@ -100,6 +111,11 @@ def dynamic_max_price(
 
 
 class DynamicModel(BaseModel):
+    model_key: str = DEFAULT_MODEL_KEY
+    frozen: bool = False
+    source_model_key: str | None = None
+    source_version: int | None = None
+    source_as_of: datetime | None = None
     bias: float = 0.0
     weights: dict[str, float] = Field(
         default_factory=lambda: {name: 0.0 for name in FEATURE_NAMES}
@@ -134,9 +150,13 @@ class DynamicOrder(BaseModel):
     market_id: str
     market_slug: str
     variant: str
+    model_key: str = DEFAULT_MODEL_KEY
     direction: Direction
     model_probability: float
     formula_probability: float
+    sizing_mode: str = "quantity"
+    requested_quantity: float | None = None
+    requested_quote_usd: float | None = None
     max_price: float
     avg_price: float
     quantity: float
@@ -154,6 +174,7 @@ class DynamicRound(BaseModel):
     round_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     market_id: str
     market_slug: str
+    model_key: str = DEFAULT_MODEL_KEY
     start_time: datetime
     end_time: datetime
     settings: BtcDynamicConfig
@@ -168,6 +189,7 @@ class DynamicRound(BaseModel):
 
 class DynamicSnapshot(BaseModel):
     market_id: str
+    model_key: str = DEFAULT_MODEL_KEY
     snapshot_second: float
     formula_probability: float
     online_probability: float
@@ -240,24 +262,40 @@ class BtcDynamicRegistry:
     def _payload(model: BaseModel) -> str:
         return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)
 
-    def load_model(self) -> DynamicModel:
+    def load_model(self, model_key: str = DEFAULT_MODEL_KEY) -> DynamicModel:
         row = self.connection.execute(
-            "SELECT payload_json FROM btc_dynamic_model WHERE key = 'online'"
+            "SELECT payload_json FROM btc_dynamic_model WHERE key = ?",
+            (model_key,),
         ).fetchone()
-        return DynamicModel.model_validate_json(row["payload_json"]) if row else DynamicModel()
+        if row:
+            model = DynamicModel.model_validate_json(row["payload_json"])
+            model.model_key = model_key
+            return model
+        return DynamicModel(model_key=model_key)
 
-    def save_model(self, model: DynamicModel) -> None:
+    def save_model(
+        self, model: DynamicModel, model_key: str | None = None
+    ) -> None:
+        key = model_key or model.model_key
+        model.model_key = key
         self.connection.execute(
             """
             INSERT INTO btc_dynamic_model(key, payload_json, updated_at)
-            VALUES('online', ?, ?)
+            VALUES(?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET
                 payload_json = excluded.payload_json,
                 updated_at = excluded.updated_at
             """,
-            (self._payload(model), model.updated_at.isoformat()),
+            (key, self._payload(model), model.updated_at.isoformat()),
         )
         self.connection.commit()
+
+    def model_exists(self, model_key: str) -> bool:
+        return bool(
+            self.connection.execute(
+                "SELECT 1 FROM btc_dynamic_model WHERE key = ?", (model_key,)
+            ).fetchone()
+        )
 
     def control(self, key: str, default: str | None = None) -> str | None:
         row = self.connection.execute(
@@ -278,17 +316,70 @@ class BtcDynamicRegistry:
         )
         self.connection.commit()
 
+    def delete_control(self, key: str) -> None:
+        self.connection.execute(
+            "DELETE FROM btc_dynamic_controls WHERE key = ?", (key,)
+        )
+        self.connection.commit()
+
+    def active_model_key(self) -> str:
+        key = self.control(ACTIVE_MODEL_CONTROL, DEFAULT_MODEL_KEY)
+        return key if key and self.model_exists(key) else DEFAULT_MODEL_KEY
+
+    def pending_model_key(self) -> str | None:
+        key = self.control(PENDING_MODEL_CONTROL)
+        return key if key and self.model_exists(key) else None
+
+    def schedule_model_activation(
+        self, model_key: str, not_before: datetime
+    ) -> None:
+        if not self.model_exists(model_key):
+            raise ValueError(f"dynamic model does not exist: {model_key}")
+        self.set_control(PENDING_MODEL_CONTROL, model_key, not_before)
+        self.set_control(
+            PENDING_MODEL_NOT_BEFORE_CONTROL,
+            not_before.isoformat(),
+            not_before,
+        )
+
+    def model_key_for_new_market(self, market_start: datetime) -> str:
+        active = self.active_model_key()
+        pending = self.pending_model_key()
+        raw_not_before = self.control(PENDING_MODEL_NOT_BEFORE_CONTROL)
+        if pending is None or raw_not_before is None:
+            return active
+        try:
+            not_before = datetime.fromisoformat(raw_not_before)
+            if not_before.tzinfo is None:
+                not_before = not_before.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return active
+        if market_start <= not_before:
+            return active
+        self.set_control(ACTIVE_MODEL_CONTROL, pending, market_start)
+        self.delete_control(PENDING_MODEL_CONTROL)
+        self.delete_control(PENDING_MODEL_NOT_BEFORE_CONTROL)
+        return pending
+
     def reset_statistics(self, now: datetime) -> None:
         self.set_control("statistics_reset_at", now.isoformat(), now)
 
-    def request_model_reset(self, now: datetime) -> None:
-        self.set_control("model_reset_pending", now.isoformat(), now)
-
-    def apply_pending_model_reset(self, now: datetime) -> bool:
-        if not self.control("model_reset_pending"):
+    def request_model_reset(self, now: datetime) -> bool:
+        model_key = self.active_model_key()
+        if self.pending_model_key() is not None or self.load_model(model_key).frozen:
             return False
-        model = DynamicModel(updated_at=now)
-        self.save_model(model)
+        self.set_control("model_reset_pending", model_key, now)
+        return True
+
+    def apply_pending_model_reset(self, model_key: str, now: datetime) -> bool:
+        pending = self.control("model_reset_pending")
+        if not pending:
+            return False
+        target = pending if self.model_exists(pending) else DEFAULT_MODEL_KEY
+        if target != model_key:
+            return False
+        model = DynamicModel(model_key=model_key, updated_at=now)
+        self.save_model(model, model_key)
         self.connection.execute(
             "DELETE FROM btc_dynamic_controls WHERE key = 'model_reset_pending'"
         )
@@ -440,7 +531,7 @@ class BtcDynamicRegistry:
 
     def settle(
         self, market_slug: str, outcome: Direction, now: datetime
-    ) -> tuple[DynamicRound, DynamicModel] | None:
+    ) -> tuple[DynamicRound, DynamicModel, bool] | None:
         row = self.connection.execute(
             """
             SELECT payload_json FROM btc_dynamic_rounds
@@ -452,7 +543,7 @@ class BtcDynamicRegistry:
             return None
         round_ = DynamicRound.model_validate_json(row["payload_json"])
         if round_.official_outcome is not None:
-            return round_, self.load_model()
+            return round_, self.load_model(round_.model_key), False
         round_.official_outcome = outcome
         round_.closed_at = now
         round_.updated_at = now
@@ -464,10 +555,10 @@ class BtcDynamicRegistry:
             order.realized_pnl = order.payout_usd - order.quote - order.fee_usd
             order.settled_at = now
             self.update_order(order)
-        model = self.load_model()
+        model = self.load_model(round_.model_key)
         if not round_.trained:
             samples = self.snapshots(round_.market_id)
-            if samples:
+            if samples and not model.frozen:
                 label = 1.0 if outcome == Direction.UP else 0.0
                 learning_rate = 0.05 / math.sqrt(1.0 + model.trained_markets / 500.0)
                 sample_weight = 1.0 / len(samples)
@@ -490,10 +581,10 @@ class BtcDynamicRegistry:
                 model.trained_markets += 1
                 model.version += 1
                 model.updated_at = now
-                self.save_model(model)
+                self.save_model(model, round_.model_key)
             round_.trained = True
         self.save_round(round_)
-        return round_, model
+        return round_, model, True
 
     def recent_orders(self, limit: int = 300) -> list[dict[str, Any]]:
         rows = self.connection.execute(
@@ -548,6 +639,26 @@ class BtcDynamicRegistry:
                 "fees_usd": sum(order.fee_usd for order in items),
             }
 
+        by_model = {
+            model_key: {
+                "online": metrics(
+                    [
+                        order
+                        for order in online
+                        if order.model_key == model_key
+                    ]
+                ),
+                "formula": metrics(
+                    [
+                        order
+                        for order in formula
+                        if order.model_key == model_key
+                    ]
+                ),
+            }
+            for model_key in sorted({order.model_key for order in orders})
+        }
+
         snapshot_rows = self.connection.execute(
             """
             SELECT snapshots.payload_json, rounds.payload_json AS round_json
@@ -574,7 +685,7 @@ class BtcDynamicRegistry:
             )
         daily: dict[str, dict[str, Any]] = {}
         for order in orders:
-            day = order.created_at.date().isoformat()
+            day = local_calendar_date(order.created_at)
             row = daily.setdefault(
                 day,
                 {
@@ -591,6 +702,7 @@ class BtcDynamicRegistry:
         return {
             "online": metrics(online),
             "formula": metrics(formula),
+            "by_model": by_model,
             "brier_online": sum(brier_online) / len(brier_online) if brier_online else None,
             "brier_formula": sum(brier_formula) / len(brier_formula) if brier_formula else None,
             "forward_accuracy": (
@@ -606,7 +718,7 @@ class BtcDynamicEngine:
     def __init__(self, config: AppConfig, registry: BtcDynamicRegistry):
         self.config = config
         self.registry = registry
-        self.model = registry.load_model()
+        self.model = registry.load_model(registry.active_model_key())
         self.current_round: DynamicRound | None = None
         self.chainlink_ticks: list[tuple[datetime, float]] = []
         self.chainlink_open_fallback: tuple[datetime, float] | None = None
@@ -628,6 +740,104 @@ class BtcDynamicEngine:
         self._recent_rounds = self.registry.recent_rounds()
         self._summary = self.registry.summary()
 
+    def _loss_cooldown_state(self, now: datetime) -> dict[str, Any]:
+        default = {"consecutive_losses": 0, "cooldown_until": None}
+        raw = self.registry.control(LOSS_COOLDOWN_CONTROL)
+        if not raw:
+            return default
+        try:
+            payload = json.loads(raw)
+            streak = max(0, int(payload.get("consecutive_losses", 0)))
+            value = payload.get("cooldown_until")
+            cooldown_until = datetime.fromisoformat(value) if value else None
+            if cooldown_until is not None and cooldown_until.tzinfo is None:
+                cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self._save_loss_cooldown_state(default, now)
+            return default
+        if cooldown_until is not None and cooldown_until <= now:
+            self._save_loss_cooldown_state(default, now)
+            return default
+        return {
+            "consecutive_losses": streak,
+            "cooldown_until": cooldown_until,
+        }
+
+    def _save_loss_cooldown_state(
+        self, state: dict[str, Any], now: datetime
+    ) -> None:
+        cooldown_until = state.get("cooldown_until")
+        self.registry.set_control(
+            LOSS_COOLDOWN_CONTROL,
+            json.dumps(
+                {
+                    "consecutive_losses": int(state.get("consecutive_losses", 0)),
+                    "cooldown_until": (
+                        cooldown_until.isoformat()
+                        if isinstance(cooldown_until, datetime)
+                        else None
+                    ),
+                }
+            ),
+            now,
+        )
+
+    def _record_online_result(
+        self, round_: DynamicRound, now: datetime
+    ) -> None:
+        order = round_.online_order
+        if order is None or order.realized_pnl is None:
+            return
+        state = self._loss_cooldown_state(now)
+        if state["cooldown_until"] is not None:
+            return
+        if order.realized_pnl >= 0:
+            if state["consecutive_losses"]:
+                self._save_loss_cooldown_state(
+                    {"consecutive_losses": 0, "cooldown_until": None}, now
+                )
+            return
+        streak = state["consecutive_losses"] + 1
+        cooldown_until = None
+        if streak >= round_.settings.loss_streak_limit:
+            cooldown_until = now + timedelta(
+                minutes=round_.settings.loss_cooldown_minutes
+            )
+        next_state = {
+            "consecutive_losses": streak,
+            "cooldown_until": cooldown_until,
+        }
+        self._save_loss_cooldown_state(next_state, now)
+        if cooldown_until is not None:
+            self.events.append(
+                (
+                    "btc_dynamic_loss_cooldown",
+                    {
+                        "consecutive_losses": streak,
+                        "cooldown_until": cooldown_until.isoformat(),
+                    },
+                )
+            )
+
+    def _loss_cooldown_dashboard_state(
+        self, now: datetime | None = None
+    ) -> dict[str, Any]:
+        now = now or datetime.now(timezone.utc)
+        state = self._loss_cooldown_state(now)
+        cooldown_until = state["cooldown_until"]
+        return {
+            "active": cooldown_until is not None,
+            "consecutive_losses": state["consecutive_losses"],
+            "cooldown_until": (
+                cooldown_until.isoformat() if cooldown_until is not None else None
+            ),
+            "remaining_seconds": (
+                max(0.0, (cooldown_until - now).total_seconds())
+                if cooldown_until is not None
+                else 0.0
+            ),
+        }
+
     def drain_events(self) -> list[tuple[str, Any]]:
         events, self.events = self.events, []
         return events
@@ -642,13 +852,21 @@ class BtcDynamicEngine:
             self.current_round = None
             self.status = self.last_reason = "disabled"
             return
-        if self.registry.apply_pending_model_reset(now):
-            self.model = self.registry.load_model()
-            self.events.append(("btc_dynamic_model_reset", self.model))
         existing = self.registry.get_round(market.condition_id)
+        model_key = (
+            existing.model_key
+            if existing is not None
+            else self.registry.model_key_for_new_market(market.start_time)
+        )
+        if existing is None and self.registry.apply_pending_model_reset(model_key, now):
+            self.events.append(
+                ("btc_dynamic_model_reset", self.registry.load_model(model_key))
+            )
+        self.model = self.registry.load_model(model_key)
         self.current_round = existing or DynamicRound(
             market_id=market.condition_id,
             market_slug=market.slug,
+            model_key=model_key,
             start_time=market.start_time,
             end_time=market.end_time,
             settings=self.config.btc_dynamic.model_copy(deep=True),
@@ -956,7 +1174,7 @@ class BtcDynamicEngine:
         direction: Direction,
         book: OrderBookSnapshot | None,
         now: datetime,
-        quantity: float,
+        quantity: float | None,
     ) -> str | None:
         if book is None:
             return "book_missing"
@@ -967,7 +1185,11 @@ class BtcDynamicEngine:
             return "book_depth_untrusted"
         if (now - book.received_at).total_seconds() * 1000 > self.config.risk.max_data_age_ms:
             return "book_stale"
-        if quantity + 1e-12 < max(market.min_order_size, book.min_order_size):
+        if (
+            quantity is not None
+            and quantity + 1e-12
+            < max(market.min_order_size, book.min_order_size)
+        ):
             return "quantity_below_market_minimum"
         return None
 
@@ -982,7 +1204,21 @@ class BtcDynamicEngine:
     ) -> dict[str, Any]:
         settings = self.current_round.settings
         book = books.get(direction)
-        reason = self._book_ready(market, direction, book, now, settings.quantity)
+        requested_quantity = (
+            settings.quantity if settings.sizing_mode == "quantity" else None
+        )
+        requested_quote_usd = (
+            settings.quote_amount_usd
+            if settings.sizing_mode == "quote"
+            else None
+        )
+        reason = self._book_ready(
+            market,
+            direction,
+            book,
+            now,
+            requested_quantity,
+        )
         tick_size = book.tick_size if book else market.tick_size
         limit = dynamic_max_price(
             probability,
@@ -999,9 +1235,13 @@ class BtcDynamicEngine:
             "eligible": False,
             "reason": reason,
             "avg_price": None,
+            "quantity": None,
             "quote": None,
             "fee_usd": None,
             "net_edge_per_share": None,
+            "sizing_mode": settings.sizing_mode,
+            "requested_quantity": requested_quantity,
+            "requested_quote_usd": requested_quote_usd,
         }
         if reason is not None:
             return payload
@@ -1009,24 +1249,44 @@ class BtcDynamicEngine:
             payload["reason"] = "model_edge_below_threshold"
             return payload
         assert book is not None
-        execution = simulate_buy_quantity_limit(
-            book,
-            settings.quantity,
-            limit,
-            self.config.strategy.taker_fee_rate,
-        )
+        if settings.sizing_mode == "quote":
+            limited = book.model_copy(deep=True)
+            limited.asks = [
+                level
+                for level in limited.asks
+                if level.price <= limit + 1e-12
+            ]
+            execution = simulate_buy(
+                limited,
+                settings.quote_amount_usd,
+                self.config.strategy.taker_fee_rate,
+            )
+        else:
+            execution = simulate_buy_quantity_limit(
+                book,
+                settings.quantity,
+                limit,
+                self.config.strategy.taker_fee_rate,
+            )
         if not execution.complete:
             payload["reason"] = "depth_below_dynamic_limit"
+            return payload
+        if execution.quantity + 1e-12 < max(
+            market.min_order_size,
+            book.min_order_size,
+        ):
+            payload["reason"] = "quantity_below_market_minimum"
             return payload
         edge = (
             probability
             - execution.avg_price
-            - execution.fee_usd / settings.quantity
+            - execution.fee_usd / execution.quantity
             - settings.slippage_reserve_cents / 100.0
         )
         payload.update(
             {
                 "avg_price": execution.avg_price,
+                "quantity": execution.quantity,
                 "quote": execution.quote,
                 "fee_usd": execution.fee_usd,
                 "levels_used": execution.levels_used,
@@ -1090,6 +1350,7 @@ class BtcDynamicEngine:
             market_id=self.current_round.market_id,
             market_slug=self.current_round.market_slug,
             variant=variant,
+            model_key=self.current_round.model_key,
             direction=direction,
             model_probability=candidate["probability"],
             formula_probability=(
@@ -1097,9 +1358,12 @@ class BtcDynamicEngine:
                 if direction == Direction.UP
                 else 1.0 - formula_probability
             ),
+            sizing_mode=candidate["sizing_mode"],
+            requested_quantity=candidate["requested_quantity"],
+            requested_quote_usd=candidate["requested_quote_usd"],
             max_price=candidate["dynamic_max_price"],
             avg_price=candidate["avg_price"],
-            quantity=self.current_round.settings.quantity,
+            quantity=candidate["quantity"],
             quote=candidate["quote"],
             fee_usd=candidate["fee_usd"],
             net_edge_per_share=candidate["net_edge_per_share"],
@@ -1154,6 +1418,7 @@ class BtcDynamicEngine:
                 if self.registry.save_snapshot(
                     DynamicSnapshot(
                         market_id=market.condition_id,
+                        model_key=self.current_round.model_key,
                         snapshot_second=target,
                         formula_probability=formula_up,
                         online_probability=online_up,
@@ -1215,6 +1480,17 @@ class BtcDynamicEngine:
             "formula_UP": formula_candidates[0],
             "formula_DOWN": formula_candidates[1],
         }
+        loss_cooldown = self._loss_cooldown_state(now)
+        online_cooling_down = loss_cooldown["cooldown_until"] is not None
+        if online_cooling_down:
+            self.confirmations.pop("online", None)
+            self.confirmations.pop("formula", None)
+            for candidate in (*online_candidates, *formula_candidates):
+                candidate["eligible"] = False
+                candidate["reason"] = "loss_streak_cooldown"
+                candidate["cooldown_until"] = loss_cooldown[
+                    "cooldown_until"
+                ].isoformat()
         update_key = "|".join(
             [
                 self.chainlink_ticks[-1][0].isoformat(),
@@ -1236,6 +1512,8 @@ class BtcDynamicEngine:
             self._place("formula", formula_choice, formula_up, now)
         if self.current_round.online_order is not None:
             self.status = self.last_reason = "order_held_for_settlement"
+        elif online_cooling_down:
+            self.status = self.last_reason = "loss_streak_cooldown"
         elif online_choice is not None:
             self.status = self.last_reason = "confirming"
         else:
@@ -1257,8 +1535,14 @@ class BtcDynamicEngine:
         )
         if result is None:
             return None
-        round_, model = result
-        self.model = model
+        round_, model, newly_settled = result
+        if (
+            self.current_round is None
+            or self.current_round.model_key == round_.model_key
+        ):
+            self.model = model
+        if newly_settled:
+            self._record_online_result(round_, now or datetime.now(timezone.utc))
         if self.current_round and self.current_round.market_slug == market_slug:
             self.current_round = round_
             self.status = self.last_reason = "official_settlement"
@@ -1277,12 +1561,24 @@ class BtcDynamicEngine:
 
     def request_model_reset(self, now: datetime | None = None) -> None:
         now = now or datetime.now(timezone.utc)
-        self.registry.request_model_reset(now)
+        accepted = self.registry.request_model_reset(now)
+        event = (
+            "btc_dynamic_model_reset_pending"
+            if accepted
+            else "btc_dynamic_model_reset_refused"
+        )
         self.events.append(
-            ("btc_dynamic_model_reset_pending", {"requested_at": now.isoformat()})
+            (
+                event,
+                {
+                    "requested_at": now.isoformat(),
+                    "model_key": self.registry.active_model_key(),
+                    "reason": None if accepted else "frozen_or_pending_activation",
+                },
+            )
         )
 
-    def dashboard_state(self) -> dict[str, Any]:
+    def dashboard_state(self, now: datetime | None = None) -> dict[str, Any]:
         settings = (
             self.current_round.settings.model_dump(mode="json")
             if self.current_round is not None
@@ -1298,6 +1594,11 @@ class BtcDynamicEngine:
                 else None
             ),
             "model": self.model.model_dump(mode="json"),
+            "active_model_key": self.registry.active_model_key(),
+            "pending_model_key": self.registry.pending_model_key(),
+            "pending_model_not_before": self.registry.control(
+                PENDING_MODEL_NOT_BEFORE_CONTROL
+            ),
             "diagnostics": self.diagnostics,
             "candidates": self.candidates,
             "confirmations": {
@@ -1308,6 +1609,7 @@ class BtcDynamicEngine:
                 }
                 for key, value in self.confirmations.items()
             },
+            "loss_cooldown": self._loss_cooldown_dashboard_state(now),
             "model_reset_pending": bool(self.registry.control("model_reset_pending")),
             "summary": self._summary,
             "recent_orders": self._recent_orders,

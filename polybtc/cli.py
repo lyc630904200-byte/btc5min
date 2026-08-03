@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .clients import configure_system_proxy_environment
+from .btc_v8 import BtcV8Registry
 from .config import load_config
 from .dashboard import run_dashboard
 from .journal import RunJournal
@@ -185,6 +187,45 @@ def report(
     market_table.add_row("threshold sources", json.dumps(markets["threshold_source_counts"], ensure_ascii=False))
     market_table.add_row("threshold lag avg sec", format_value(markets["threshold_lag_seconds"]["avg"], 2))
     console.print(market_table)
+
+
+@app.command()
+def btc_v8_retrain(
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="YAML config path"),
+    model_key: Optional[str] = typer.Option(None, "--model-key", help="Optional candidate model key"),
+) -> None:
+    """Retrain a separate V8 candidate in strict market-time order."""
+    cfg = load_config(config)
+    registry = BtcV8Registry(cfg.data_dir / "btc-v8-ledger.sqlite3")
+    try:
+        result = registry.retrain_candidate(
+            now=datetime.now(timezone.utc),
+            model_key=model_key,
+        )
+    finally:
+        registry.close()
+    print_json(result)
+
+
+@app.command()
+def btc_v8_activate_model(
+    model_key: str = typer.Option(..., "--model-key", help="Existing V8 model key"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="YAML config path"),
+) -> None:
+    """Schedule an existing V8 model for the next market."""
+    cfg = load_config(config)
+    registry = BtcV8Registry(cfg.data_dir / "btc-v8-ledger.sqlite3")
+    requested_at = datetime.now(timezone.utc)
+    try:
+        registry.schedule_model(model_key, requested_at)
+        result = {
+            "active_model_key": registry.active_model_key(),
+            "pending_model_key": model_key,
+            "pending_model_not_before": requested_at.isoformat(),
+        }
+    finally:
+        registry.close()
+    print_json(result)
 
 
 if __name__ == "__main__":

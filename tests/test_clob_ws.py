@@ -95,6 +95,48 @@ def test_clob_price_change_publishes_one_final_snapshot_per_token() -> None:
     assert updates[1][1].best_ask == 0.51
 
 
+def test_clob_last_trade_price_is_forwarded_without_losing_book_depth() -> None:
+    books = {}
+    update_books_from_market_message(
+        {
+            "event_type": "book",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739400000,
+            "bids": [{"price": "0.48", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "12"}],
+        },
+        books,
+    )
+
+    updates = update_books_from_market_message(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739401000,
+            "price": "0.52",
+            "size": "3",
+            "side": "BUY",
+        },
+        books,
+    )
+
+    assert len(updates) == 1
+    assert updates[0][1].best_bid == 0.48
+    assert updates[0][1].best_ask == 0.52
+    assert updates[0][1].raw == {
+        "_last_trade": {
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739401000,
+            "price": "0.52",
+            "size": "3",
+            "side": "BUY",
+        }
+    }
+
+
 def test_clob_price_change_uses_authoritative_best_bid_and_ask() -> None:
     books = {}
     update_books_from_market_message(

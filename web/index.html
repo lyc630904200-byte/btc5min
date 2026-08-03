@@ -59,13 +59,14 @@
     h1 { margin: 0; font-size: 16px; line-height: 1; }
     .subline { margin-top: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
     .topbar { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
-    .asset-switch { display: inline-flex; gap: 4px; max-width: 100%; overflow-x: auto; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
-    .asset-tab { border: 0; border-radius: 5px; background: transparent; color: var(--muted); padding: 6px 12px; font-weight: 800; cursor: pointer; }
+    .asset-switch { display: inline-flex; flex-wrap: nowrap; gap: 4px; max-width: 100%; overflow-x: auto; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .asset-tab { flex: 0 0 auto; border: 0; border-radius: 5px; background: transparent; color: var(--muted); padding: 6px 12px; font-weight: 800; white-space: nowrap; cursor: pointer; }
     .asset-tab.active { background: var(--ink); color: #fff; }
     .pair-only { display: none; }
     .recovery-only { display: none; }
     .real-only { display: none; }
     .dynamic-only { display: none; }
+    .v8-only { display: none; }
     body.pair-mode .pair-only { display: block; }
     body.pair-mode .single-only,
     body.pair-mode .single-only-section { display: none; }
@@ -94,6 +95,16 @@
     body.dynamic-mode .single-only-section,
     body.dynamic-mode .eth-trade-market { display: none; }
     body.dynamic-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr) minmax(330px, 430px); }
+    body.v8-mode .v8-only { display: block; }
+    body.v8-mode section.v8-only { display: grid; }
+    body.v8-mode .single-only,
+    body.v8-mode .pair-only,
+    body.v8-mode .recovery-only,
+    body.v8-mode .real-only,
+    body.v8-mode .dynamic-only,
+    body.v8-mode .single-only-section,
+    body.v8-mode .eth-trade-market { display: none; }
+    body.v8-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr) minmax(330px, 430px); }
 
     .pill {
       display: inline-flex;
@@ -149,6 +160,12 @@
     .setting-input:disabled { cursor: not-allowed; opacity: .55; background: var(--panel-soft); color: var(--muted); }
     .setting-toggle { min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); cursor: pointer; font-size: 12px; }
     .setting-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
+    .sizing-switch { display: grid; grid-template-columns: 1fr 1fr; height: 32px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .sizing-option { position: relative; display: grid; place-items: center; min-width: 0; cursor: pointer; }
+    .sizing-option input { position: absolute; opacity: 0; pointer-events: none; }
+    .sizing-option span { width: 100%; height: 24px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); font-size: 12px; font-weight: 760; }
+    .sizing-option input:checked + span { background: var(--ink); color: #fff; }
+    .sizing-option input:focus-visible + span { outline: 2px solid var(--blue); outline-offset: 1px; }
     .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
     .settings-note { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .settings-save { height: 32px; border: 0; border-radius: 6px; padding: 0 12px; background: var(--blue); color: #fff; font: inherit; font-size: 12px; font-weight: 760; cursor: pointer; white-space: nowrap; }
@@ -230,7 +247,8 @@
       .shell { grid-template-columns: 320px 1fr; }
       body.recovery-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(480px, 1fr); }
       body.real-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
-      body.dynamic-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
+      body.dynamic-mode .shell,
+      body.v8-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
       .right { grid-column: 1 / -1; }
     }
 
@@ -238,11 +256,14 @@
       .app { grid-template-rows: auto 1fr; }
       header { min-height: 58px; height: auto; align-items: flex-start; padding: 12px 14px; flex-direction: column; }
       .topbar { width: 100%; justify-content: flex-start; }
+      .asset-switch { width: 100%; }
+      .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
       .shell { grid-template-columns: 1fr; padding: 10px; }
       body.pair-mode .shell { grid-template-columns: 1fr; }
       body.recovery-mode .shell { grid-template-columns: 1fr; }
       body.real-mode .shell { grid-template-columns: 1fr; }
-      body.dynamic-mode .shell { grid-template-columns: 1fr; }
+      body.dynamic-mode .shell,
+      body.v8-mode .shell { grid-template-columns: 1fr; }
       .book-grid, .signal, .metrics, .settings-grid, .pair-grid, .scenario-grid { grid-template-columns: 1fr; }
       .metric-value { font-size: 21px; }
     }
@@ -266,6 +287,7 @@
           <button class="asset-tab" id="assetRECOVERY" type="button" role="tab" aria-selected="false">BTC 70/40策略</button>
           <button class="asset-tab" id="assetREAL" type="button" role="tab" aria-selected="false">真实交易</button>
           <button class="asset-tab" id="assetDYNAMIC" type="button" role="tab" aria-selected="false">BTC动态胜率</button>
+          <button class="asset-tab" id="assetV8" type="button" role="tab" aria-selected="false">BTC V8</button>
         </div>
         <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
         <div class="pill"><span id="wsText">WebSocket</span></div>
@@ -401,7 +423,9 @@
             <div class="kv-row"><div class="kv-label">Chainlink当前</div><div class="kv-value" id="dynamicCurrentPrice">--</div></div>
             <div class="kv-row"><div class="kv-label">Z值 / 波动率</div><div class="kv-value" id="dynamicZVol">--</div></div>
             <div class="kv-row"><div class="kv-label">训练快照</div><div class="kv-value" id="dynamicSnapshotSchedule">--</div></div>
-            <div class="kv-row"><div class="kv-label">模型版本</div><div class="kv-value" id="dynamicModelVersion">--</div></div>
+            <div class="kv-row"><div class="kv-label">运行模型</div><div class="kv-value" id="dynamicModelVersion">--</div></div>
+            <div class="kv-row"><div class="kv-label">下单方式</div><div class="kv-value" id="dynamicSizingMode">--</div></div>
+            <div class="kv-row"><div class="kv-label">连败 / 冷却</div><div class="kv-value" id="dynamicLossCooldown">--</div></div>
             <div class="kv-row"><div class="kv-label">已训练市场</div><div class="kv-value" id="dynamicTrainedMarkets">0</div></div>
           </div>
         </div>
@@ -418,6 +442,35 @@
             <div class="metric"><div class="metric-name">在线Brier</div><div class="metric-value" id="dynamicOnlineBrier">--</div></div>
             <div class="metric"><div class="metric-name">公式Brier</div><div class="metric-value" id="dynamicFormulaBrier">--</div></div>
             <div class="metric metric-wide"><div class="metric-name">前向准确率</div><div class="metric-value" id="dynamicAccuracy">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">V8 自主模型</div><div class="tag blue" id="v8State">等待</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="v8MarketSlug">--</div></div>
+            <div class="kv-row"><div class="kv-label">当前动作</div><div class="kv-value" id="v8Action">--</div></div>
+            <div class="kv-row"><div class="kv-label">拒绝原因</div><div class="kv-value" id="v8Reason">--</div></div>
+            <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="v8TimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">模型版本</div><div class="kv-value" id="v8ModelVersion">--</div></div>
+            <div class="kv-row"><div class="kv-label">已训练市场</div><div class="kv-value" id="v8TrainedMarkets">0</div></div>
+            <div class="kv-row"><div class="kv-label">本场买入次数</div><div class="kv-value" id="v8EntryCount">0 / 3</div></div>
+            <div class="kv-row"><div class="kv-label">新鲜现货源</div><div class="kv-value" id="v8FreshCount">0 / 2</div></div>
+          </div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">概率与绩效</div><div class="tag amber">paper</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">公式 UP</div><div class="metric-value" id="v8FormulaUp">--</div></div>
+            <div class="metric"><div class="metric-name">V8 UP</div><div class="metric-value" id="v8ModelUp">--</div></div>
+            <div class="metric"><div class="metric-name">V8 DOWN</div><div class="metric-value" id="v8ModelDown">--</div></div>
+            <div class="metric"><div class="metric-name">走步 Brier</div><div class="metric-value" id="v8Brier">--</div></div>
+            <div class="metric"><div class="metric-name">准确率</div><div class="metric-value" id="v8Accuracy">--</div></div>
+            <div class="metric"><div class="metric-name">已评估快照</div><div class="metric-value" id="v8Snapshots">0</div></div>
+            <div class="metric"><div class="metric-name">完成持仓</div><div class="metric-value" id="v8Completed">0</div></div>
+            <div class="metric"><div class="metric-name">胜率</div><div class="metric-value" id="v8WinRate">--</div></div>
+            <div class="metric metric-wide"><div class="metric-name">已实现盈亏</div><div class="metric-value" id="v8Pnl">0.00</div></div>
           </div>
         </div>
 
@@ -600,6 +653,8 @@
                 <div class="pair-line"><span>在线概率</span><strong id="dynamicUpProbability">--</strong></div>
                 <div class="pair-line"><span>动态最高限价</span><strong id="dynamicUpLimit">--</strong></div>
                 <div class="pair-line"><span>完整成交均价</span><strong id="dynamicUpAverage">--</strong></div>
+                <div class="pair-line"><span>计划份数</span><strong id="dynamicUpQuantity">--</strong></div>
+                <div class="pair-line"><span>计划本金</span><strong id="dynamicUpQuote">--</strong></div>
                 <div class="pair-line"><span>手续费</span><strong id="dynamicUpFee">--</strong></div>
                 <div class="pair-line"><span>实际净优势</span><strong id="dynamicUpEdge">--</strong></div>
                 <div class="pair-line"><span>原因</span><strong id="dynamicUpReason">--</strong></div>
@@ -609,6 +664,8 @@
                 <div class="pair-line"><span>在线概率</span><strong id="dynamicDownProbability">--</strong></div>
                 <div class="pair-line"><span>动态最高限价</span><strong id="dynamicDownLimit">--</strong></div>
                 <div class="pair-line"><span>完整成交均价</span><strong id="dynamicDownAverage">--</strong></div>
+                <div class="pair-line"><span>计划份数</span><strong id="dynamicDownQuantity">--</strong></div>
+                <div class="pair-line"><span>计划本金</span><strong id="dynamicDownQuote">--</strong></div>
                 <div class="pair-line"><span>手续费</span><strong id="dynamicDownFee">--</strong></div>
                 <div class="pair-line"><span>实际净优势</span><strong id="dynamicDownEdge">--</strong></div>
                 <div class="pair-line"><span>原因</span><strong id="dynamicDownReason">--</strong></div>
@@ -630,7 +687,44 @@
 
         <div class="panel dynamic-only">
           <div class="panel-head"><div class="panel-title">最近订单</div><div class="tag amber" id="dynamicOrderCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>版本</th><th>时间</th><th>方向</th><th>模型概率</th><th>动态限价</th><th>成交均价</th><th>数量</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="dynamicOrders"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>版本</th><th>时间</th><th>方向</th><th>下单方式</th><th>模型概率</th><th>动态限价</th><th>成交均价</th><th>数量</th><th>本金</th><th>手续费</th><th>官方结果</th><th>净盈亏</th></tr></thead><tbody id="dynamicOrders"></tbody></table></div></div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">多交易所数据健康</div><div class="tag blue" id="v8ConsensusState">等待数据</div></div>
+          <div class="panel-body reason-list">
+            <div class="reason"><strong>Binance 现货</strong><span class="mono" id="v8SourceBinance">未连接</span></div>
+            <div class="reason"><strong>Coinbase 现货</strong><span class="mono" id="v8SourceCoinbase">未连接</span></div>
+            <div class="reason"><strong>Kraken 现货</strong><span class="mono" id="v8SourceKraken">未连接</span></div>
+            <div class="reason"><strong>Binance 永续</strong><span class="mono" id="v8SourceFutures">未连接</span></div>
+          </div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">决策与持仓</div><div class="tag blue" id="v8DecisionState">等待</div></div>
+          <div class="panel-body reason-list">
+            <div class="reason"><strong>UP 候选</strong><span class="mono" id="v8UpCandidate">--</span></div>
+            <div class="reason"><strong>DOWN 候选</strong><span class="mono" id="v8DownCandidate">--</span></div>
+            <div class="reason"><strong>卖出候选</strong><span class="mono" id="v8SellCandidate">--</span></div>
+            <div class="reason"><strong>持仓方向 / 均价</strong><span class="mono" id="v8PositionDirection">空仓</span></div>
+            <div class="reason"><strong>数量 / 成本</strong><span class="mono" id="v8PositionSize">--</span></div>
+            <div class="reason"><strong>开仓时间</strong><span class="mono" id="v8PositionTime">--</span></div>
+          </div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">分时 Brier</div><div class="tag amber">走步评估</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>市场秒段</th><th>Brier</th></tr></thead><tbody id="v8TimeMetrics"></tbody></table></div></div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">来源可用性表现</div><div class="tag amber">已结算快照</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>样本</th><th>Brier</th><th>准确率</th></tr></thead><tbody id="v8SourceMetrics"></tbody></table></div></div>
+        </div>
+
+        <div class="panel v8-only">
+          <div class="panel-head"><div class="panel-title">V8 最近成交</div><div class="tag amber" id="v8TradeCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>编号</th><th>时间</th><th>动作</th><th>方向</th><th>概率</th><th>均价</th><th>数量</th><th>金额</th><th>手续费</th><th>原因</th><th>盈亏</th></tr></thead><tbody id="v8Trades"></tbody></table></div></div>
         </div>
       </section>
 
@@ -744,13 +838,20 @@
           <form class="panel-body" id="dynamicForm">
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">在线模拟</span><span class="setting-toggle"><input id="dynamicEnabled" type="checkbox">启用并暂停其他BTC新入场</span></label>
+              <div class="setting"><span class="setting-label">下单方式（二选一）</span><div class="sizing-switch" role="radiogroup" aria-label="动态策略下单方式">
+                <label class="sizing-option"><input id="dynamicSizingQuantity" name="dynamicSizingMode" type="radio" value="quantity"><span>按份数</span></label>
+                <label class="sizing-option"><input id="dynamicSizingQuote" name="dynamicSizingMode" type="radio" value="quote"><span>按金额</span></label>
+              </div></div>
               <label class="setting"><span class="setting-label">数量（份）</span><input class="setting-input" id="dynamicQuantity" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">固定金额（美元，手续费另计）</span><input class="setting-input" id="dynamicQuoteAmount" type="number" min="0.01" step="0.01" required></label>
               <label class="setting"><span class="setting-label">入场开始（开盘后秒）</span><input class="setting-input" id="dynamicEntrySeconds" type="number" min="0" max="299" step="1" required></label>
               <label class="setting"><span class="setting-label">入场截止（开盘后秒）</span><input class="setting-input" id="dynamicExitSeconds" type="number" min="1" max="300" step="1" required></label>
               <label class="setting"><span class="setting-label">最低净优势（美分/份）</span><input class="setting-input" id="dynamicMinEdge" type="number" min="0" step="0.01" required></label>
               <label class="setting"><span class="setting-label">滑点预留（美分/份）</span><input class="setting-input" id="dynamicSlippage" type="number" min="0" step="0.01" required></label>
               <label class="setting"><span class="setting-label">连续确认（秒）</span><input class="setting-input" id="dynamicConfirmSeconds" type="number" min="0" step="0.1" required></label>
               <label class="setting"><span class="setting-label">确认更新数</span><input class="setting-input" id="dynamicConfirmUpdates" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">连续亏损场数</span><input class="setting-input" id="dynamicLossStreak" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">连败休息（分钟）</span><input class="setting-input" id="dynamicCooldownMinutes" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">短波动窗口（秒）</span><input class="setting-input" id="dynamicShortVol" type="number" min="1" step="1" required></label>
               <label class="setting"><span class="setting-label">长波动窗口（秒）</span><input class="setting-input" id="dynamicLongVol" type="number" min="2" step="1" required></label>
               <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="dynamicVolFloor" type="number" min="0" step="0.01" required></label>
@@ -768,6 +869,54 @@
             </div>
             <div class="settings-note">统计重置不删除订单。模型重置需确认码，并从下一场开始使用零系数；历史样本和订单保留。</div>
           </div>
+        </div>
+      </section>
+
+      <section class="stack right v8-only">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">BTC V8 参数</div><div class="tag blue" id="v8ConfigStatus">保存后下一场BTC生效</div></div>
+          <form class="panel-body" id="v8Form">
+            <div class="settings-grid">
+              <label class="setting"><span class="setting-label">本地自主模拟</span><span class="setting-toggle"><input id="v8Enabled" type="checkbox">启用并停止其他策略新入场</span></label>
+              <label class="setting"><span class="setting-label">固定金额（USD）</span><input class="setting-input" id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5" required></label>
+              <label class="setting"><span class="setting-label">买入净优势（美分/份）</span><input class="setting-input" id="v8BuyEdge" type="number" min="0" step="0.01" value="5" required></label>
+              <label class="setting"><span class="setting-label">卖出价值差（美分/份）</span><input class="setting-input" id="v8SellEdge" type="number" min="0" step="0.01" value="2" required></label>
+              <label class="setting"><span class="setting-label">滑点预留（美分/份）</span><input class="setting-input" id="v8Slippage" type="number" min="0" step="0.01" value="1.35" required></label>
+              <label class="setting"><span class="setting-label">停止新买入（开盘后秒）</span><input class="setting-input" id="v8EntryEnd" type="number" min="1" max="299" step="1" value="285" required></label>
+              <label class="setting"><span class="setting-label">停止卖出（开盘后秒）</span><input class="setting-input" id="v8SellEnd" type="number" min="2" max="300" step="1" value="298" required></label>
+              <label class="setting"><span class="setting-label">买入确认（秒）</span><input class="setting-input" id="v8BuyConfirmSeconds" type="number" min="0.1" step="0.1" value="2" required></label>
+              <label class="setting"><span class="setting-label">买入确认更新数</span><input class="setting-input" id="v8BuyConfirmUpdates" type="number" min="1" step="1" value="2" required></label>
+              <label class="setting"><span class="setting-label">卖出确认（秒）</span><input class="setting-input" id="v8SellConfirmSeconds" type="number" min="0.1" step="0.1" value="1" required></label>
+              <label class="setting"><span class="setting-label">卖出确认更新数</span><input class="setting-input" id="v8SellConfirmUpdates" type="number" min="1" step="1" value="2" required></label>
+              <label class="setting"><span class="setting-label">重新入场冷却（秒）</span><input class="setting-input" id="v8ReentryCooldown" type="number" min="0.1" step="0.1" value="3" required></label>
+              <label class="setting"><span class="setting-label">每场最多买入</span><input class="setting-input" id="v8MaxEntries" type="number" min="1" step="1" value="3" required></label>
+              <label class="setting"><span class="setting-label">单仓可执行止损（USD）</span><input class="setting-input" id="v8MaxLoss" type="number" min="0.01" step="0.01" value="2.5" required></label>
+              <label class="setting"><span class="setting-label">模型评估间隔（ms）</span><input class="setting-input" id="v8EvalMs" type="number" min="1" step="1" value="250" required></label>
+              <label class="setting"><span class="setting-label">训练快照间隔（秒）</span><input class="setting-input" id="v8SnapshotSeconds" type="number" min="1" step="1" value="1" required></label>
+              <label class="setting"><span class="setting-label">Binance 现货</span><span class="setting-toggle"><input id="v8UseBinance" type="checkbox" checked>计入现货共识</span></label>
+              <label class="setting"><span class="setting-label">Coinbase 现货</span><span class="setting-toggle"><input id="v8UseCoinbase" type="checkbox" checked>计入现货共识</span></label>
+              <label class="setting"><span class="setting-label">Kraken 现货</span><span class="setting-toggle"><input id="v8UseKraken" type="checkbox" checked>计入现货共识</span></label>
+              <label class="setting"><span class="setting-label">最少新鲜现货源</span><input class="setting-input" id="v8MinFresh" type="number" min="1" max="3" step="1" value="2" required></label>
+              <label class="setting"><span class="setting-label">现货过期阈值（秒）</span><input class="setting-input" id="v8SpotStale" type="number" min="0.1" step="0.1" value="2" required></label>
+              <label class="setting"><span class="setting-label">Chainlink过期阈值（秒）</span><input class="setting-input" id="v8ChainlinkStale" type="number" min="0.1" step="0.1" value="10" required></label>
+              <label class="setting"><span class="setting-label">原始事件保留（小时）</span><input class="setting-input" id="v8RetentionHours" type="number" min="1" step="1" value="24" required></label>
+              <label class="setting"><span class="setting-label">短波动窗口（秒）</span><input class="setting-input" id="v8ShortVol" type="number" min="1" step="1" value="10" required></label>
+              <label class="setting"><span class="setting-label">长波动窗口（秒）</span><input class="setting-input" id="v8LongVol" type="number" min="2" step="1" value="60" required></label>
+              <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="v8VolFloor" type="number" min="0" step="0.01" value="0.5" required></label>
+              <label class="setting"><span class="setting-label">最大概率修正（百分点）</span><input class="setting-input" id="v8MaxCorrection" type="number" min="0" max="100" step="0.1" value="10" required></label>
+            </div>
+            <div class="settings-actions"><span class="settings-note">V8 使用独立账本，只做本地模拟。启用时会关闭配对、70/40、动态胜率和真实交易，并暂停普通策略新入场；已有记录和结算不受影响。</span><button class="settings-save" id="saveV8" type="submit">保存 V8 参数</button></div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">主要特征贡献</div><div class="tag amber">Logistic 残差</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>特征</th><th>值</th><th>权重</th><th>贡献</th></tr></thead><tbody id="v8Contributions"></tbody></table></div></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">概率校准</div><div class="tag amber">已结算快照</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>概率桶</th><th>样本</th><th>平均概率</th><th>实际UP率</th></tr></thead><tbody id="v8Calibration"></tbody></table></div></div>
         </div>
       </section>
     </main>
@@ -800,6 +949,9 @@
     let dynamicFormDirty = false;
     let renderedDynamicConfigKey = '';
     let dynamicControlBusy = false;
+    let v8FormInitialized = false;
+    let v8FormDirty = false;
+    let renderedV8ConfigKey = '';
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -843,16 +995,44 @@
     };
     const dynamicInputs = {
       quantity: 'dynamicQuantity',
+      quote_amount_usd: 'dynamicQuoteAmount',
       entry_seconds_after_open: 'dynamicEntrySeconds',
       exit_seconds_after_open: 'dynamicExitSeconds',
       min_net_edge_cents: 'dynamicMinEdge',
       slippage_reserve_cents: 'dynamicSlippage',
       confirmation_seconds: 'dynamicConfirmSeconds',
       confirmation_updates: 'dynamicConfirmUpdates',
+      loss_streak_limit: 'dynamicLossStreak',
+      loss_cooldown_minutes: 'dynamicCooldownMinutes',
       short_volatility_window_seconds: 'dynamicShortVol',
       long_volatility_window_seconds: 'dynamicLongVol',
       volatility_floor_bps: 'dynamicVolFloor',
       max_probability_correction_points: 'dynamicMaxCorrection',
+    };
+    const v8Inputs = {
+      quote_amount_usd: 'v8QuoteAmount',
+      buy_edge_cents: 'v8BuyEdge',
+      sell_edge_cents: 'v8SellEdge',
+      slippage_reserve_cents: 'v8Slippage',
+      entry_end_seconds: 'v8EntryEnd',
+      sell_end_seconds: 'v8SellEnd',
+      buy_confirmation_seconds: 'v8BuyConfirmSeconds',
+      buy_confirmation_updates: 'v8BuyConfirmUpdates',
+      sell_confirmation_seconds: 'v8SellConfirmSeconds',
+      sell_confirmation_updates: 'v8SellConfirmUpdates',
+      reentry_cooldown_seconds: 'v8ReentryCooldown',
+      max_entries_per_market: 'v8MaxEntries',
+      max_loss_usd: 'v8MaxLoss',
+      evaluation_interval_ms: 'v8EvalMs',
+      snapshot_interval_seconds: 'v8SnapshotSeconds',
+      min_fresh_spot_exchanges: 'v8MinFresh',
+      spot_stale_seconds: 'v8SpotStale',
+      chainlink_stale_seconds: 'v8ChainlinkStale',
+      raw_retention_hours: 'v8RetentionHours',
+      short_volatility_window_seconds: 'v8ShortVol',
+      long_volatility_window_seconds: 'v8LongVol',
+      volatility_floor_bps: 'v8VolFloor',
+      max_probability_correction_points: 'v8MaxCorrection',
     };
     const realInputs = {
       enabled: 'realEnabled',
@@ -869,6 +1049,10 @@
       recoveryOrders: '',
       reasons: '',
       timeline: '',
+      v8TimeMetrics: '',
+      v8Trades: '',
+      v8Contributions: '',
+      v8Calibration: '',
     };
 
     function setText(id, value) {
@@ -876,6 +1060,11 @@
       if (!element) return;
       const next = String(value ?? '');
       if (element.textContent !== next) element.textContent = next;
+    }
+
+    function escapeHtml(value) {
+      const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+      return String(value ?? '').replace(/[&<>"']/g, (character) => entities[character]);
     }
 
     function setClass(id, value) {
@@ -1020,12 +1209,21 @@
       $('recoveryReverseLimit').value = '触发后按盘口';
     }
 
+    function syncDynamicSizingState() {
+      const quoteMode = $('dynamicSizingQuote').checked;
+      $('dynamicSizingQuantity').checked = !quoteMode;
+      $('dynamicQuantity').disabled = quoteMode;
+      $('dynamicQuantity').required = !quoteMode;
+      $('dynamicQuoteAmount').disabled = !quoteMode;
+      $('dynamicQuoteAmount').required = quoteMode;
+    }
+
     function renderDynamicConfig(snapshot, force = false) {
       const active = snapshot.btc_dynamic?.config || {};
       const dynamic = snapshot.pending_btc_dynamic || active;
       const configKey = JSON.stringify(
         Object.fromEntries(Object.keys(dynamicInputs).map((field) => [field, dynamic[field]])),
-      ) + String(dynamic.enabled);
+      ) + String(dynamic.enabled) + String(dynamic.sizing_mode || 'quantity');
       if (
         force
         || !dynamicFormInitialized
@@ -1033,11 +1231,49 @@
       ) {
         Object.entries(dynamicInputs).forEach(([field, id]) => setRuntimeInput(id, dynamic[field]));
         $('dynamicEnabled').checked = Boolean(dynamic.enabled);
+        $('dynamicSizingQuote').checked = dynamic.sizing_mode === 'quote';
+        $('dynamicSizingQuantity').checked = dynamic.sizing_mode !== 'quote';
+        syncDynamicSizingState();
         renderedDynamicConfigKey = configKey;
         dynamicFormInitialized = true;
       }
       const status = $('dynamicConfigStatus');
       if (dynamicFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+      } else if (snapshot.config_status === 'pending_next_btc_market') {
+        status.textContent = '已保存，下一场BTC生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
+    }
+
+    function renderV8Config(snapshot, force = false) {
+      const active = snapshot.btc_v8?.config || {};
+      const v8 = snapshot.pending_btc_v8 || active;
+      const configKey = JSON.stringify({
+        enabled: v8.enabled,
+        spot_exchanges: v8.spot_exchanges,
+        values: Object.fromEntries(Object.keys(v8Inputs).map((field) => [field, v8[field]])),
+      });
+      if (
+        force
+        || !v8FormInitialized
+        || (!v8FormDirty && configKey !== renderedV8ConfigKey)
+      ) {
+        Object.entries(v8Inputs).forEach(([field, id]) => setRuntimeInput(id, v8[field]));
+        $('v8Enabled').checked = Boolean(v8.enabled);
+        const exchanges = new Set(v8.spot_exchanges || ['binance', 'coinbase', 'kraken']);
+        $('v8UseBinance').checked = exchanges.has('binance');
+        $('v8UseCoinbase').checked = exchanges.has('coinbase');
+        $('v8UseKraken').checked = exchanges.has('kraken');
+        renderedV8ConfigKey = configKey;
+        v8FormInitialized = true;
+      }
+      const status = $('v8ConfigStatus');
+      if (v8FormDirty) {
         status.textContent = '有修改，尚未保存';
         status.className = 'tag amber';
       } else if (snapshot.config_status === 'pending_next_btc_market') {
@@ -1444,6 +1680,7 @@
         before_entry_window: '尚未进入入场时间',
         entry_window_closed: '入场窗口已关闭',
         order_held_for_settlement: '已成交，等待官方结算',
+        loss_streak_cooldown: '连败冷却中',
         confirming: '连续确认中',
         waiting_for_edge: '等待净优势',
         book_missing: '盘口缺失',
@@ -1486,7 +1723,27 @@
           ? diagnostics.training_snapshot_seconds.map((value) => `${fmtNumber(value, 1)}s`).join(' / ')
           : '--',
       );
-      setText('dynamicModelVersion', model.version == null ? '--' : `v${model.version}`);
+      setText(
+        'dynamicModelVersion',
+        model.version == null
+          ? '--'
+          : `${model.model_key || 'online'} · 参数v${model.version}${model.frozen ? ' · 已冻结' : ''}`,
+      );
+      const sizingSettings = dynamic.config || {};
+      setText(
+        'dynamicSizingMode',
+        sizingSettings.sizing_mode === 'quote'
+          ? `按金额 $${fmtNumber(sizingSettings.quote_amount_usd, 2)}`
+          : `按份数 ${fmtNumber(sizingSettings.quantity, 2)}份`,
+      );
+      const lossCooldown = dynamic.loss_cooldown || {};
+      const lossLimit = Number(sizingSettings.loss_streak_limit || 5);
+      setText(
+        'dynamicLossCooldown',
+        lossCooldown.active
+          ? `${lossCooldown.consecutive_losses}场 · 剩余${Math.ceil(Number(lossCooldown.remaining_seconds || 0) / 60)}分钟`
+          : `${Number(lossCooldown.consecutive_losses || 0)}/${lossLimit}场`,
+      );
       setText('dynamicTrainedMarkets', model.trained_markets || 0);
       setText('dynamicFormulaUp', diagnostics.formula_probability_up == null ? '--' : fmtProb(diagnostics.formula_probability_up));
       setText('dynamicOnlineUp', diagnostics.online_probability_up == null ? '--' : fmtProb(diagnostics.online_probability_up));
@@ -1508,11 +1765,16 @@
       ['UP', 'DOWN'].forEach((direction) => {
         const candidate = dynamic.candidates?.[direction] || {};
         const prefix = direction === 'UP' ? 'dynamicUp' : 'dynamicDown';
-        setText(`${prefix}Status`, candidate.eligible ? '达标' : '等待');
+        setText(
+          `${prefix}Status`,
+          candidate.reason === 'loss_streak_cooldown' ? '冷却' : candidate.eligible ? '达标' : '等待',
+        );
         setClass(`${prefix}Status`, `tag ${candidate.eligible ? 'green' : 'amber'}`);
         setText(`${prefix}Probability`, candidate.probability == null ? '--' : fmtProb(candidate.probability));
         setText(`${prefix}Limit`, candidate.dynamic_max_price == null ? '--' : fmtCents(candidate.dynamic_max_price));
         setText(`${prefix}Average`, candidate.avg_price == null ? '--' : fmtCents(candidate.avg_price));
+        setText(`${prefix}Quantity`, candidate.quantity == null ? '--' : fmtNumber(candidate.quantity, 2));
+        setText(`${prefix}Quote`, candidate.quote == null ? '--' : `$${fmtNumber(candidate.quote, 2)}`);
         setText(`${prefix}Fee`, candidate.fee_usd == null ? '--' : `$${fmtNumber(candidate.fee_usd, 4)}`);
         setText(`${prefix}Edge`, candidate.net_edge_per_share == null ? '--' : `${fmtNumber(candidate.net_edge_per_share * 100, 2)}¢`);
         setText(`${prefix}Reason`, dynamicReasonText(candidate.reason));
@@ -1525,7 +1787,10 @@
           : '--',
       );
       setText('dynamicDecision', dynamic.round?.online_order ? `已买 ${dynamic.round.online_order.direction}` : dynamicReasonText(dynamic.status));
-      setClass('dynamicDecision', `tag ${dynamic.round?.online_order ? 'green' : 'blue'}`);
+      setClass(
+        'dynamicDecision',
+        `tag ${dynamic.round?.online_order ? 'green' : lossCooldown.active ? 'amber' : 'blue'}`,
+      );
 
       const summary = dynamic.summary || {};
       setPnl('dynamicOnlinePnl', summary.online?.realized_pnl || 0);
@@ -1567,13 +1832,14 @@
         JSON.stringify(orders),
         orders.map((order) => `<tr>
           <td>#${String(order.order_number || 0).padStart(6, '0')}</td>
-          <td>${order.variant === 'online' ? '在线' : '公式'}</td>
+          <td>${order.variant === 'online' ? '在线' : '公式'} · ${order.model_key || 'online'}</td>
           <td>${fmtTime(order.created_at)}</td><td>${order.direction || '--'}</td>
+          <td>${order.sizing_mode === 'quote' ? `金额 $${fmtNumber(order.requested_quote_usd ?? order.quote, 2)}` : `份数 ${fmtNumber(order.requested_quantity ?? order.quantity, 2)}`}</td>
           <td>${fmtProb(order.model_probability)}</td><td>${fmtCents(order.max_price)}</td>
           <td>${fmtCents(order.avg_price)}</td><td>${fmtNumber(order.quantity, 2)}</td>
-          <td>$${fmtNumber(order.fee_usd, 4)}</td><td>${order.official_outcome || '--'}</td>
+          <td>$${fmtNumber(order.quote, 2)}</td><td>$${fmtNumber(order.fee_usd, 4)}</td><td>${order.official_outcome || '--'}</td>
           <td>${order.realized_pnl == null ? '--' : pnlHtml(order.realized_pnl)}</td>
-        </tr>`).join('') || '<tr><td colspan="11">暂无动态订单</td></tr>',
+        </tr>`).join('') || '<tr><td colspan="13">暂无动态订单</td></tr>',
       );
       setText('dynamicResetState', dynamic.model_reset_pending ? '模型重置待生效' : '保留历史');
       renderDynamicConfig(
@@ -1583,6 +1849,169 @@
           config_status: configStatus,
         },
       );
+    }
+
+    function v8ReasonText(reason) {
+      const labels = {
+        disabled: 'V8 已关闭',
+        waiting_for_btc_market: '等待 BTC 市场',
+        collecting_signals: '收集多交易所信号',
+        chainlink_open_unverified: 'Chainlink 开盘价未核验',
+        chainlink_current_unavailable: 'Chainlink 当前价不可用',
+        chainlink_stale: 'Chainlink 数据过期',
+        insufficient_fresh_spot_exchanges: '新鲜现货源不足',
+        entry_window_closed: '新买入窗口已关闭',
+        market_entry_limit: '本场买入次数已满',
+        reentry_cooldown: '卖出后冷却中',
+        confirming_buy: '买入信号确认中',
+        confirming_sell: '卖出信号确认中',
+        waiting_for_edge: '等待净优势',
+        holding: '继续持仓',
+        holding_for_settlement: '停止卖出，持有到结算',
+        bought_up: '已买入 UP',
+        bought_down: '已买入 DOWN',
+        sold: '已卖出',
+        official_settlement: '官方已结算',
+        book_missing: '盘口缺失',
+        book_market_mismatch: '盘口与当前市场不匹配',
+        book_depth_untrusted: '盘口深度不可信',
+        book_stale: 'Polymarket 盘口过期',
+        model_edge_below_threshold: '模型净优势不足',
+        actual_edge_below_threshold: '完整成交后净优势不足',
+        depth_below_limit: '限价内深度不足',
+        quantity_below_market_minimum: '低于市场最小份数',
+        sell_depth_unavailable: '买盘深度不足，无法整仓卖出',
+        model_value_sell: '盘口价值高于模型持有价值',
+        max_loss: '达到可执行止损',
+        hold_value_higher: '模型持有价值更高',
+        eligible: '满足交易条件',
+      };
+      return labels[reason] || reason || '--';
+    }
+
+    function v8SourceText(health, included, featureOnly = false) {
+      if (!health) return '未连接';
+      const state = health.fresh
+        ? (featureOnly ? '特征可用' : included ? '计入共识' : '新鲜但未配置')
+        : '排除';
+      const tradeAge = health.trade_age_ms == null ? '--' : `${health.trade_age_ms}ms`;
+      const bookAge = health.book_age_ms == null ? '--' : `${health.book_age_ms}ms`;
+      const check = health.book_valid ? '校验正常' : (health.last_reason || '盘口未就绪');
+      return `${state} · 成交 ${tradeAge} · 盘口 ${bookAge} · ${check}`;
+    }
+
+    function v8CandidateText(candidate, sell = false) {
+      if (!candidate || Object.keys(candidate).length === 0) return '--';
+      const probability = candidate.probability == null ? '--' : fmtProb(candidate.probability);
+      const price = candidate.avg_price == null ? '--' : fmtCents(candidate.avg_price);
+      const edge = sell ? candidate.value_edge_per_share : candidate.edge_per_share;
+      const edgeText = edge == null ? '--' : `${fmtNumber(Number(edge) * 100, 2)}¢`;
+      return `${candidate.eligible ? '可执行' : '等待'} · 概率 ${probability} · 均价 ${price} · 差值 ${edgeText} · ${v8ReasonText(candidate.reason)}`;
+    }
+
+    function renderV8(v8, btcSnapshot, configStatus, pendingV8) {
+      v8 = v8 || {};
+      const market = btcSnapshot?.market;
+      const diagnostics = v8.diagnostics || {};
+      const model = v8.model || diagnostics.model || {};
+      const modelControl = v8.model_control || {};
+      const summary = v8.summary || {};
+      const settings = v8.config || {};
+      const enabled = Boolean(settings.enabled);
+      setText('v8State', enabled ? v8ReasonText(v8.status) : '关闭');
+      setClass('v8State', `tag ${enabled ? 'green' : 'blue'}`);
+      setText('v8MarketSlug', market?.slug || v8.round?.market_slug || '--');
+      setText('v8Action', v8ReasonText(v8.status));
+      setText('v8Reason', v8ReasonText(v8.last_reason));
+      const left = secondsLeft(market);
+      setText('v8TimeLeft', left == null ? '--' : `${left}s`);
+      setText(
+        'v8ModelVersion',
+        model.version == null
+          ? '--'
+          : `${model.model_key || 'v8'} · schema ${model.feature_schema_version || 1} · v${model.version}${modelControl.pending_model_key ? ` · 待启用 ${modelControl.pending_model_key}` : ''}`,
+      );
+      setText('v8TrainedMarkets', model.trained_markets || 0);
+      setText('v8EntryCount', `${v8.round?.entry_count || 0} / ${settings.max_entries_per_market || 3}`);
+      setText('v8FreshCount', `${diagnostics.fresh_spot_count || 0} / ${diagnostics.required_fresh_spot_count || settings.min_fresh_spot_exchanges || 2}`);
+      setText('v8FormulaUp', diagnostics.formula_probability_up == null ? '--' : fmtProb(diagnostics.formula_probability_up));
+      setText('v8ModelUp', diagnostics.model_probability_up == null ? '--' : fmtProb(diagnostics.model_probability_up));
+      setText('v8ModelDown', diagnostics.model_probability_down == null ? '--' : fmtProb(diagnostics.model_probability_down));
+      setText('v8Brier', summary.brier == null ? '--' : fmtNumber(summary.brier, 4));
+      setText('v8Accuracy', summary.accuracy == null ? '--' : `${fmtNumber(summary.accuracy * 100, 1)}%`);
+      setText('v8Snapshots', summary.evaluated_snapshots || 0);
+      setText('v8Completed', summary.completed_positions || 0);
+      setText('v8WinRate', summary.completed_positions ? `${fmtNumber((summary.win_rate || 0) * 100, 1)}%` : '--');
+      setPnl('v8Pnl', summary.realized_pnl || 0);
+
+      const fresh = new Set(diagnostics.fresh_spot_exchanges || []);
+      const health = diagnostics.source_health || {};
+      setText('v8SourceBinance', v8SourceText(health.binance, fresh.has('binance')));
+      setText('v8SourceCoinbase', v8SourceText(health.coinbase, fresh.has('coinbase')));
+      setText('v8SourceKraken', v8SourceText(health.kraken, fresh.has('kraken')));
+      setText('v8SourceFutures', v8SourceText(health.binance_futures, false, true));
+      const enough = Number(diagnostics.fresh_spot_count || 0) >= Number(diagnostics.required_fresh_spot_count || 2);
+      setText('v8ConsensusState', enough ? '现货共识可用' : '现货共识不足');
+      setClass('v8ConsensusState', `tag ${enough ? 'green' : 'amber'}`);
+
+      setText('v8DecisionState', v8ReasonText(v8.status));
+      setClass('v8DecisionState', `tag ${v8.position ? 'green' : 'blue'}`);
+      setText('v8UpCandidate', v8CandidateText(v8.candidates?.UP));
+      setText('v8DownCandidate', v8CandidateText(v8.candidates?.DOWN));
+      setText('v8SellCandidate', v8CandidateText(v8.candidates?.SELL, true));
+      const position = v8.position;
+      const positionPrice = position?.entry_price == null
+        ? '--'
+        : `${fmtNumber(Number(position.entry_price) * 100, 2)}¢`;
+      setText('v8PositionDirection', position ? `${position.direction} · ${positionPrice}` : '空仓');
+      setText('v8PositionSize', position ? `${fmtNumber(position.quantity, 3)}份 / $${fmtNumber(position.entry_quote + position.entry_fee_usd, 4)}` : '--');
+      setText('v8PositionTime', position ? fmtTime(position.opened_at) : '--');
+
+      const timeMetrics = summary.brier_by_time || {};
+      updateHtmlWhenChanged(
+        'v8TimeMetrics',
+        'v8TimeMetrics',
+        JSON.stringify(timeMetrics),
+        Object.entries(timeMetrics).map(([bucket, value]) => `<tr><td>${bucket}s</td><td>${value == null ? '--' : fmtNumber(value, 4)}</td></tr>`).join('') || '<tr><td colspan="2">暂无已结算快照</td></tr>',
+      );
+      const sourceMetrics = summary.by_source_availability || {};
+      const sourceMetricRows = Object.entries(sourceMetrics).flatMap(([source, states]) =>
+        Object.entries(states || {}).map(([state, values]) => `<tr><td>${escapeHtml(source)}</td><td>${state === 'available' ? '可用' : '缺失'}</td><td>${values.count || 0}</td><td>${values.brier == null ? '--' : fmtNumber(values.brier, 4)}</td><td>${values.accuracy == null ? '--' : `${fmtNumber(values.accuracy * 100, 1)}%`}</td></tr>`),
+      );
+      updateHtmlWhenChanged(
+        'v8SourceMetrics',
+        'v8SourceMetrics',
+        JSON.stringify(sourceMetrics),
+        sourceMetricRows.join('') || '<tr><td colspan="5">暂无已结算快照</td></tr>',
+      );
+      const trades = v8.recent_trades || [];
+      setText('v8TradeCount', trades.length);
+      updateHtmlWhenChanged(
+        'v8Trades',
+        'v8Trades',
+        JSON.stringify(trades),
+        trades.map((trade) => `<tr>
+          <td>#${String(trade.trade_number || 0).padStart(6, '0')}</td><td>${fmtTime(trade.created_at)}</td>
+          <td>${trade.action || '--'}</td><td>${trade.direction || '--'}</td><td>${fmtProb(trade.model_probability)}</td>
+          <td>${fmtCents(trade.avg_price)}</td><td>${fmtNumber(trade.quantity, 3)}</td><td>$${fmtNumber(trade.quote, 3)}</td>
+          <td>$${fmtNumber(trade.fee_usd, 4)}</td><td>${v8ReasonText(trade.reason)}</td><td>${trade.realized_pnl == null ? '--' : pnlHtml(trade.realized_pnl)}</td>
+        </tr>`).join('') || '<tr><td colspan="11">暂无 V8 成交</td></tr>',
+      );
+      const contributions = diagnostics.feature_contributions || [];
+      updateHtmlWhenChanged(
+        'v8Contributions',
+        'v8Contributions',
+        JSON.stringify(contributions),
+        contributions.map((item) => `<tr><td>${item.feature}</td><td>${fmtNumber(item.value, 4)}</td><td>${fmtNumber(item.weight, 4)}</td><td>${fmtSigned(item.contribution, 5)}</td></tr>`).join('') || '<tr><td colspan="4">模型尚无非零贡献</td></tr>',
+      );
+      const calibration = summary.calibration || [];
+      updateHtmlWhenChanged(
+        'v8Calibration',
+        'v8Calibration',
+        JSON.stringify(calibration),
+        calibration.map((item) => `<tr><td>${item.bucket}%</td><td>${item.count}</td><td>${fmtNumber(item.mean_probability, 3)}</td><td>${fmtNumber(item.outcome_rate, 3)}</td></tr>`).join('') || '<tr><td colspan="4">暂无校准样本</td></tr>',
+      );
+      renderV8Config({ btc_v8: v8, pending_btc_v8: pendingV8, config_status: configStatus });
     }
 
     function pnlHtml(value) {
@@ -1815,7 +2244,8 @@
       const recoveryPage = selectedAsset === 'RECOVERY';
       const realPage = selectedAsset === 'REAL';
       const dynamicPage = selectedAsset === 'DYNAMIC';
-      const assetSnapshot = pairPage || recoveryPage || realPage || dynamicPage
+      const v8Page = selectedAsset === 'V8';
+      const assetSnapshot = pairPage || recoveryPage || realPage || dynamicPage || v8Page
         ? (aggregate.assets?.BTC || aggregate)
         : (aggregate.assets?.[selectedAsset] || aggregate);
       snapshot = {
@@ -1827,10 +2257,12 @@
         pending_pair_match: aggregate.pending_pair_match,
         pending_btc_recovery: aggregate.pending_btc_recovery,
         pending_btc_dynamic: aggregate.pending_btc_dynamic,
+        pending_btc_v8: aggregate.pending_btc_v8,
         pending_real_trading: aggregate.pending_real_trading,
         pair_match: aggregate.pair_match || assetSnapshot.pair_match,
         btc_recovery: aggregate.btc_recovery || assetSnapshot.btc_recovery,
         btc_dynamic: aggregate.btc_dynamic || assetSnapshot.btc_dynamic,
+        btc_v8: aggregate.btc_v8 || assetSnapshot.btc_v8,
         real_trading: aggregate.real_trading || assetSnapshot.real_trading,
         config_status: aggregate.config_status,
         ws_url: aggregate.ws_url,
@@ -1841,18 +2273,21 @@
       document.body.classList.toggle('recovery-mode', recoveryPage);
       document.body.classList.toggle('real-mode', realPage);
       document.body.classList.toggle('dynamic-mode', dynamicPage);
+      document.body.classList.toggle('v8-mode', v8Page);
       $('assetBTC').classList.toggle('active', selectedAsset === 'BTC');
       $('assetETH').classList.toggle('active', selectedAsset === 'ETH');
       $('assetPAIR').classList.toggle('active', pairPage);
       $('assetRECOVERY').classList.toggle('active', recoveryPage);
       $('assetREAL').classList.toggle('active', realPage);
       $('assetDYNAMIC').classList.toggle('active', dynamicPage);
+      $('assetV8').classList.toggle('active', v8Page);
       $('assetBTC').setAttribute('aria-selected', String(selectedAsset === 'BTC'));
       $('assetETH').setAttribute('aria-selected', String(selectedAsset === 'ETH'));
       $('assetPAIR').setAttribute('aria-selected', String(pairPage));
       $('assetRECOVERY').setAttribute('aria-selected', String(recoveryPage));
       $('assetREAL').setAttribute('aria-selected', String(realPage));
       $('assetDYNAMIC').setAttribute('aria-selected', String(dynamicPage));
+      $('assetV8').setAttribute('aria-selected', String(v8Page));
       $('brandTitle').textContent = pairPage
         ? 'polybtc · BTC/ETH 自动匹配'
         : recoveryPage
@@ -1861,6 +2296,8 @@
         ? 'polybtc · Polymarket真实交易'
         : dynamicPage
         ? 'polybtc · BTC动态胜率'
+        : v8Page
+        ? 'polybtc · BTC V8 多交易所自主模型'
         : `polybtc · ${asset} 实时面板`;
       $('binanceAssetLabel').textContent = `Binance ${asset}`;
       $('polymarketAssetLabel').textContent = `Polymarket ${asset}`;
@@ -1912,6 +2349,18 @@
         renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
         setText('bookAge', 'BTC');
         setText('tradeBookNote', 'BTC公共盘口 · 动态最高限价内必须可完整成交');
+        return;
+      }
+      if (v8Page) {
+        renderV8(
+          snapshot.btc_v8,
+          assetSnapshot,
+          snapshot.config_status,
+          snapshot.pending_btc_v8,
+        );
+        renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
+        setText('bookAge', 'BTC');
+        setText('tradeBookNote', 'BTC 公共完整盘口 · V8 买卖均按可执行深度、手续费和滑点模拟');
         return;
       }
       renderRuntimeConfig(snapshot);
@@ -2131,6 +2580,12 @@
         setText('dynamicTimeLeft', left == null ? '--' : `${left}s`);
         return;
       }
+      if (selectedAsset === 'V8') {
+        const market = latest.assets?.BTC?.market || latest.market;
+        const left = secondsLeft(market);
+        setText('v8TimeLeft', left == null ? '--' : `${left}s`);
+        return;
+      }
       const market = latest.assets?.[selectedAsset]?.market || latest.market;
       const left = secondsLeft(market);
       setText('timeLeft', left == null ? '--' : `${left}s`);
@@ -2146,6 +2601,7 @@
     $('assetRECOVERY').addEventListener('click', () => selectAsset('RECOVERY'));
     $('assetREAL').addEventListener('click', () => selectAsset('REAL'));
     $('assetDYNAMIC').addEventListener('click', () => selectAsset('DYNAMIC'));
+    $('assetV8').addEventListener('click', () => selectAsset('V8'));
     $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) scheduleRender(latest); });
     $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) scheduleRender(latest); });
     $('strategyForm').addEventListener('input', () => {
@@ -2349,6 +2805,7 @@
     });
     $('dynamicForm').addEventListener('input', () => {
       dynamicFormDirty = true;
+      syncDynamicSizingState();
       $('dynamicConfigStatus').textContent = '有修改，尚未保存';
       $('dynamicConfigStatus').className = 'tag amber';
     });
@@ -2363,13 +2820,17 @@
         const payload = {
           btc_dynamic: {
             enabled: $('dynamicEnabled').checked,
+            sizing_mode: $('dynamicSizingQuote').checked ? 'quote' : 'quantity',
             quantity: runtimeNumber('dynamicQuantity'),
+            quote_amount_usd: runtimeNumber('dynamicQuoteAmount'),
             entry_seconds_after_open: runtimeNumber('dynamicEntrySeconds'),
             exit_seconds_after_open: runtimeNumber('dynamicExitSeconds'),
             min_net_edge_cents: runtimeNumber('dynamicMinEdge'),
             slippage_reserve_cents: runtimeNumber('dynamicSlippage'),
             confirmation_seconds: runtimeNumber('dynamicConfirmSeconds'),
             confirmation_updates: runtimeNumber('dynamicConfirmUpdates'),
+            loss_streak_limit: runtimeNumber('dynamicLossStreak'),
+            loss_cooldown_minutes: runtimeNumber('dynamicCooldownMinutes'),
             short_volatility_window_seconds: runtimeNumber('dynamicShortVol'),
             long_volatility_window_seconds: runtimeNumber('dynamicLongVol'),
             volatility_floor_bps: runtimeNumber('dynamicVolFloor'),
@@ -2436,6 +2897,86 @@
         setText('dynamicResetState', String(error.message || error).slice(0, 24));
       } finally {
         dynamicControlBusy = false;
+      }
+    });
+    $('v8Form').addEventListener('input', () => {
+      v8FormDirty = true;
+      $('v8ConfigStatus').textContent = '有修改，尚未保存';
+      $('v8ConfigStatus').className = 'tag amber';
+    });
+    $('v8Form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('saveV8');
+      const status = $('v8ConfigStatus');
+      try {
+        button.disabled = true;
+        status.textContent = '保存中';
+        status.className = 'tag amber';
+        const spotExchanges = [
+          ['v8UseBinance', 'binance'],
+          ['v8UseCoinbase', 'coinbase'],
+          ['v8UseKraken', 'kraken'],
+        ].filter(([id]) => $(id).checked).map(([, source]) => source);
+        if (!spotExchanges.length) throw new Error('至少选择一个现货交易所');
+        const payload = {
+          btc_v8: {
+            enabled: $('v8Enabled').checked,
+            quote_amount_usd: runtimeNumber('v8QuoteAmount'),
+            buy_edge_cents: runtimeNumber('v8BuyEdge'),
+            sell_edge_cents: runtimeNumber('v8SellEdge'),
+            slippage_reserve_cents: runtimeNumber('v8Slippage'),
+            entry_end_seconds: runtimeNumber('v8EntryEnd'),
+            sell_end_seconds: runtimeNumber('v8SellEnd'),
+            buy_confirmation_seconds: runtimeNumber('v8BuyConfirmSeconds'),
+            buy_confirmation_updates: runtimeNumber('v8BuyConfirmUpdates'),
+            sell_confirmation_seconds: runtimeNumber('v8SellConfirmSeconds'),
+            sell_confirmation_updates: runtimeNumber('v8SellConfirmUpdates'),
+            reentry_cooldown_seconds: runtimeNumber('v8ReentryCooldown'),
+            max_entries_per_market: runtimeNumber('v8MaxEntries'),
+            max_loss_usd: runtimeNumber('v8MaxLoss'),
+            evaluation_interval_ms: runtimeNumber('v8EvalMs'),
+            snapshot_interval_seconds: runtimeNumber('v8SnapshotSeconds'),
+            spot_exchanges: spotExchanges,
+            min_fresh_spot_exchanges: runtimeNumber('v8MinFresh'),
+            spot_stale_seconds: runtimeNumber('v8SpotStale'),
+            chainlink_stale_seconds: runtimeNumber('v8ChainlinkStale'),
+            raw_retention_hours: runtimeNumber('v8RetentionHours'),
+            short_volatility_window_seconds: runtimeNumber('v8ShortVol'),
+            long_volatility_window_seconds: runtimeNumber('v8LongVol'),
+            volatility_floor_bps: runtimeNumber('v8VolFloor'),
+            max_probability_correction_points: runtimeNumber('v8MaxCorrection'),
+          },
+        };
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = {
+          ...(latest || {}),
+          pending_pair_match: config.pending_pair_match,
+          pending_btc_recovery: config.pending_btc_recovery,
+          pending_btc_dynamic: config.pending_btc_dynamic,
+          pending_btc_v8: config.pending_btc_v8,
+          pending_real_trading: config.pending_real_trading,
+          config_status: config.config_status,
+        };
+        v8FormDirty = false;
+        renderV8Config(
+          {
+            btc_v8: latest?.btc_v8,
+            pending_btc_v8: config.pending_btc_v8,
+            config_status: config.config_status,
+          },
+          true,
+        );
+      } catch (error) {
+        status.textContent = String(error.message || error).slice(0, 32);
+        status.className = 'tag red';
+      } finally {
+        button.disabled = false;
       }
     });
     $('realForm').addEventListener('input', () => {

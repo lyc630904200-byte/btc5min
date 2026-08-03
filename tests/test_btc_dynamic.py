@@ -4,10 +4,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import polybtc.btc_dynamic as btc_dynamic_module
 from polybtc.btc_dynamic import (
     BtcDynamicEngine,
     BtcDynamicRegistry,
     DynamicModel,
+    DynamicOrder,
+    DynamicRound,
+    DynamicSnapshot,
     dynamic_max_price,
     training_snapshot_seconds,
 )
@@ -154,6 +158,16 @@ def test_training_snapshots_follow_entry_window(tmp_path) -> None:
     registry.close()
 
 
+def test_dynamic_sizing_defaults_preserve_quantity_mode() -> None:
+    settings = BtcDynamicConfig.model_validate({"quantity": 12})
+
+    assert settings.sizing_mode == "quantity"
+    assert settings.quantity == 12
+    assert settings.quote_amount_usd == 5
+    assert settings.loss_streak_limit == 5
+    assert settings.loss_cooldown_minutes == 30
+
+
 def test_zero_model_matches_formula_and_correction_is_limited() -> None:
     features = {name: 1.0 for name in DynamicModel().weights}
     zero = DynamicModel()
@@ -264,6 +278,51 @@ def test_places_online_and_formula_orders_and_holds_for_settlement(tmp_path) -> 
     registry.close()
 
 
+def test_fixed_quote_mode_spends_requested_principal_and_records_actual_quantity(
+    tmp_path,
+) -> None:
+    start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(
+        tmp_path,
+        start,
+        sizing_mode="quote",
+        quote_amount_usd=5,
+    )
+    now = start + timedelta(seconds=270)
+    feed_prices(strategy, start, now)
+    strategy.evaluate(current, books(current, now), now)
+
+    assert strategy.current_round is not None
+    order = strategy.current_round.online_order
+    assert order is not None
+    assert order.sizing_mode == "quote"
+    assert order.requested_quantity is None
+    assert order.requested_quote_usd == 5
+    assert order.quote == pytest.approx(5)
+    assert order.quantity == pytest.approx(5 / order.avg_price)
+    assert order.quantity != pytest.approx(strategy.current_round.settings.quantity)
+    assert strategy.candidates["UP"]["quantity"] == pytest.approx(order.quantity)
+    registry.close()
+
+
+def test_fixed_quote_mode_rejects_result_below_market_minimum(tmp_path) -> None:
+    start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(
+        tmp_path,
+        start,
+        sizing_mode="quote",
+        quote_amount_usd=2,
+    )
+    now = start + timedelta(seconds=270)
+    feed_prices(strategy, start, now)
+    strategy.evaluate(current, books(current, now), now)
+
+    assert strategy.current_round is not None
+    assert strategy.current_round.online_order is None
+    assert strategy.candidates["UP"]["reason"] == "quantity_below_market_minimum"
+    registry.close()
+
+
 def test_depth_and_actual_edge_are_hard_guards(tmp_path) -> None:
     start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
     strategy, registry, current = engine(tmp_path, start)
@@ -342,4 +401,267 @@ def test_dashboard_state_exposes_model_before_market_diagnostics(tmp_path) -> No
     assert state["diagnostics"] == {}
     assert state["model"]["version"] == 7
     assert state["model"]["trained_markets"] == 6
+    registry.close()
+
+
+def test_frozen_model_activates_only_for_next_market_and_survives_restart(
+    tmp_path,
+) -> None:
+    start = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(tmp_path, start)
+    frozen = DynamicModel(
+        model_key="v3",
+        frozen=True,
+        source_model_key="online",
+        source_version=413,
+        source_as_of=start,
+        version=413,
+        trained_markets=412,
+        bias=-0.024,
+    )
+    registry.save_model(frozen, "v3")
+    requested_at = start + timedelta(seconds=30)
+    registry.schedule_model_activation("v3", requested_at)
+
+    strategy.set_market(current, start + timedelta(seconds=60))
+    assert strategy.current_round is not None
+    assert strategy.current_round.model_key == "online"
+    assert strategy.model.model_key == "online"
+
+    next_market = market(start + timedelta(minutes=5), "btc-v3")
+    strategy.set_market(next_market, next_market.start_time)
+    assert strategy.current_round.model_key == "v3"
+    assert strategy.model.model_key == "v3"
+    assert strategy.model.frozen is True
+    assert registry.active_model_key() == "v3"
+    assert registry.pending_model_key() is None
+    registry.close()
+
+    reopened = BtcDynamicRegistry(tmp_path / "dynamic.sqlite3")
+    restored = BtcDynamicEngine(strategy.config, reopened)
+    restored.set_market(next_market, next_market.start_time + timedelta(seconds=1))
+    assert restored.current_round is not None
+    assert restored.current_round.model_key == "v3"
+    assert restored.model.version == 413
+    assert restored.model.frozen is True
+    reopened.close()
+
+
+def test_frozen_model_settlement_does_not_train_or_get_replaced_by_delayed_v1(
+    tmp_path,
+) -> None:
+    start = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    config = AppConfig(data_dir=tmp_path, btc_dynamic={"enabled": True})
+    registry = BtcDynamicRegistry(tmp_path / "dynamic.sqlite3")
+    online = DynamicModel(model_key="online", version=8, trained_markets=7)
+    frozen = DynamicModel(
+        model_key="v3",
+        frozen=True,
+        source_model_key="online",
+        source_version=413,
+        source_as_of=start,
+        version=413,
+        trained_markets=412,
+        bias=-0.024,
+    )
+    registry.save_model(online, "online")
+    registry.save_model(frozen, "v3")
+    registry.set_control("active_model_key", "v3", start)
+
+    delayed_market = market(start - timedelta(minutes=5), "btc-delayed-v1")
+    delayed_round = DynamicRound(
+        market_id=delayed_market.condition_id,
+        market_slug=delayed_market.slug,
+        model_key="online",
+        start_time=delayed_market.start_time,
+        end_time=delayed_market.end_time,
+        settings=config.btc_dynamic,
+        created_at=delayed_market.start_time,
+        updated_at=delayed_market.start_time,
+    )
+    registry.save_round(delayed_round)
+    registry.save_snapshot(
+        DynamicSnapshot(
+            market_id=delayed_market.condition_id,
+            model_key="online",
+            snapshot_second=270,
+            formula_probability=0.6,
+            online_probability=0.6,
+            features={name: 0.1 for name in online.weights},
+            created_at=delayed_market.start_time + timedelta(seconds=270),
+        )
+    )
+
+    current = market(start, "btc-current-v3")
+    strategy = BtcDynamicEngine(config, registry)
+    strategy.set_market(current, start)
+    registry.save_snapshot(
+        DynamicSnapshot(
+            market_id=current.condition_id,
+            model_key="v3",
+            snapshot_second=270,
+            formula_probability=0.6,
+            online_probability=0.6,
+            features={name: 0.1 for name in frozen.weights},
+            created_at=start + timedelta(seconds=270),
+        )
+    )
+
+    strategy.settle(delayed_market.slug, Direction.UP, start + timedelta(seconds=1))
+    assert registry.load_model("online").version == 9
+    assert strategy.model.model_key == "v3"
+    assert strategy.model.version == 413
+
+    strategy.settle(current.slug, Direction.UP, start + timedelta(minutes=5))
+    persisted = registry.load_model("v3")
+    assert persisted.version == 413
+    assert persisted.trained_markets == 412
+    assert persisted.bias == pytest.approx(-0.024)
+    assert strategy.current_round is not None
+    assert strategy.current_round.trained is True
+    registry.close()
+
+
+def test_online_loss_streak_cooldown_survives_restart_and_pauses_all_orders(
+    tmp_path,
+) -> None:
+    start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(
+        tmp_path,
+        start,
+        loss_streak_limit=2,
+        loss_cooldown_minutes=30,
+    )
+
+    def place_and_lose(current_market: MarketState) -> datetime:
+        decision_at = current_market.start_time + timedelta(seconds=270)
+        feed_prices(strategy, current_market.start_time, decision_at)
+        strategy.evaluate(
+            current_market,
+            books(current_market, decision_at),
+            decision_at,
+        )
+        assert strategy.current_round is not None
+        order = strategy.current_round.online_order
+        assert order is not None
+        losing_outcome = (
+            Direction.DOWN if order.direction == Direction.UP else Direction.UP
+        )
+        settled_at = current_market.end_time + timedelta(seconds=1)
+        strategy.settle(current_market.slug, losing_outcome, settled_at)
+        return settled_at
+
+    first_settled_at = place_and_lose(current)
+    state = strategy.dashboard_state(first_settled_at)["loss_cooldown"]
+    assert state["active"] is False
+    assert state["consecutive_losses"] == 1
+
+    second = market(start + timedelta(minutes=5), "btc-second")
+    strategy.set_market(second, second.start_time)
+    second_settled_at = place_and_lose(second)
+    state = strategy.dashboard_state(second_settled_at)["loss_cooldown"]
+    assert state["active"] is True
+    assert state["consecutive_losses"] == 2
+    cooldown_until = datetime.fromisoformat(state["cooldown_until"])
+    assert cooldown_until == second_settled_at + timedelta(minutes=30)
+
+    strategy.settle(
+        second.slug,
+        Direction.DOWN,
+        second_settled_at + timedelta(seconds=1),
+    )
+    assert strategy.dashboard_state(second_settled_at + timedelta(seconds=1))[
+        "loss_cooldown"
+    ]["consecutive_losses"] == 2
+    registry.close()
+
+    reopened_registry = BtcDynamicRegistry(tmp_path / "dynamic.sqlite3")
+    strategy = BtcDynamicEngine(strategy.config, reopened_registry)
+    paused = market(start + timedelta(minutes=10), "btc-paused")
+    strategy.set_market(paused, paused.start_time)
+    paused_at = paused.start_time + timedelta(seconds=270)
+    feed_prices(strategy, paused.start_time, paused_at)
+    strategy.evaluate(paused, books(paused, paused_at), paused_at)
+
+    assert strategy.current_round is not None
+    assert strategy.current_round.online_order is None
+    assert strategy.current_round.formula_order is None
+    assert strategy.status == "loss_streak_cooldown"
+    assert strategy.diagnostics["online_probability_up"] is not None
+    assert strategy.candidates["UP"]["reason"] == "loss_streak_cooldown"
+    assert strategy.candidates["formula_UP"]["reason"] == "loss_streak_cooldown"
+
+    resumed = market(cooldown_until + timedelta(minutes=1), "btc-resumed")
+    strategy.set_market(resumed, resumed.start_time)
+    resumed_at = resumed.start_time + timedelta(seconds=270)
+    feed_prices(strategy, resumed.start_time, resumed_at)
+    strategy.evaluate(resumed, books(resumed, resumed_at), resumed_at)
+
+    assert strategy.current_round is not None
+    assert strategy.current_round.online_order is not None
+    assert strategy.dashboard_state(resumed_at)["loss_cooldown"] == {
+        "active": False,
+        "consecutive_losses": 0,
+        "cooldown_until": None,
+        "remaining_seconds": 0.0,
+    }
+    reopened_registry.close()
+
+
+def test_daily_summary_uses_computer_local_calendar_date(tmp_path, monkeypatch) -> None:
+    local_timezone = timezone(timedelta(hours=8))
+    monkeypatch.setattr(
+        btc_dynamic_module,
+        "local_calendar_date",
+        lambda value: value.astimezone(local_timezone).date().isoformat(),
+    )
+    registry = BtcDynamicRegistry(tmp_path / "dynamic.sqlite3")
+
+    def save_order(
+        market_id: str,
+        variant: str,
+        created_at: datetime,
+        realized_pnl: float,
+    ) -> None:
+        registry.save_order(
+            DynamicOrder(
+                market_id=market_id,
+                market_slug=market_id,
+                variant=variant,
+                direction=Direction.UP,
+                model_probability=0.6,
+                formula_probability=0.6,
+                max_price=0.5,
+                avg_price=0.5,
+                quantity=10,
+                quote=5,
+                fee_usd=0.1,
+                net_edge_per_share=0.05,
+                created_at=created_at,
+                realized_pnl=realized_pnl,
+            )
+        )
+
+    save_order("before-local-midnight", "online", datetime(2026, 7, 31, 15, 59, tzinfo=timezone.utc), 2)
+    save_order("after-local-midnight", "online", datetime(2026, 7, 31, 16, 1, tzinfo=timezone.utc), 3)
+    save_order("formula-after-midnight", "formula", datetime(2026, 7, 31, 17, 0, tzinfo=timezone.utc), -1)
+
+    daily = registry.summary()["daily"]
+
+    assert daily == [
+        {
+            "date": "2026-08-01",
+            "online_orders": 1,
+            "online_pnl": pytest.approx(3),
+            "formula_orders": 1,
+            "formula_pnl": pytest.approx(-1),
+        },
+        {
+            "date": "2026-07-31",
+            "online_orders": 1,
+            "online_pnl": pytest.approx(2),
+            "formula_orders": 0,
+            "formula_pnl": pytest.approx(0),
+        },
+    ]
     registry.close()

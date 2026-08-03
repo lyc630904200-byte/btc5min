@@ -13,6 +13,12 @@ sources:
   binance_symbol: BTCUSDT
   binance_rest_url: https://api.binance.com
   binance_ws_url: wss://stream.binance.com:9443/ws/btcusdt@trade
+  binance_signal_ws_url: wss://stream.binance.com:9443/stream
+  binance_futures_rest_url: https://fapi.binance.com
+  binance_futures_ws_url: wss://fstream.binance.com/stream
+  coinbase_rest_url: https://api.exchange.coinbase.com
+  coinbase_ws_url: wss://ws-feed.exchange.coinbase.com
+  kraken_ws_url: wss://ws.kraken.com/v2
   gamma_url: https://gamma-api.polymarket.com
   clob_url: https://clob.polymarket.com
   clob_ws_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
@@ -96,13 +102,48 @@ btc_dynamic:
   # Online probability controls both direction and a per-direction dynamic limit.
   # This strategy is local simulation only and holds every fill to official settlement.
   enabled: false
+  sizing_mode: quantity
   quantity: 10
+  quote_amount_usd: 5
   entry_seconds_after_open: 270
   exit_seconds_after_open: 290
   min_net_edge_cents: 3
   slippage_reserve_cents: 1.35
   confirmation_seconds: 2
   confirmation_updates: 2
+  loss_streak_limit: 5
+  loss_cooldown_minutes: 30
+  short_volatility_window_seconds: 10
+  long_volatility_window_seconds: 60
+  volatility_floor_bps: 0.5
+  max_probability_correction_points: 10
+
+btc_v8:
+  # Independent multi-exchange local simulation; no real-order adapter is used.
+  enabled: false
+  quote_amount_usd: 5
+  buy_edge_cents: 5
+  sell_edge_cents: 2
+  slippage_reserve_cents: 1.35
+  entry_end_seconds: 285
+  sell_end_seconds: 298
+  buy_confirmation_seconds: 2
+  buy_confirmation_updates: 2
+  sell_confirmation_seconds: 1
+  sell_confirmation_updates: 2
+  reentry_cooldown_seconds: 3
+  max_entries_per_market: 3
+  max_loss_usd: 2.5
+  evaluation_interval_ms: 250
+  snapshot_interval_seconds: 1
+  spot_exchanges:
+    - binance
+    - coinbase
+    - kraken
+  min_fresh_spot_exchanges: 2
+  spot_stale_seconds: 2
+  chainlink_stale_seconds: 10
+  raw_retention_hours: 24
   short_volatility_window_seconds: 10
   long_volatility_window_seconds: 60
   volatility_floor_bps: 0.5

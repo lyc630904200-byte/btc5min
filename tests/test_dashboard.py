@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from polybtc.btc_dynamic import BtcDynamicEngine, BtcDynamicRegistry
+from polybtc.btc_v8 import BtcV8Engine, BtcV8Registry
 from polybtc.config import AppConfig
 from polybtc.dashboard import DashboardHub, DashboardRequestHandler
 from polybtc.models import MarketState
@@ -30,6 +31,53 @@ def test_recovery_orders_table_uses_merged_order_columns() -> None:
     assert "${recoveryReasonText(order.reason)}" not in html
     assert 'id="recoveryTargetPrice" type="number" min="1" max="100"' in html
     assert 'id="recoveryTriggerPrice" type="number" min="0" max="99"' in html
+
+
+def test_dynamic_sizing_controls_are_mutually_exclusive() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="dynamicSizingQuantity"' in html
+    assert 'id="dynamicSizingQuote"' in html
+    assert 'name="dynamicSizingMode"' in html
+    assert 'id="dynamicQuoteAmount"' in html
+    assert 'id="dynamicLossStreak"' in html
+    assert 'id="dynamicCooldownMinutes"' in html
+    assert "$('dynamicQuantity').disabled = quoteMode;" in html
+    assert "$('dynamicQuoteAmount').disabled = !quoteMode;" in html
+    assert "sizing_mode: $('dynamicSizingQuote').checked ? 'quote' : 'quantity'" in html
+    assert "loss_streak_limit: runtimeNumber('dynamicLossStreak')" in html
+    assert "loss_cooldown_minutes: runtimeNumber('dynamicCooldownMinutes')" in html
+
+
+def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="assetV8"' in html
+    assert 'id="v8SourceBinance"' in html
+    assert 'id="v8SourceCoinbase"' in html
+    assert 'id="v8SourceKraken"' in html
+    assert 'id="v8SourceFutures"' in html
+    assert 'id="v8Trades"' in html
+    assert 'id="v8SourceMetrics"' in html
+    assert 'id="v8Contributions"' in html
+    assert 'id="v8Calibration"' in html
+    assert 'id="v8Form"' in html
+    assert '<strong>持仓方向 / 均价</strong>' in html
+    assert "`${position.direction} · ${positionPrice}`" in html
+    assert 'id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5"' in html
+    assert 'id="v8BuyEdge" type="number" min="0" step="0.01" value="5"' in html
+    assert 'id="v8EvalMs" type="number" min="1" step="1" value="250"' in html
+    assert 'id="v8UseBinance" type="checkbox" checked' in html
+    assert 'id="v8UseCoinbase" type="checkbox" checked' in html
+    assert 'id="v8UseKraken" type="checkbox" checked' in html
+    assert "function escapeHtml(value)" in html
+    assert "spot_exchanges: spotExchanges" in html
+    assert "buy_edge_cents: runtimeNumber('v8BuyEdge')" in html
+    assert "sell_edge_cents: runtimeNumber('v8SellEdge')" in html
 
 
 def test_compact_market_exposes_threshold_verification() -> None:
@@ -694,8 +742,12 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert hub.config.btc_dynamic.enabled is False
+    assert hub.config.btc_dynamic.sizing_mode == "quantity"
     assert hub.config.btc_dynamic.quantity == 10
+    assert hub.config.btc_dynamic.quote_amount_usd == 5
     assert hub.config.btc_dynamic.slippage_reserve_cents == 1.35
+    assert hub.config.btc_dynamic.loss_streak_limit == 5
+    assert hub.config.btc_dynamic.loss_cooldown_minutes == 30
 
     hub.asset_snapshots["BTC"] = {
         "market": {"asset": "BTC", "condition_id": "btc-old"}
@@ -704,25 +756,39 @@ def test_btc_dynamic_config_is_backward_compatible_and_activates_next_btc_market
         {
             "btc_dynamic": {
                 "enabled": True,
+                "sizing_mode": "quote",
                 "quantity": 12,
+                "quote_amount_usd": 7,
                 "min_net_edge_cents": 4,
+                "loss_streak_limit": 4,
+                "loss_cooldown_minutes": 20,
             }
         }
     )
     assert response["config_status"] == "pending_next_btc_market"
     assert response["btc_dynamic"]["enabled"] is False
     assert response["pending_btc_dynamic"]["enabled"] is True
+    assert response["pending_btc_dynamic"]["sizing_mode"] == "quote"
     assert response["pending_btc_dynamic"]["quantity"] == 12
+    assert response["pending_btc_dynamic"]["quote_amount_usd"] == 7
+    assert response["pending_btc_dynamic"]["loss_streak_limit"] == 4
+    assert response["pending_btc_dynamic"]["loss_cooldown_minutes"] == 20
     assert hub.apply_pending_config_for_market("btc-old") is False
     assert hub.apply_pending_config_for_market("btc-new") is True
     assert hub.config.btc_dynamic.enabled is True
     assert hub.config.btc_dynamic.min_net_edge_cents == 4
+    assert hub.config.btc_dynamic.loss_streak_limit == 4
+    assert hub.config.btc_dynamic.loss_cooldown_minutes == 20
 
     reloaded = DashboardHub(
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert reloaded.config.btc_dynamic.enabled is True
+    assert reloaded.config.btc_dynamic.sizing_mode == "quote"
     assert reloaded.config.btc_dynamic.quantity == 12
+    assert reloaded.config.btc_dynamic.quote_amount_usd == 7
+    assert reloaded.config.btc_dynamic.loss_streak_limit == 4
+    assert reloaded.config.btc_dynamic.loss_cooldown_minutes == 20
 
 
 def test_btc_dynamic_config_applies_before_next_round_is_created(tmp_path) -> None:
@@ -759,6 +825,99 @@ def test_btc_dynamic_config_applies_before_next_round_is_created(tmp_path) -> No
         assert engine.current_round.settings.max_probability_correction_points == 50
     finally:
         registry.close()
+
+
+def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> None:
+    config = AppConfig(data_dir=tmp_path)
+    config.pair_match.enabled = True
+    config.btc_recovery.enabled = True
+    config.btc_dynamic.enabled = True
+    config.real_trading.enabled = True
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+    hub.asset_snapshots["BTC"] = {
+        "market": {"asset": "BTC", "condition_id": "btc-old"}
+    }
+    response = hub.set_runtime_config(
+        {
+            "btc_v8": {
+                "enabled": True,
+                "quote_amount_usd": 6,
+                "buy_edge_cents": 6.5,
+                "sell_edge_cents": 2.5,
+                "spot_exchanges": ["binance", "coinbase"],
+                "min_fresh_spot_exchanges": 2,
+            }
+        }
+    )
+    assert response["config_status"] == "pending_next_btc_market"
+    assert response["btc_v8"]["enabled"] is False
+    assert response["pending_btc_v8"]["enabled"] is True
+    assert response["pending_btc_v8"]["quote_amount_usd"] == 6
+    assert response["pending_pair_match"]["enabled"] is False
+    assert response["pending_btc_recovery"]["enabled"] is False
+    assert response["pending_btc_dynamic"]["enabled"] is False
+    assert response["pending_real_trading"]["enabled"] is False
+    assert hub.apply_pending_config_for_market("btc-old") is False
+
+    start = datetime(2026, 8, 3, 0, 0, tzinfo=timezone.utc)
+    next_market = MarketState(
+        asset="BTC",
+        condition_id="btc-new",
+        slug=f"btc-updown-5m-{int(start.timestamp())}",
+        question="Bitcoin Up or Down",
+        threshold_price=100_000,
+        threshold_verified=True,
+        start_time=start,
+        end_time=start + timedelta(minutes=5),
+        up_token_id="up",
+        down_token_id="down",
+    )
+    assert hub.apply_pending_config_before_markets({"BTC": next_market}) is True
+    assert config.pair_match.enabled is False
+    assert config.btc_recovery.enabled is False
+    assert config.btc_dynamic.enabled is False
+    assert config.real_trading.enabled is False
+    registry = BtcV8Registry(tmp_path / "btc-v8-ledger.sqlite3")
+    try:
+        engine = BtcV8Engine(config, registry)
+        engine.set_market(next_market, start)
+        assert engine.current_round is not None
+        assert engine.current_round.settings.quote_amount_usd == 6
+        assert engine.current_round.settings.buy_edge_cents == 6.5
+        assert engine.current_round.settings.spot_exchanges == ["binance", "coinbase"]
+    finally:
+        registry.close()
+
+    reloaded = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert reloaded.config.btc_v8.enabled is True
+    assert reloaded.config.btc_v8.quote_amount_usd == 6
+    assert reloaded.config.btc_v8.spot_exchanges == ["binance", "coinbase"]
+    assert reloaded.config.pair_match.enabled is False
+    assert reloaded.config.btc_recovery.enabled is False
+    assert reloaded.config.btc_dynamic.enabled is False
+    assert reloaded.config.real_trading.enabled is False
+
+
+def test_btc_v8_disables_legacy_parallel_strategies_on_dashboard_start(tmp_path) -> None:
+    config = AppConfig(data_dir=tmp_path)
+    config.btc_v8.enabled = True
+    config.pair_match.enabled = True
+    config.btc_recovery.enabled = True
+    config.btc_dynamic.enabled = True
+    config.real_trading.enabled = True
+
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+
+    assert hub.config.btc_v8.enabled is True
+    assert hub.config.pair_match.enabled is False
+    assert hub.config.btc_recovery.enabled is False
+    assert hub.config.btc_dynamic.enabled is False
+    assert hub.config.real_trading.enabled is False
+    saved = json.loads((tmp_path / "dashboard-settings.json").read_text(encoding="utf-8"))
+    assert saved["active"]["btc_v8"]["enabled"] is True
+    assert saved["active"]["btc_dynamic"]["enabled"] is False
 
 
 def test_btc_dynamic_model_reset_requires_confirmation(tmp_path) -> None:

@@ -367,6 +367,22 @@ def update_books_from_market_message(
             books[token_id] = updated
             updates[token_id] = updated
             continue
+
+        if event_type == "last_trade_price":
+            token_id = str(payload.get("asset_id") or payload.get("token_id") or "")
+            book = books.get(token_id)
+            if not token_id or book is None:
+                continue
+            timestamp = clob_timestamp(payload.get("timestamp"))
+            if timestamp < book.timestamp:
+                continue
+            updated = book.model_copy(deep=True)
+            updated.timestamp = timestamp
+            updated.received_at = datetime.now(timezone.utc)
+            updated.raw = {"_last_trade": payload}
+            books[token_id] = updated
+            updates[token_id] = updated
+            continue
     return list(updates.items())
 
 

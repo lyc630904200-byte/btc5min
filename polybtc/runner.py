@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 
 from .btc_recovery import BtcRecoveryEngine, BtcRecoveryRegistry
 from .btc_dynamic import BtcDynamicEngine, BtcDynamicRegistry
+from .btc_v8 import BtcV8Engine, BtcV8Registry
 from .clients import BinanceClient, PolymarketClient
 from .config import AppConfig
 from .engine import PaperEngine
@@ -30,6 +31,13 @@ from .real_trading import (
     RealTradingEngine,
     RealTradingRegistry,
 )
+from .signal_sources import (
+    BinanceFuturesSignalClient,
+    BinanceSpotSignalClient,
+    CoinbaseSignalClient,
+    KrakenSignalClient,
+    SignalEvent,
+)
 
 
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -43,6 +51,16 @@ LIVE_EVENT_COALESCE_SECONDS = 0.02
 BOOK_PUBLISH_HEARTBEAT = timedelta(milliseconds=250)
 THRESHOLD_MATCH_TOLERANCE_USD = 0.01
 THRESHOLD_FINALIZATION_DELAY = timedelta(milliseconds=250)
+
+
+def standard_entry_enabled(config: AppConfig, asset: str) -> bool:
+    if config.btc_v8.enabled:
+        return False
+    return not (
+        config.pair_match.enabled
+        or config.btc_recovery.enabled
+        or (config.btc_dynamic.enabled and asset.upper() == "BTC")
+    )
 
 
 def run_dir(base: Path) -> Path:
@@ -122,6 +140,7 @@ def live_snapshot(
     btc_recovery: dict[str, Any] | None = None,
     real_trading: dict[str, Any] | None = None,
     btc_dynamic: dict[str, Any] | None = None,
+    btc_v8: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     books = {direction.value: live_book_payload(book) for direction, book in engine.books.items()}
     event_payload: Any
@@ -151,6 +170,7 @@ def live_snapshot(
         "btc_recovery": btc_recovery or {},
         "real_trading": real_trading or {},
         "btc_dynamic": btc_dynamic or {},
+        "btc_v8": btc_v8 or {},
     }
 
 
@@ -604,6 +624,73 @@ async def btc_dynamic_resolution_loop(
         await asyncio.sleep(2)
 
 
+async def btc_v8_resolution_loop(
+    btc_client: PolymarketClient,
+    v8_engine: BtcV8Engine,
+    queue: asyncio.Queue[tuple[str, str, Any]],
+) -> None:
+    while True:
+        for slug in v8_engine.unresolved_slugs():
+            try:
+                outcome = await btc_client.resolved_outcome(slug)
+                if outcome is not None:
+                    await queue.put(("BTC_V8", "btc_v8_resolution", (slug, outcome)))
+            except Exception as exc:
+                await queue.put(
+                    (
+                        "BTC_V8",
+                        "btc_v8_error",
+                        {"source": "gamma_resolution", "error": str(exc)},
+                    )
+                )
+        await asyncio.sleep(2)
+
+
+async def btc_v8_signal_collector(
+    client: Any,
+    buffer: asyncio.Queue[SignalEvent],
+    config: AppConfig,
+) -> None:
+    while True:
+        while not config.btc_v8.enabled:
+            await asyncio.sleep(0.25)
+        async for event in client.events():
+            if not config.btc_v8.enabled:
+                break
+            if buffer.full():
+                try:
+                    buffer.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            buffer.put_nowait(event)
+
+
+async def btc_v8_signal_batch_loop(
+    buffers: dict[str, asyncio.Queue[SignalEvent]],
+    queue: asyncio.Queue[tuple[str, str, Any]],
+    config: AppConfig,
+) -> None:
+    loop = asyncio.get_running_loop()
+    last_heartbeat = loop.time()
+    while True:
+        if not config.btc_v8.enabled:
+            for buffer in buffers.values():
+                while not buffer.empty():
+                    buffer.get_nowait()
+            last_heartbeat = loop.time()
+            await asyncio.sleep(0.25)
+            continue
+        batch: list[SignalEvent] = []
+        for buffer in buffers.values():
+            while not buffer.empty() and len(batch) < 1_000:
+                batch.append(buffer.get_nowait())
+        current = loop.time()
+        if batch or current - last_heartbeat >= 0.25:
+            await queue.put(("BTC_V8", "btc_v8_signals", batch))
+            last_heartbeat = current
+        await asyncio.sleep(0.05)
+
+
 def book_matches_market(market: MarketState, direction: Direction, book: OrderBookSnapshot) -> bool:
     expected_token = market.up_token_id if direction == Direction.UP else market.down_token_id
     if book.token_id != expected_token:
@@ -774,6 +861,15 @@ def coalesce_live_events(events: list[tuple[str, Any]]) -> list[tuple[str, Any]]
             continue
         if event_type == "book" and isinstance(payload, tuple) and payload:
             direction = payload[0]
+            current_book = payload[1] if len(payload) > 1 else None
+            if (
+                isinstance(current_book, OrderBookSnapshot)
+                and isinstance(current_book.raw, dict)
+                and current_book.raw.get("_last_trade")
+            ):
+                flush_buffered()
+                result.append(event)
+                continue
             direction_key = direction.value if isinstance(direction, Direction) else str(direction)
             key = ("book", direction_key)
             previous = buffered.get(key)
@@ -884,6 +980,7 @@ async def run_live(
     pair_registry = PairMatchRegistry(config.data_dir / "pair-match-ledger.sqlite3")
     recovery_registry = BtcRecoveryRegistry(config.data_dir / "btc-recovery-ledger.sqlite3")
     dynamic_registry = BtcDynamicRegistry(config.data_dir / "btc-dynamic-ledger.sqlite3")
+    v8_registry = BtcV8Registry(config.data_dir / "btc-v8-ledger.sqlite3")
     real_registry = RealTradingRegistry(config.data_dir / "real-trading-ledger.sqlite3")
     clients: dict[str, PolymarketClient] = {}
     try:
@@ -901,6 +998,7 @@ async def run_live(
         pair_engine = PairMatchEngine(config, pair_registry)
         recovery_engine = BtcRecoveryEngine(config, recovery_registry)
         dynamic_engine = BtcDynamicEngine(config, dynamic_registry)
+        v8_engine = BtcV8Engine(config, v8_registry)
         real_engine = RealTradingEngine(
             config,
             real_registry,
@@ -916,6 +1014,11 @@ async def run_live(
         if btc_engine and btc_engine.market:
             recovery_engine.set_market(btc_engine.market)
             dynamic_engine.set_market(btc_engine.market)
+            v8_engine.set_market(btc_engine.market)
+            if btc_engine.polymarket_tick is not None:
+                v8_engine.add_chainlink_tick(btc_engine.polymarket_tick)
+            for direction, book in btc_engine.books.items():
+                v8_engine.add_polymarket_book(direction, book)
     except BaseException:
         try:
             await asyncio.wait_for(
@@ -928,6 +1031,7 @@ async def run_live(
         pair_registry.close()
         recovery_registry.close()
         dynamic_registry.close()
+        v8_registry.close()
         real_registry.close()
         raise
 
@@ -945,6 +1049,9 @@ async def run_live(
 
     def dynamic_dashboard_state() -> dict[str, Any]:
         return dynamic_engine.dashboard_state()
+
+    def v8_dashboard_state() -> dict[str, Any]:
+        return v8_engine.dashboard_state()
 
     tasks = [asyncio.create_task(data_cleanup_loop(config, output_dir, journal))]
     for asset in assets:
@@ -975,6 +1082,29 @@ async def run_live(
                 btc_dynamic_resolution_loop(clients["BTC"], dynamic_engine, queue)
             )
         )
+        tasks.append(
+            asyncio.create_task(
+                btc_v8_resolution_loop(clients["BTC"], v8_engine, queue)
+            )
+        )
+    signal_clients: dict[str, Any] = {
+        "binance": BinanceSpotSignalClient(config.sources),
+        "coinbase": CoinbaseSignalClient(config.sources),
+        "kraken": KrakenSignalClient(config.sources),
+        "binance_futures": BinanceFuturesSignalClient(config.sources),
+    }
+    signal_buffers = {
+        source: asyncio.Queue(maxsize=512) for source in signal_clients
+    }
+    for source, client in signal_clients.items():
+        tasks.append(
+            asyncio.create_task(
+                btc_v8_signal_collector(client, signal_buffers[source], config)
+            )
+        )
+    tasks.append(
+        asyncio.create_task(btc_v8_signal_batch_loop(signal_buffers, queue, config))
+    )
     started = datetime.now(timezone.utc)
     try:
         while True:
@@ -1045,17 +1175,14 @@ async def run_live(
             pair_input_changed = False
             recovery_input_changed = timer_tick or recovery_control_changed
             dynamic_input_changed = timer_tick or dynamic_control_changed
+            v8_input_changed = timer_tick
             for asset in assets:
                 asset_events = [(event_type, payload) for event_asset, event_type, payload in pending_events if event_asset == asset]
                 if not asset_events:
                     continue
                 engine = engines[asset]
                 for event_type, payload in coalesce_live_events(asset_events):
-                    engine.entry_enabled = not (
-                        config.pair_match.enabled
-                        or config.btc_recovery.enabled
-                        or (config.btc_dynamic.enabled and asset == "BTC")
-                    )
+                    engine.entry_enabled = standard_entry_enabled(config, asset)
                     publish_update = True
                     if event_type == "market":
                         pair_input_changed = True
@@ -1067,8 +1194,11 @@ async def run_live(
                         engine.set_market(market)
                         if asset == "BTC":
                             dynamic_engine.set_market(market)
+                            v8_engine.set_market(market)
                             if engine.polymarket_tick is not None:
                                 dynamic_engine.add_chainlink_tick(engine.polymarket_tick)
+                                v8_engine.add_chainlink_tick(engine.polymarket_tick)
+                            v8_input_changed = True
                         journal.market(market)
                     elif event_type == "tick":
                         tick: PriceTick = payload
@@ -1083,7 +1213,9 @@ async def run_live(
                         engine.set_polymarket_tick(tick)
                         if asset == "BTC":
                             dynamic_engine.add_chainlink_tick(tick)
+                            v8_engine.add_chainlink_tick(tick)
                             dynamic_input_changed = True
+                            v8_input_changed = True
                         journal.event("polymarket_tick", tick)
                     elif event_type == "book":
                         pair_input_changed = True
@@ -1094,6 +1226,9 @@ async def run_live(
                         previous_book = engine.books.get(direction)
                         engine.set_book(direction, book)
                         active_book = engine.books.get(direction)
+                        if asset == "BTC" and active_book is book:
+                            v8_engine.add_polymarket_book(direction, active_book)
+                            v8_input_changed = True
                         publish_update = active_book is book and should_publish_book_update(
                             previous_book,
                             book,
@@ -1118,6 +1253,7 @@ async def run_live(
                                 recovery_dashboard_state(),
                                 real_dashboard_state(),
                                 dynamic_dashboard_state(),
+                                v8_dashboard_state(),
                             ),
                         )
                     if publish_update:
@@ -1132,6 +1268,7 @@ async def run_live(
                                 recovery_dashboard_state(),
                                 real_dashboard_state(),
                                 dynamic_dashboard_state(),
+                                v8_dashboard_state(),
                             ),
                         )
 
@@ -1158,6 +1295,7 @@ async def run_live(
                                 recovery_dashboard_state(),
                                 real_dashboard_state(),
                                 dynamic_dashboard_state(),
+                                v8_dashboard_state(),
                             ),
                         )
                     if settled:
@@ -1217,12 +1355,31 @@ async def run_live(
                         payload.get("error", ""),
                     )
 
+            v8_events = [
+                (event_type, payload)
+                for event_asset, event_type, payload in pending_events
+                if event_asset == "BTC_V8"
+            ]
+            for event_type, payload in v8_events:
+                if event_type == "btc_v8_signals":
+                    for signal_event in payload:
+                        v8_engine.add_signal(signal_event)
+                    v8_input_changed = True
+                elif event_type == "btc_v8_resolution":
+                    slug, outcome = payload
+                    v8_engine.settle(slug, outcome)
+                    v8_input_changed = True
+                elif event_type == "btc_v8_error":
+                    journal.latency_row(
+                        payload.get("source", "btc_v8"),
+                        "stream",
+                        False,
+                        None,
+                        payload.get("error", ""),
+                    )
+
             for engine in engines.values():
-                engine.entry_enabled = not (
-                    config.pair_match.enabled
-                    or config.btc_recovery.enabled
-                    or (config.btc_dynamic.enabled and engine.asset == "BTC")
-                )
+                engine.entry_enabled = standard_entry_enabled(config, engine.asset)
             btc_engine = engines.get("BTC")
             if recovery_input_changed and btc_engine is not None:
                 real_engine.last_market = btc_engine.market
@@ -1263,6 +1420,7 @@ async def run_live(
                         recovery_dashboard_state(),
                         real_dashboard_state(),
                         dynamic_dashboard_state(),
+                        v8_dashboard_state(),
                     ),
                 )
             if dynamic_input_changed and btc_engine is not None:
@@ -1284,6 +1442,29 @@ async def run_live(
                         recovery_dashboard_state(),
                         real_dashboard_state(),
                         dynamic_dashboard_state(),
+                        v8_dashboard_state(),
+                    ),
+                )
+            if v8_input_changed and btc_engine is not None:
+                v8_engine.evaluate(
+                    btc_engine.market,
+                    btc_engine.books,
+                    datetime.now(timezone.utc),
+                )
+            for v8_event_type, v8_payload in v8_engine.drain_events():
+                journal.event(v8_event_type, v8_payload)
+                await emit_update(
+                    on_update,
+                    live_snapshot(
+                        primary_engine,
+                        output_dir,
+                        v8_event_type,
+                        v8_payload,
+                        pair_engine.dashboard_state(),
+                        recovery_dashboard_state(),
+                        real_dashboard_state(),
+                        dynamic_dashboard_state(),
+                        v8_dashboard_state(),
                     ),
                 )
             await real_engine.reconcile()
@@ -1299,10 +1480,15 @@ async def run_live(
                         recovery_dashboard_state(),
                         real_dashboard_state(),
                         dynamic_dashboard_state(),
+                        v8_dashboard_state(),
                     ),
                 )
             if pair_input_changed:
-                if config.btc_dynamic.enabled:
+                if config.btc_v8.enabled:
+                    pair_engine.status = "paused_by_btc_v8"
+                    pair_engine.last_reason = pair_engine.status
+                    order = None
+                elif config.btc_dynamic.enabled:
                     pair_engine.status = "paused_by_btc_dynamic"
                     pair_engine.last_reason = pair_engine.status
                     order = None
@@ -1330,6 +1516,7 @@ async def run_live(
                         recovery_dashboard_state(),
                         real_dashboard_state(),
                         dynamic_dashboard_state(),
+                        v8_dashboard_state(),
                     ),
                 )
     finally:
@@ -1357,6 +1544,7 @@ async def run_live(
                         recovery_dashboard_state(),
                         real_dashboard_state(),
                         dynamic_dashboard_state(),
+                        v8_dashboard_state(),
                     ),
                 )
             summary = aggregate_engine_summaries(engines)
@@ -1386,5 +1574,6 @@ async def run_live(
             pair_registry.close()
             recovery_registry.close()
             dynamic_registry.close()
+            v8_registry.close()
             real_registry.close()
     return output_dir

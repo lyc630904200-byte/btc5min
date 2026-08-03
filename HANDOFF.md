@@ -1,5 +1,226 @@
 # polybtc 交接文档
 
+> 最新有效状态以本节为准；后面的 2026-07-28 及更早内容保留为历史记录，其中分支、PID、参数和统计已经过期。
+
+## 2026-08-03 BTC V8 多交易所自主模型
+
+V8 已作为独立的本地模拟模块实现，默认 `enabled=false`。它不会调用真实订单适配器，也不会读取、更新或覆盖 V1-V7 的 `data/btc-dynamic-ledger.sqlite3`；V8 的场次、每秒快照、持仓、成交、模型版本、控制项和 24 小时原始事件都位于 `data/btc-v8-ledger.sqlite3`。
+
+- 现货源：Binance `BTCUSDT`、Coinbase `BTC-USD`、Kraken `BTC/USD`；合约特征源：Binance USDⓈ-M `BTCUSDT` 永续。
+- Binance 现货使用 REST 深度快照和增量序列重建；Coinbase 使用 `matches`、`heartbeat`、`level2_batch` 并按 trade ID 补漏；Kraken 使用 25 档 book/trade 和顶部 10 档 CRC32 校验。
+- Binance 永续采集成交、20 档深度、标记价、资金费率、持仓量和爆仓。当前系统代理环境可能不转发成交/标记价 WebSocket 帧，因此保留 WebSocket 订阅并用按成交 ID 去重的 REST 轮询补齐。
+- 每个采集器使用独立有界队列。模型最多每 250ms 评估一次，盘口原始事件按来源、方向和 250ms 时间桶合并后批量写入 SQLite WAL；原始 JSON 使用 zlib BLOB 无损压缩，旧明文行仍可读取。
+- `remaining_time` 使用完整市场时长：开盘 `+1`、中点 `0`、结算 `-1`，与买卖窗口无关。
+- 概率为 Chainlink 结算公式加在线 Logistic 残差修正；新信号权重从零开始，修正幅度、权重和 L2 正则均有限制。每秒保存一个样本，官方结算后按该场平均梯度只训练一次。
+- 新买入要求三个现货源中至少两个成交和盘口同时新鲜且未被异常值剔除；现货不足时已有持仓仍可依据可信 Chainlink 和 Polymarket 完整买盘卖出。
+- 默认每次固定 `$5`，买入/卖出分别按完整盘口模拟并计手续费和滑点；默认买入优势 5 美分、卖出价值差 2 美分、买入确认 2 秒、卖出确认 1 秒、卖后冷却 3 秒、每场最多成功买入 3 次、单仓可执行止损 `$2.50`。
+- 285 秒停止新买入，298 秒停止主动卖出，之后持有到官方结算。反向信号必须先卖完当前仓位，不允许直接翻仓。
+- 模型版本在市场开始时锁定。训练或候选模型只会在开始时间晚于完成时间的新市场启用，当前市场不会中途切换；重启会恢复当前场、持仓、交易次数、活动/待启用模型和待生效设置。
+- Dashboard 新增 `BTC V8` 页，显示来源健康、延迟、盘口校验、现货共识、公式/V8 概率、动作与拒绝原因、持仓、成交、手续费、盈亏、特征贡献、校准、五个时间段 Brier 和各现货源可用/缺失状态的拆分表现。
+
+候选模型命令：
+
+```powershell
+python -m polybtc btc-v8-retrain --model-key v8_candidate_name
+python -m polybtc btc-v8-activate-model --model-key v8
+```
+
+V8 配置从 Dashboard 保存后仅在下一场 BTC 市场生效。当前完整测试为 `296 passed`；上线仍只允许本地 paper simulation，不应把烟雾测试、Brier 或模拟盈亏视为实盘收益证明。
+
+隔离烟雾验收覆盖了完整的 `btc-updown-5m-1785714300`（本地 `07:45-07:50`）市场。首次进程结束时官方结果尚未发布；复用同一账本重启后恢复场次并补结算为 DOWN，该场 `trained=true`，模型版本只增加一次。两段运行合计保存 494 个每秒快照；新写入 3,912 条 zlib 原始事件平均 404.6 字节，随机解码 100 条的来源、接收时间和处理时间均完整。
+
+## 2026-08-02 冻结 V3 已启用
+
+更新时间：2026-08-02 15:12（Asia/Shanghai）。
+
+- 当前活动模型：`v3`，参数版本 `413`，`frozen=true`，已训练市场固定为 `412`。
+- V3 来源：V1 在本地时间 `2026-08-01 07:00:00`（UTC `2026-07-31T23:00:00Z`）之前全部已完成训练的精确回放状态。
+- 昨日最高收益小时为本地 `06:00-07:00`：9 单、4 胜、模拟净收益 `+89.579422 USD`。V3采用该小时结束时的参数。
+- 回放全部708次V1训练后与迁移前当前V1逐项比较，最大参数误差为 `0`，证明历史回放顺序和算法可精确重建模型。
+- V3在 `btc-updown-5m-1785654600`（本地15:10开场）安全启用；上一场继续使用V1，没有中途切换。
+- 首笔V3模拟订单为 `#001704`：UP、模型概率 `41.13%`、公式概率 `50.24%`、成交均价 `26¢`、固定本金 `$5`、实际 `19.2308` 份。
+- 更新文档时服务PID为 `40148`，Dashboard仍为 `http://127.0.0.1:8765/`。
+- 数据库迁移前备份：`data/btc-dynamic-ledger.pre-v3-20260802T070532Z.sqlite3`，SQLite `integrity_check=ok`，大小 `149,204,992` 字节。
+- 完整测试：`274 passed in 7.23s`。
+
+冻结语义：
+
+- 新场次、快照和订单都保存 `model_key`；旧JSON缺省自动映射为 `online`。
+- V3仍正常计算概率、采集训练快照、模拟下单、结算和统计，但结算时跳过梯度更新，`version=413`、`trained_markets=412` 和全部权重保持不变。
+- V1保留在数据库键 `online` 下并继续保持可恢复；V1延迟结算只更新V1，不会替换当前V3。
+- 活动/待启用模型使用SQLite控制项持久化。切换只在市场开始时间晚于安排时间的新市场执行，重启不会中途换模型。
+- 模型重置在冻结模型活动期间或存在待切换模型时会被拒绝，避免清空V1或V3。
+- 连败计数和冷却仍是动态策略全局控制；冷却时V3和公式对照都暂停下单，概率、快照与结算继续。
+- V3沿用当前 `v1good` 分支的V1特征公式，包括旧 `remaining_time = clamp((remaining-15)/15)`；本次没有引入V2时间特征。
+
+V3完整参数：
+
+```json
+{
+  "model_key": "v3",
+  "frozen": true,
+  "version": 413,
+  "trained_markets": 412,
+  "bias": -0.024103691859420483,
+  "weights": {
+    "remaining_time": -0.026319437788597886,
+    "volatility_ratio": -0.008106921581944843,
+    "open_crossings": -0.008164415192579568,
+    "up_market_gap": 0.28647290844256257,
+    "up_depth_imbalance": 0.05644296996772717,
+    "up_spread": -0.006386746416385831,
+    "down_depth_imbalance": -0.05219656298661203,
+    "down_spread": -0.004949381996085793,
+    "binance_momentum_1s": 0.1236788836110844,
+    "binance_momentum_3s": 0.18813847165754163,
+    "binance_momentum_5s": 0.10872895228774383,
+    "momentum_gap_1s": 0.11302095079364227,
+    "momentum_gap_3s": 0.16226281566149703,
+    "momentum_gap_5s": 0.047095028307672704,
+    "binance_missing": -0.0013788829545626582
+  }
+}
+```
+
+手工安排下一场回滚V1时，程序必须先停止，再备份数据库，然后设置以下控制项；不要删除V3或覆盖 `online` 模型行：
+
+```text
+active_model_key            当前保持 v3
+pending_model_key           设置为 online
+pending_model_not_before    设置为安排回滚时的UTC时间
+```
+
+Dashboard“运行模型”显示格式为 `v3 · 参数v413 · 已冻结`；最近订单的版本列同时显示在线/公式与所属 `model_key`。统计新增 `summary.by_model`，未来V3订单可与V1历史拆分查看。
+
+### 冻结模型库 V4-V7
+
+2026-08-02 已从V1历史按结算顺序精确回放并新增四个待用模型，全部保存在 `data/btc-dynamic-ledger.sqlite3` 的 `btc_dynamic_model` 表中。迁移前备份为 `data/btc-dynamic-ledger.pre-v4-v7-20260802T101057Z.sqlite3`，`integrity_check=ok`。
+
+| 模型键 | 参数版本 | 已训练市场 | 参数形成时间（本地） | bias | remaining_time | 状态 |
+|---|---:|---:|---|---:|---:|---|
+| `v4` | 401 | 400 | 2026-08-01 05:48:49 | 0.073365 | 0.071172 | 冻结待用 |
+| `v5` | 404 | 403 | 2026-08-01 06:10:04 | 0.082711 | 0.080508 | 冻结待用 |
+| `v6` | 407 | 406 | 2026-08-01 06:25:14 | 0.052526 | 0.050315 | 冻结待用 |
+| `v7` | 410 | 409 | 2026-08-01 06:40:06 | 0.023955 | 0.021740 | 冻结待用 |
+
+四个模型均包含完整15项权重，字段为 `frozen=true`、`source_model_key=online`，不会在结算时训练。安装后再次将全部V1历史回放到当前版本714，与数据库当前V1的全部参数最大误差仍为 `0`。活动控制保持 `active_model_key=v3`，没有设置待切换模型；V4-V7不会自行运行。以后启用任一模型时只安排下一场切换，不覆盖其他模型行。
+
+## 2026-08-02 `v1good` 最新交接
+
+更新时间：2026-08-02 06:06（Asia/Shanghai）。
+
+### Git 与运行状态
+
+- 工作目录：`D:\Users\Administrator\Documents\btc5fenzhong`
+- 当前分支：`v1good`
+- HEAD：`5b4b482 goodv11`
+- 跟踪分支：`origin/v1good`，本地与远端提交一致。
+- 远端：`https://github.com/lyc630904200-byte/btc5min.git`
+- 仓库本地 Git 代理：`http.proxy` / `https.proxy` 均为 `http://127.0.0.1:7897`。
+- Dashboard 正在运行：`http://127.0.0.1:8765/`
+- WebSocket：`ws://127.0.0.1:8766/ws`
+- 更新文档时服务 PID：`9376`，监听 `8765/8766`。
+- 普通启动脚本 `scripts/run-dashboard.cmd` 不加载私钥，本次仍是本地模拟运行。
+
+当前未提交修改必须保留，不要 reset、checkout 覆盖或从旧提交还原：
+
+```text
+ M config.example.yaml
+ M polybtc/btc_dynamic.py
+ M polybtc/config.py
+ M polybtc/dashboard.py
+ M tests/test_btc_dynamic.py
+ M tests/test_dashboard.py
+ M web/index.html
+```
+
+本次更新交接文档后还会新增 `M HANDOFF.md`。
+
+### 当前模型事实
+
+- `v1good` 当前只有原 `online` V1 模型；没有 `online_v2`、`feature_schema_version` 或 V1/V2 同场影子预测。此前讨论和实验过的 V2 迁移不在这个分支里。
+- `remaining_time` 仍使用 V1 公式：`clamp((remaining_seconds - 15) / 15, -1, 1)`。剩余时间大于等于 30 秒时固定为 `+1`，只在最后 30 秒内连续下降到 `-1`。
+- 当前四个训练时间槽按每场配置动态计算：`entry + (exit-entry) * [0, 1/4, 2/4, 3/4]`。当前窗口 `[0, 290)` 对应 `0 / 72.5 / 145 / 217.5` 秒。
+- 时间槽只在目标秒后的 2 秒窗口内保存首个有效快照；`snapshot_second` 保存目标槽秒数，真实采集时间保存在 `created_at`。如果窗口内没有完整有效行情，该槽不会补采。
+- 每个已结算市场将该场已有快照做平均梯度，只训练一次；模型、历史场次、快照和订单保存在 `data/btc-dynamic-ledger.sqlite3`。
+- 更新文档时模型版本为 `615`，已训练市场 `614`，当前连续亏损计数为 `3`，冷却未触发。
+
+### 未提交功能改动
+
+1. 动态策略增加两种互斥下单方式：`quantity` 固定份数和 `quote` 固定本金。Dashboard 使用二选一控件，禁用未选中的输入框。
+2. 固定金额模式按配置本金吃多档卖盘，当前设置为 `$5`；成交数量随盘口价格变化，手续费另计。深度不足、成交份数低于市场最小量或实际净优势不足时不下单。
+3. 订单持久化并展示 `sizing_mode`、请求份数/金额、实际份数、本金和手续费；旧订单缺少新字段时仍按固定份数兼容加载。
+4. 增加连续亏损休息：在线模型结算亏损时计数，盈利或不亏时清零；达到阈值后把冷却截止时间持久化到 SQLite，重启后继续生效。
+5. 冷却期间在线模型和公式对照模型都停止下单及确认，但概率计算、行情处理、快照采集和结算训练继续运行。
+6. 每日订单与盈亏按电脑本地时区的自然日统计，不再按 UTC 日期切日。
+7. Dashboard 增加下单方式、计划份数/本金、连败/冷却状态和订单本金列。
+
+当前活动参数：
+
+```yaml
+btc_dynamic:
+  enabled: true
+  sizing_mode: quote
+  quantity: 10
+  quote_amount_usd: 5
+  entry_seconds_after_open: 0
+  exit_seconds_after_open: 290
+  min_net_edge_cents: 5
+  slippage_reserve_cents: 1.35
+  confirmation_seconds: 2
+  confirmation_updates: 2
+  loss_streak_limit: 5
+  loss_cooldown_minutes: 30
+```
+
+配置从 Dashboard 保存后在下一场 BTC 市场生效。连败阈值采用产生该订单时随场次保存的配置。
+
+### 更新时统计快照
+
+- 在线模型：685 笔订单，683 笔已结算，250 胜，胜率 36.60%，已实现净盈亏 `+301.2631 USD`。
+- 公式对照：796 笔订单，795 笔已结算，282 胜，胜率 35.47%，已实现净盈亏 `-90.4306 USD`。
+- 全部已结算训练快照：2,958 个；在线 Brier `0.162924`，公式 Brier `0.167231`，在线方向准确率 `74.58%`。
+- 2026-08-02 本地日截至更新时：在线 16 单、`-22.5136 USD`；公式 16 单、`-21.3529 USD`。
+- 这些是文档更新时间点的累计模拟统计，会随着后续市场结算继续变化，不代表实盘收益。
+
+### 启停与依赖
+
+启动：
+
+```powershell
+scripts\run-dashboard.cmd
+```
+
+停止时按监听端口找到进程，结束后确认两个端口均已释放：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 8765,8766
+Stop-Process -Id <OwningProcess>
+```
+
+启动日志：`data/dashboard-live.stdout.log` 和 `data/dashboard-live.stderr.log`。
+
+2026-08-02 启动时 Codex bundled Python 环境被刷新，项目依赖一度缺失并报 `ModuleNotFoundError: typer`。已使用下列命令恢复主依赖；如果运行时再次刷新，可重复执行：
+
+```powershell
+$runtimePython = 'C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+& $runtimePython -m pip install -e '.[dev]'
+```
+
+健康检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/api/state
+Invoke-RestMethod http://127.0.0.1:8765/api/config
+```
+
+最新完整测试：
+
+```powershell
+& $runtimePython -m pytest -q
+# 272 passed in 6.42s
+```
+
 ## 2026-07-28 Chainlink 开盘/当前显示提速
 
 本次针对 BTC 动态胜率页签里 `Chainlink开盘` / `Chainlink当前` 开盘后显示偏慢做了修正：

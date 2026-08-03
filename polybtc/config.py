@@ -14,6 +14,12 @@ class SourceConfig(BaseModel):
     binance_symbol: str = "BTCUSDT"
     binance_rest_url: str = "https://api.binance.com"
     binance_ws_url: str = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+    binance_signal_ws_url: str = "wss://stream.binance.com:9443/stream"
+    binance_futures_rest_url: str = "https://fapi.binance.com"
+    binance_futures_ws_url: str = "wss://fstream.binance.com/stream"
+    coinbase_rest_url: str = "https://api.exchange.coinbase.com"
+    coinbase_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
+    kraken_ws_url: str = "wss://ws.kraken.com/v2"
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
     clob_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -301,23 +307,27 @@ class BtcRecoveryConfig(BaseModel):
 
 class BtcDynamicConfig(BaseModel):
     enabled: bool = False
+    sizing_mode: Literal["quantity", "quote"] = "quantity"
     quantity: float = 10.0
+    quote_amount_usd: float = 5.0
     entry_seconds_after_open: float = 270.0
     exit_seconds_after_open: float = 290.0
     min_net_edge_cents: float = 3.0
     slippage_reserve_cents: float = 1.35
     confirmation_seconds: float = 2.0
     confirmation_updates: int = 2
+    loss_streak_limit: int = 5
+    loss_cooldown_minutes: float = 30.0
     short_volatility_window_seconds: int = 10
     long_volatility_window_seconds: int = 60
     volatility_floor_bps: float = 0.5
     max_probability_correction_points: float = 10.0
 
-    @field_validator("quantity")
+    @field_validator("quantity", "quote_amount_usd", "loss_cooldown_minutes")
     @classmethod
-    def positive_dynamic_quantity(cls, value: float) -> float:
+    def positive_dynamic_order_size(cls, value: float) -> float:
         if value <= 0:
-            raise ValueError("BTC dynamic quantity must be positive")
+            raise ValueError("BTC dynamic order size and cooldown must be positive")
         return value
 
     @field_validator("entry_seconds_after_open", "exit_seconds_after_open")
@@ -342,6 +352,7 @@ class BtcDynamicConfig(BaseModel):
 
     @field_validator(
         "confirmation_updates",
+        "loss_streak_limit",
         "short_volatility_window_seconds",
         "long_volatility_window_seconds",
     )
@@ -394,6 +405,108 @@ class RealTradingConfig(BaseModel):
         return value
 
 
+class BtcV8Config(BaseModel):
+    enabled: bool = False
+    quote_amount_usd: float = 5.0
+    buy_edge_cents: float = 5.0
+    sell_edge_cents: float = 2.0
+    slippage_reserve_cents: float = 1.35
+    entry_end_seconds: float = 285.0
+    sell_end_seconds: float = 298.0
+    buy_confirmation_seconds: float = 2.0
+    buy_confirmation_updates: int = 2
+    sell_confirmation_seconds: float = 1.0
+    sell_confirmation_updates: int = 2
+    reentry_cooldown_seconds: float = 3.0
+    max_entries_per_market: int = 3
+    max_loss_usd: float = 2.5
+    evaluation_interval_ms: int = 250
+    snapshot_interval_seconds: int = 1
+    spot_exchanges: list[Literal["binance", "coinbase", "kraken"]] = Field(
+        default_factory=lambda: ["binance", "coinbase", "kraken"]
+    )
+    min_fresh_spot_exchanges: int = 2
+    spot_stale_seconds: float = 2.0
+    chainlink_stale_seconds: float = 10.0
+    raw_retention_hours: float = 24.0
+    short_volatility_window_seconds: int = 10
+    long_volatility_window_seconds: int = 60
+    volatility_floor_bps: float = 0.5
+    max_probability_correction_points: float = 10.0
+
+    @field_validator(
+        "quote_amount_usd",
+        "buy_confirmation_seconds",
+        "sell_confirmation_seconds",
+        "reentry_cooldown_seconds",
+        "max_loss_usd",
+        "spot_stale_seconds",
+        "chainlink_stale_seconds",
+        "raw_retention_hours",
+    )
+    @classmethod
+    def positive_v8_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC V8 values must be positive")
+        return value
+
+    @field_validator(
+        "buy_edge_cents",
+        "sell_edge_cents",
+        "slippage_reserve_cents",
+        "volatility_floor_bps",
+        "max_probability_correction_points",
+    )
+    @classmethod
+    def non_negative_v8_value(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("BTC V8 thresholds must not be negative")
+        return value
+
+    @field_validator("entry_end_seconds", "sell_end_seconds")
+    @classmethod
+    def valid_v8_market_second(cls, value: float) -> float:
+        if not 0 < value <= 300:
+            raise ValueError("BTC V8 market seconds must be within (0, 300]")
+        return value
+
+    @field_validator(
+        "buy_confirmation_updates",
+        "sell_confirmation_updates",
+        "max_entries_per_market",
+        "min_fresh_spot_exchanges",
+        "evaluation_interval_ms",
+        "snapshot_interval_seconds",
+        "short_volatility_window_seconds",
+        "long_volatility_window_seconds",
+    )
+    @classmethod
+    def positive_v8_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("BTC V8 counts must be at least one")
+        return value
+
+    @field_validator("spot_exchanges")
+    @classmethod
+    def unique_v8_exchanges(cls, values: list[str]) -> list[str]:
+        result = list(dict.fromkeys(values))
+        if not result:
+            raise ValueError("BTC V8 requires at least one spot exchange")
+        return result
+
+    @model_validator(mode="after")
+    def valid_v8_shape(self) -> "BtcV8Config":
+        if self.entry_end_seconds >= self.sell_end_seconds:
+            raise ValueError("BTC V8 entry end must be before sell end")
+        if self.short_volatility_window_seconds >= self.long_volatility_window_seconds:
+            raise ValueError("BTC V8 short volatility window must be below long window")
+        if self.min_fresh_spot_exchanges > len(self.spot_exchanges):
+            raise ValueError("BTC V8 fresh exchange minimum exceeds configured exchanges")
+        if self.max_probability_correction_points > 100:
+            raise ValueError("BTC V8 probability correction must be at most 100 points")
+        return self
+
+
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
     data_cleanup_enabled: bool = True
@@ -405,6 +518,7 @@ class AppConfig(BaseModel):
     pair_match: PairMatchConfig = Field(default_factory=PairMatchConfig)
     btc_recovery: BtcRecoveryConfig = Field(default_factory=BtcRecoveryConfig)
     btc_dynamic: BtcDynamicConfig = Field(default_factory=BtcDynamicConfig)
+    btc_v8: BtcV8Config = Field(default_factory=BtcV8Config)
     real_trading: RealTradingConfig = Field(default_factory=RealTradingConfig)
 
     @field_validator("data_retention_hours", "data_cleanup_interval_seconds")
