@@ -384,6 +384,20 @@ def test_orderbook_chase_signal_uses_received_spot_lead_and_consensus() -> None:
     assert weak_consensus["eligible"] is False
     assert weak_consensus["reason"] == "chase_consensus_insufficient"
 
+    diagnostics["spot_positive_return_sources_1s"] = 2
+    diagnostics["spot_chainlink_lead_return_1s"] = 0.000999
+    weak_signal = v8_orderbook_chase_signal(0.50, diagnostics)
+    assert weak_signal["eligible"] is False
+    assert weak_signal["reason"] == "chase_signal_weak"
+
+    diagnostics["spot_chainlink_lead_return_1s"] = 0.001
+    diagnostics["remaining_seconds"] = 300
+    small_probability_move = v8_orderbook_chase_signal(0.50, diagnostics)
+    assert small_probability_move["signal_strength"] == pytest.approx(1.0)
+    assert small_probability_move["probability_move"] < 0.03
+    assert small_probability_move["eligible"] is False
+    assert small_probability_move["reason"] == "chase_probability_move_small"
+
 
 def test_orderbook_chase_exit_takes_catchup_and_enforces_timeout() -> None:
     opened = datetime(2026, 8, 3, tzinfo=timezone.utc)
