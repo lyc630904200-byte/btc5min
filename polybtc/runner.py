@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import shutil
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty as ThreadQueueEmpty
@@ -18,11 +19,15 @@ from .engine import PaperEngine
 from .entry_registry import SqliteMarketEntryRegistry, historical_market_entry_counts
 from .journal import RunJournal
 from .market import (
+    TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE,
+    TWAP_RTDS_CANDIDATE_SOURCE,
     choose_current_market,
+    market_twap_lookback_seconds,
     market_interval_from_slug,
     market_is_active,
     markets_are_adjacent,
     threshold_is_tradable,
+    threshold_needs_page_confirmation,
 )
 from .models import Direction, MarketState, OrderBookSnapshot, PriceTick, rest_request_started_at
 from .pair_match import PairMatchEngine, PairMatchRegistry
@@ -60,6 +65,16 @@ def standard_entry_enabled(config: AppConfig, asset: str) -> bool:
         config.pair_match.enabled
         or config.btc_recovery.enabled
         or (config.btc_dynamic.enabled and asset.upper() == "BTC")
+    )
+
+
+def btc_v8_signal_source_enabled(config: AppConfig, source: str) -> bool:
+    return bool(
+        config.btc_v8.enabled
+        and not (
+            config.btc_v8.orderbook_chase_mode
+            and source == "binance_futures"
+        )
     )
 
 
@@ -104,6 +119,56 @@ async def data_cleanup_loop(config: AppConfig, active_run: Path, journal: RunJou
             cleanup_expired_runs(config.data_dir, active_run, retention)
         except OSError as exc:
             journal.latency_row("data_cleanup", "remove_expired_runs", False, None, str(exc))
+        await asyncio.sleep(config.data_cleanup_interval_seconds)
+
+
+async def btc_v8_data_cleanup_loop(
+    config: AppConfig,
+    registry: BtcV8Registry,
+    journal: RunJournal,
+) -> None:
+    if not config.data_cleanup_enabled:
+        return
+    snapshot_batch_size = 2_000
+    raw_batch_size = 5_000
+    while True:
+        try:
+            total_removed = 0
+            while True:
+                removed = registry.cleanup_expired_snapshots(
+                    config.btc_v8.snapshot_retention_hours,
+                    datetime.now(timezone.utc),
+                    batch_size=snapshot_batch_size,
+                )
+                total_removed += removed
+                if removed < snapshot_batch_size:
+                    break
+                await asyncio.sleep(0)
+            raw_retention_hours = (
+                0.0
+                if config.btc_v8.orderbook_chase_mode
+                else config.btc_v8.raw_retention_hours
+            )
+            while True:
+                removed = registry.cleanup_expired_raw_events(
+                    raw_retention_hours,
+                    datetime.now(timezone.utc),
+                    batch_size=raw_batch_size,
+                )
+                total_removed += removed
+                if removed < raw_batch_size:
+                    break
+                await asyncio.sleep(0)
+            if total_removed:
+                registry.checkpoint_wal()
+        except sqlite3.Error as exc:
+            journal.latency_row(
+                "btc_v8_cleanup",
+                "remove_expired_v8_data",
+                False,
+                None,
+                str(exc),
+            )
         await asyncio.sleep(config.data_cleanup_interval_seconds)
 
 
@@ -158,6 +223,12 @@ def live_snapshot(
         "market": engine.market.model_dump(mode="json") if engine.market else None,
         "tick": engine.tick.model_dump(mode="json") if engine.tick else None,
         "polymarket_tick": engine.polymarket_tick.model_dump(mode="json") if engine.polymarket_tick else None,
+        "polymarket_twap_tick": (
+            engine.polymarket_twap_tick.model_dump(mode="json") if engine.polymarket_twap_tick else None
+        ),
+        "settlement_tick": (
+            engine.settlement_price_tick().model_dump(mode="json") if engine.settlement_price_tick() else None
+        ),
         "books": books,
         "open_position": engine.open_position.model_dump(mode="json") if engine.open_position else None,
         "summary": engine.summary(),
@@ -263,16 +334,19 @@ async def apply_polymarket_page_threshold(
         market.threshold_verified = False
         market.threshold_fetched_at = checked_at
         return state_changed()
-    if threshold_is_tradable(market):
+    fast_twap_active = threshold_needs_page_confirmation(market)
+    if threshold_is_tradable(market) and not fast_twap_active:
         return False
 
-    # Clear every unverified/provisional value before network I/O.  If any
-    # source fails or disagrees, the strategy sees no tradable threshold.
-    market.threshold_price = None
-    market.threshold_source = "threshold_verification_pending"
-    market.threshold_observed_at = None
-    market.threshold_verified = False
-    market.threshold_fetched_at = None
+    if not fast_twap_active:
+        # Unverified values must never survive a failed page lookup. The exact
+        # TWAP stream is the only exception; it stays live while the slower
+        # page independently confirms it.
+        market.threshold_price = None
+        market.threshold_source = "threshold_verification_pending"
+        market.threshold_observed_at = None
+        market.threshold_verified = False
+        market.threshold_fetched_at = None
 
     page_data = getattr(client, "market_page_data", None)
 
@@ -311,7 +385,6 @@ async def apply_polymarket_page_threshold(
         outcome_price, results = page_result
 
     completed_at = now or datetime.now(timezone.utc)
-    market.threshold_fetched_at = completed_at
     interval = market_interval_from_slug(market.slug)
     exact_previous = [
         result
@@ -334,11 +407,23 @@ async def apply_polymarket_page_threshold(
     interval_is_exact = bool(interval and interval == (market.start_time, market.end_time))
     market_still_active = market_is_active(market, completed_at)
 
-    if not (valid_outcome and interval_is_exact and market_still_active):
-        market.threshold_source = "threshold_verification_failed"
+    def fail_verification(*, conflict: bool = False) -> bool:
+        market.threshold_price = None
+        market.threshold_source = "threshold_verification_conflict" if conflict else "threshold_verification_failed"
+        market.threshold_observed_at = None
+        market.threshold_verified = False
+        market.threshold_fetched_at = completed_at
+        if conflict:
+            market.threshold_candidate_conflicted = True
         return state_changed()
 
+    if outcome_price is None and fast_twap_active:
+        return state_changed()
+    if not (valid_outcome and interval_is_exact and market_still_active):
+        return fail_verification(conflict=fast_twap_active and outcome_price is not None)
+
     assert outcome_price is not None
+    is_twap_market = outcome_price.twap_lookback_seconds is not None
     candidate_fields_present = any(
         value is not None
         for value in (
@@ -359,34 +444,67 @@ async def apply_polymarket_page_threshold(
         <= market.threshold_candidate_received_at
         <= market.start_time + timedelta(seconds=2)
     )
-    if market.threshold_candidate_conflicted or (candidate_fields_present and not candidate_is_exact):
-        market.threshold_source = "threshold_verification_failed"
-        return state_changed()
-    candidate_matches = bool(
-        candidate_is_exact
+    twap_candidate_is_exact = bool(
+        not market.threshold_candidate_conflicted
+        and market_twap_lookback_seconds(market) == 30
+        and outcome_price.twap_lookback_seconds == 30
+        and market.threshold_candidate_price is not None
+        and math.isfinite(market.threshold_candidate_price)
+        and market.threshold_candidate_source == TWAP_RTDS_CANDIDATE_SOURCE
+        and market.threshold_candidate_observed_at == market.start_time
+        and market.threshold_candidate_received_at is not None
+        and market.start_time - timedelta(seconds=1)
+        <= market.threshold_candidate_received_at
+        <= market.start_time + timedelta(seconds=3)
+    )
+    twap_candidate_matches = bool(
+        twap_candidate_is_exact
         and abs((market.threshold_candidate_price or 0.0) - outcome_price.open_price)
         <= THRESHOLD_MATCH_TOLERANCE_USD
     )
-    if candidate_is_exact and not candidate_matches:
-        market.threshold_source = "threshold_verification_failed"
-        return state_changed()
+    if fast_twap_active and not (is_twap_market and twap_candidate_matches):
+        return fail_verification(conflict=True)
+    if not is_twap_market and (
+        market.threshold_candidate_conflicted or (candidate_fields_present and not candidate_is_exact)
+    ):
+        return fail_verification()
+    candidate_matches = bool(
+        not is_twap_market
+        and candidate_is_exact
+        and abs((market.threshold_candidate_price or 0.0) - outcome_price.open_price)
+        <= THRESHOLD_MATCH_TOLERANCE_USD
+    )
+    if not is_twap_market and candidate_is_exact and not candidate_matches:
+        return fail_verification()
+
+    if is_twap_market and not twap_candidate_is_exact and candidate_fields_present:
+        # A point-price RTDS candidate is not evidence for a TWAP market.
+        market.threshold_candidate_price = None
+        market.threshold_candidate_source = None
+        market.threshold_candidate_observed_at = None
+        market.threshold_candidate_received_at = None
+        market.threshold_candidate_conflicted = False
 
     previous_matches = bool(
         previous_is_consistent
         and abs(previous_closes[-1] - outcome_price.open_price) <= THRESHOLD_MATCH_TOLERANCE_USD
     )
     if previous_is_consistent and not previous_matches:
-        market.threshold_source = "threshold_verification_failed"
-        return state_changed()
-    if not (candidate_matches or previous_matches):
-        market.threshold_source = "threshold_verification_failed"
-        return state_changed()
+        return fail_verification(conflict=fast_twap_active)
+    if is_twap_market and not previous_matches:
+        if fast_twap_active and not previous_is_consistent:
+            return state_changed()
+        return fail_verification()
+    if not is_twap_market and not (candidate_matches or previous_matches):
+        return fail_verification()
     if gamma_threshold is not None and abs(gamma_threshold - outcome_price.open_price) > THRESHOLD_MATCH_TOLERANCE_USD:
-        market.threshold_source = "threshold_verification_failed"
-        return state_changed()
+        return fail_verification(conflict=fast_twap_active)
 
     market.threshold_price = outcome_price.open_price
-    if candidate_matches:
+    market.threshold_fetched_at = completed_at
+    if twap_candidate_matches:
+        market.threshold_source = TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE
+    elif candidate_matches:
         market.threshold_source = "polymarket_page_rtds_verified_open_price"
     elif gamma_threshold is not None:
         market.threshold_source = "gamma_page_verified_price_to_beat"
@@ -478,7 +596,10 @@ async def market_loop(client: PolymarketClient, engine: PaperEngine, queue: asyn
             needs_page_threshold = bool(
                 current_market
                 and market_is_active(current_market, now_utc)
-                and not threshold_is_tradable(current_market)
+                and (
+                    not threshold_is_tradable(current_market)
+                    or threshold_needs_page_confirmation(current_market)
+                )
             )
             if needs_page_threshold and should_retry_threshold(now_utc, next_threshold_retry):
                 next_threshold_retry = now_utc + timedelta(seconds=engine.config.sources.threshold_page_retry_seconds)
@@ -557,6 +678,16 @@ async def polymarket_price_loop(client: PolymarketClient, queue: asyncio.Queue) 
                 await queue.put(("polymarket_tick", tick))
         except Exception as exc:
             await queue.put(("error", {"source": "polymarket_rtds", "error": str(exc)}))
+            await asyncio.sleep(1)
+
+
+async def polymarket_twap_price_loop(client: PolymarketClient, queue: asyncio.Queue) -> None:
+    while True:
+        try:
+            async for tick in client.rtds_twap_price_ticks(window_seconds=30):
+                await queue.put(("polymarket_twap_tick", tick))
+        except Exception as exc:
+            await queue.put(("error", {"source": "polymarket_twap_rtds", "error": str(exc)}))
             await asyncio.sleep(1)
 
 
@@ -647,15 +778,16 @@ async def btc_v8_resolution_loop(
 
 
 async def btc_v8_signal_collector(
+    source: str,
     client: Any,
     buffer: asyncio.Queue[SignalEvent],
     config: AppConfig,
 ) -> None:
     while True:
-        while not config.btc_v8.enabled:
+        while not btc_v8_signal_source_enabled(config, source):
             await asyncio.sleep(0.25)
         async for event in client.events():
-            if not config.btc_v8.enabled:
+            if not btc_v8_signal_source_enabled(config, source):
                 break
             if buffer.full():
                 try:
@@ -681,7 +813,11 @@ async def btc_v8_signal_batch_loop(
             await asyncio.sleep(0.25)
             continue
         batch: list[SignalEvent] = []
-        for buffer in buffers.values():
+        for source, buffer in buffers.items():
+            if not btc_v8_signal_source_enabled(config, source):
+                while not buffer.empty():
+                    buffer.get_nowait()
+                continue
             while not buffer.empty() and len(batch) < 1_000:
                 batch.append(buffer.get_nowait())
         current = loop.time()
@@ -859,6 +995,9 @@ def coalesce_live_events(events: list[tuple[str, Any]]) -> list[tuple[str, Any]]
         if event_type == "polymarket_tick":
             buffered[("polymarket_tick", "latest")] = (index, event)
             continue
+        if event_type == "polymarket_twap_tick":
+            buffered[("polymarket_twap_tick", "latest")] = (index, event)
+            continue
         if event_type == "book" and isinstance(payload, tuple) and payload:
             direction = payload[0]
             current_book = payload[1] if len(payload) > 1 else None
@@ -1015,8 +1154,9 @@ async def run_live(
             recovery_engine.set_market(btc_engine.market)
             dynamic_engine.set_market(btc_engine.market)
             v8_engine.set_market(btc_engine.market)
-            if btc_engine.polymarket_tick is not None:
-                v8_engine.add_chainlink_tick(btc_engine.polymarket_tick)
+            settlement_tick = btc_engine.settlement_price_tick()
+            if settlement_tick is not None:
+                v8_engine.add_chainlink_tick(settlement_tick)
             for direction, book in btc_engine.books.items():
                 v8_engine.add_polymarket_book(direction, book)
     except BaseException:
@@ -1053,7 +1193,10 @@ async def run_live(
     def v8_dashboard_state() -> dict[str, Any]:
         return v8_engine.dashboard_state()
 
-    tasks = [asyncio.create_task(data_cleanup_loop(config, output_dir, journal))]
+    tasks = [
+        asyncio.create_task(data_cleanup_loop(config, output_dir, journal)),
+        asyncio.create_task(btc_v8_data_cleanup_loop(config, v8_registry, journal)),
+    ]
     for asset in assets:
         asset_queue = AssetEventQueue(queue, asset)
         engine = engines[asset]
@@ -1063,6 +1206,7 @@ async def run_live(
                 asyncio.create_task(market_loop(poly, engine, asset_queue, config.sources.market_refresh_seconds)),
                 asyncio.create_task(binance_loop(binance_clients[asset], asset_queue)),
                 asyncio.create_task(polymarket_price_loop(poly, asset_queue)),
+                asyncio.create_task(polymarket_twap_price_loop(poly, asset_queue)),
                 asyncio.create_task(book_rest_loop(poly, engine, asset_queue, config.sources.poly_book_poll_ms)),
                 asyncio.create_task(book_loop(poly, engine, asset_queue, config.sources.poly_book_poll_ms)),
             ]
@@ -1099,7 +1243,7 @@ async def run_live(
     for source, client in signal_clients.items():
         tasks.append(
             asyncio.create_task(
-                btc_v8_signal_collector(client, signal_buffers[source], config)
+                btc_v8_signal_collector(source, client, signal_buffers[source], config)
             )
         )
     tasks.append(
@@ -1195,9 +1339,10 @@ async def run_live(
                         if asset == "BTC":
                             dynamic_engine.set_market(market)
                             v8_engine.set_market(market)
-                            if engine.polymarket_tick is not None:
-                                dynamic_engine.add_chainlink_tick(engine.polymarket_tick)
-                                v8_engine.add_chainlink_tick(engine.polymarket_tick)
+                            settlement_tick = engine.settlement_price_tick()
+                            if settlement_tick is not None:
+                                dynamic_engine.add_chainlink_tick(settlement_tick)
+                                v8_engine.add_chainlink_tick(settlement_tick)
                             v8_input_changed = True
                         journal.market(market)
                     elif event_type == "tick":
@@ -1211,12 +1356,27 @@ async def run_live(
                         tick = payload
                         assert isinstance(tick, PriceTick)
                         engine.set_polymarket_tick(tick)
-                        if asset == "BTC":
+                        if asset == "BTC" and engine.settlement_price_tick() is tick:
                             dynamic_engine.add_chainlink_tick(tick)
                             v8_engine.add_chainlink_tick(tick)
                             dynamic_input_changed = True
                             v8_input_changed = True
                         journal.event("polymarket_tick", tick)
+                    elif event_type == "polymarket_twap_tick":
+                        tick = payload
+                        assert isinstance(tick, PriceTick)
+                        threshold_changed = engine.set_polymarket_twap_tick(tick)
+                        if asset == "BTC" and engine.settlement_price_tick() is tick:
+                            dynamic_engine.add_chainlink_tick(tick)
+                            v8_engine.add_chainlink_tick(tick)
+                            dynamic_input_changed = True
+                            v8_input_changed = True
+                        if threshold_changed and engine.market is not None:
+                            pair_input_changed = True
+                            dynamic_input_changed = dynamic_input_changed or asset == "BTC"
+                            v8_input_changed = v8_input_changed or asset == "BTC"
+                            journal.market(engine.market)
+                        journal.event("polymarket_twap_tick", tick)
                     elif event_type == "book":
                         pair_input_changed = True
                         recovery_input_changed = recovery_input_changed or asset == "BTC"

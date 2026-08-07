@@ -50,6 +50,20 @@ def test_parse_polymarket_outcome_price_for_current_slug() -> None:
     assert prices[1].end_time == datetime(2026, 7, 11, 3, 15, tzinfo=timezone.utc)
 
 
+def test_parse_polymarket_outcome_price_for_twap_query() -> None:
+    html = r'''
+    {"state":{"data":{"openPrice":64973.61243863471,"closePrice":null},"status":"success"},"queryKey":["crypto-prices","price","BTC","2026-08-07T11:35:00Z","fiveminute","2026-08-07T11:40:00Z",true,30]}
+    {"state":{"data":{"openPrice":1,"closePrice":null},"status":"success"},"queryKey":["crypto-prices","price","BTC","2026-08-07T11:40:00Z","fiveminute","2026-08-07T11:45:00Z",true,60]}
+    '''
+
+    prices = parse_polymarket_outcome_prices(html)
+
+    assert len(prices) == 1
+    assert prices[0].slug == "btc-updown-5m-1786102500"
+    assert prices[0].open_price == 64973.61243863471
+    assert prices[0].twap_lookback_seconds == 30
+
+
 def test_outcome_parser_does_not_cross_react_query_objects() -> None:
     html = r'''
     {"dehydratedAt":1,"state":{"data":{"openPrice":11111,"closePrice":11112},"status":"success"},"queryKey":["crypto-prices","price","BTC","2026-07-11T03:05:00Z","fiveminute","2026-07-11T03:10:00Z"]}

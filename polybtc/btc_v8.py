@@ -40,6 +40,7 @@ CHASE_MIN_SIGNAL_SIGMA = 1.0
 CHASE_MIN_PROBABILITY_MOVE = 0.03
 CHASE_MIN_NET_EDGE = 0.01
 CHASE_MIN_PROFIT_USD = 0.02
+CHASE_MAX_CHAINLINK_AGE_SECONDS = 2.0
 
 
 def v8_decision_policy(settings: BtcV8Config) -> dict[str, float | int | bool]:
@@ -542,6 +543,11 @@ def v8_orderbook_chase_signal(
     diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
     lead_return = diagnostics.get("spot_chainlink_lead_return_1s")
+    chainlink_age = diagnostics.get("chainlink_age_seconds")
+    max_chainlink_age = float(
+        diagnostics.get("chase_chainlink_max_age_seconds")
+        or CHASE_MAX_CHAINLINK_AGE_SECONDS
+    )
     sigma = max(float(diagnostics.get("sigma") or 0.0), 1e-12)
     remaining = max(float(diagnostics.get("remaining_seconds") or 0.0), 0.001)
     current_price = float(diagnostics.get("chainlink_current_price") or 0.0)
@@ -562,7 +568,16 @@ def v8_orderbook_chase_signal(
         "signal_strength": 0.0,
         "supporting_sources": supporting_sources,
         "required_sources": required_sources,
+        "chainlink_age_seconds": chainlink_age,
+        "max_chainlink_age_seconds": max_chainlink_age,
     }
+    if (
+        chainlink_age is None
+        or float(chainlink_age) < 0
+        or float(chainlink_age) > max_chainlink_age
+    ):
+        base["reason"] = "chase_chainlink_stale"
+        return base
     if lead_return is None or current_price <= 0 or open_price <= 0:
         return base
 
@@ -647,10 +662,10 @@ def v8_orderbook_chase_exit_decision(
     )
     target_reached = net_value + 0.005 >= target
     reason = None
-    if held_seconds + 1e-12 >= CHASE_MAX_HOLD_SECONDS:
-        reason = "chase_timeout"
-    elif pnl + 1e-12 >= CHASE_MIN_PROFIT_USD and target_reached:
+    if pnl + 1e-12 >= CHASE_MIN_PROFIT_USD and target_reached:
         reason = "chase_caught_up"
+    elif held_seconds + 1e-12 >= CHASE_MAX_HOLD_SECONDS:
+        reason = "chase_timeout"
     elif signal_reversed:
         reason = "chase_signal_reversed"
     elif trailing_profit_exit:
@@ -759,6 +774,8 @@ class BtcV8Registry:
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY(market_id, snapshot_second)
             );
+            CREATE INDEX IF NOT EXISTS btc_v8_snapshot_age_idx
+                ON btc_v8_snapshots(created_at);
             CREATE TABLE IF NOT EXISTS btc_v8_positions (
                 position_id TEXT PRIMARY KEY,
                 market_id TEXT NOT NULL,
@@ -1091,6 +1108,63 @@ class BtcV8Registry:
         )
         self.connection.commit()
 
+    def cleanup_expired_raw_events(
+        self,
+        retention_hours: float,
+        now: datetime,
+        batch_size: int = 5_000,
+    ) -> int:
+        if batch_size <= 0:
+            raise ValueError("raw event cleanup batch size must be positive")
+        cutoff = _ensure_utc(now) - timedelta(hours=retention_hours)
+        cursor = self.connection.execute(
+            """
+            DELETE FROM btc_v8_raw_events
+            WHERE id IN (
+                SELECT id
+                FROM btc_v8_raw_events
+                WHERE received_at < ?
+                ORDER BY received_at
+                LIMIT ?
+            )
+            """,
+            (cutoff.isoformat(), batch_size),
+        )
+        self.connection.commit()
+        return max(cursor.rowcount, 0)
+
+    def discard_raw_buffer(self) -> None:
+        self._raw_buffer = []
+        self._raw_book_buffer = {}
+
+    def cleanup_expired_snapshots(
+        self,
+        retention_hours: float,
+        now: datetime,
+        batch_size: int = 2_000,
+    ) -> int:
+        if batch_size <= 0:
+            raise ValueError("snapshot cleanup batch size must be positive")
+        cutoff = _ensure_utc(now) - timedelta(hours=retention_hours)
+        cursor = self.connection.execute(
+            """
+            DELETE FROM btc_v8_snapshots
+            WHERE rowid IN (
+                SELECT rowid
+                FROM btc_v8_snapshots
+                WHERE created_at < ?
+                ORDER BY created_at
+                LIMIT ?
+            )
+            """,
+            (cutoff.isoformat(), batch_size),
+        )
+        self.connection.commit()
+        return max(cursor.rowcount, 0)
+
+    def checkpoint_wal(self) -> None:
+        self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+
     def settle(
         self, market_slug: str, outcome: Direction, now: datetime
     ) -> tuple[V8Round, V8Model, list[V8Trade], bool] | None:
@@ -1108,7 +1182,11 @@ class BtcV8Registry:
         )
         if round_ is None:
             return None
-        model = self.load_model(round_.model_key)
+        model = (
+            V8Model()
+            if round_.settings.orderbook_chase_mode
+            else self.load_model(round_.model_key)
+        )
         if round_.official_outcome is not None:
             return round_, model, [], False
         settlement_trades: list[V8Trade] = []
@@ -1145,34 +1223,39 @@ class BtcV8Registry:
         round_.closed_at = now
         round_.updated_at = now
         if not round_.trained:
-            samples = self.snapshots(round_.market_id)
-            if samples:
-                label = 1.0 if outcome == Direction.UP else 0.0
-                _update_v8_model(
-                    model,
-                    samples,
-                    label,
-                    [sample.model_probability for sample in samples],
-                    now,
-                )
-                self.save_model(model)
+            if not round_.settings.orderbook_chase_mode:
+                samples = self.snapshots(round_.market_id)
+                if samples:
+                    label = 1.0 if outcome == Direction.UP else 0.0
+                    _update_v8_model(
+                        model,
+                        samples,
+                        label,
+                        [sample.model_probability for sample in samples],
+                        now,
+                    )
+                    self.save_model(model)
             round_.trained = True
         self.save_round(round_)
         return round_, model, settlement_trades, True
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self, include_model_metrics: bool = True) -> dict[str, Any]:
         positions = self.recent_positions(100_000)
         completed = [position for position in positions if position.realized_pnl is not None]
         wins = [position for position in completed if (position.realized_pnl or 0.0) > 0]
         fees = sum(position.entry_fee_usd + position.exit_fee_usd for position in positions)
-        snapshot_rows = self.connection.execute(
-            """
-            SELECT snapshots.payload_json AS snapshot_json, rounds.payload_json AS round_json
-            FROM btc_v8_snapshots AS snapshots
-            JOIN btc_v8_rounds AS rounds ON rounds.market_id=snapshots.market_id
-            ORDER BY snapshots.created_at
-            """
-        ).fetchall()
+        snapshot_rows = (
+            self.connection.execute(
+                """
+                SELECT snapshots.payload_json AS snapshot_json, rounds.payload_json AS round_json
+                FROM btc_v8_snapshots AS snapshots
+                JOIN btc_v8_rounds AS rounds ON rounds.market_id=snapshots.market_id
+                ORDER BY snapshots.created_at
+                """
+            ).fetchall()
+            if include_model_metrics
+            else []
+        )
         brier: list[float] = []
         accuracy: list[bool] = []
         by_time: dict[str, list[float]] = {
@@ -1341,8 +1424,12 @@ class BtcV8Engine:
     def __init__(self, config: AppConfig, registry: BtcV8Registry):
         self.config = config
         self.registry = registry
-        self.model = registry.load_model(registry.active_model_key())
-        if self.model.updated_at.year == 1970:
+        self.model = (
+            V8Model()
+            if config.btc_v8.orderbook_chase_mode
+            else registry.load_model(registry.active_model_key())
+        )
+        if not config.btc_v8.orderbook_chase_mode and self.model.updated_at.year == 1970:
             registry.save_model(self.model)
         self.current_round: V8Round | None = None
         self.position: V8Position | None = None
@@ -1372,11 +1459,48 @@ class BtcV8Engine:
         self.candidates: dict[str, Any] = {}
         self.events: list[tuple[str, Any]] = []
         self._recent_trades: list[dict[str, Any]] = registry.recent_trades()
-        self._summary: dict[str, Any] = registry.summary()
+        self._summary: dict[str, Any] = registry.summary(
+            include_model_metrics=not config.btc_v8.orderbook_chase_mode
+        )
+
+    def _orderbook_chase_mode(self) -> bool:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        return settings.orderbook_chase_mode
 
     def _refresh_views(self) -> None:
         self._recent_trades = self.registry.recent_trades()
-        self._summary = self.registry.summary()
+        self._summary = self.registry.summary(
+            include_model_metrics=not self._orderbook_chase_mode()
+        )
+
+    def _record_trade_view(
+        self,
+        trade: V8Trade,
+        *,
+        opened_position: bool = False,
+        completed_position: bool = False,
+    ) -> None:
+        payload = trade.model_dump(mode="json")
+        self._recent_trades = [
+            payload,
+            *(item for item in self._recent_trades if item.get("trade_id") != trade.trade_id),
+        ][:300]
+        if opened_position:
+            self._summary["positions"] = int(self._summary.get("positions") or 0) + 1
+        if completed_position:
+            completed = int(self._summary.get("completed_positions") or 0) + 1
+            wins = int(self._summary.get("wins") or 0)
+            if (trade.realized_pnl or 0.0) > 0:
+                wins += 1
+            self._summary["completed_positions"] = completed
+            self._summary["wins"] = wins
+            self._summary["win_rate"] = wins / completed
+            self._summary["realized_pnl"] = float(
+                self._summary.get("realized_pnl") or 0.0
+            ) + float(trade.realized_pnl or 0.0)
+        self._summary["fees_usd"] = float(self._summary.get("fees_usd") or 0.0) + float(
+            trade.fee_usd
+        )
 
     def set_market(self, market: MarketState, now: datetime | None = None) -> None:
         now = now or utc_now()
@@ -1391,8 +1515,11 @@ class BtcV8Engine:
             return
         existing = self.registry.get_round(market.condition_id)
         if existing is None:
-            active_model_key = self.registry.activate_pending_for_market(market.start_time)
-            market_model = self.registry.load_model_before(active_model_key, market.start_time)
+            if self.config.btc_v8.orderbook_chase_mode:
+                market_model = self.model
+            else:
+                active_model_key = self.registry.activate_pending_for_market(market.start_time)
+                market_model = self.registry.load_model_before(active_model_key, market.start_time)
             self.current_round = V8Round(
                 market_id=market.condition_id,
                 market_slug=market.slug,
@@ -1411,45 +1538,58 @@ class BtcV8Engine:
         self.position = self.registry.get_position(self.current_round.current_position_id)
         latest_closed = self.registry.latest_closed_position(market.condition_id)
         self.last_exit_at = latest_closed.closed_at if latest_closed else None
-        self.model = (
-            self.registry.load_model_version(
-                self.current_round.model_key, self.current_round.model_version
+        if not self.current_round.settings.orderbook_chase_mode:
+            self.model = (
+                self.registry.load_model_version(
+                    self.current_round.model_key, self.current_round.model_version
+                )
+                or self.registry.load_model_before(
+                    self.current_round.model_key, self.current_round.start_time
+                )
             )
-            or self.registry.load_model_before(
-                self.current_round.model_key, self.current_round.start_time
-            )
-        )
         self.last_snapshot_second = None
         self.confirmations.clear()
         self.status = self.last_reason = "collecting_signals"
-        self.registry.cleanup_raw_events(self.current_round.settings.raw_retention_hours, now)
+        if self.current_round.settings.orderbook_chase_mode:
+            self.registry.discard_raw_buffer()
+        else:
+            self.registry.cleanup_raw_events(self.current_round.settings.raw_retention_hours, now)
         self.events.append(("btc_v8_round", self.current_round))
 
     def add_chainlink_tick(self, tick: PriceTick) -> None:
         if tick.price <= 0:
             return
         self.chainlink_ticks.append((_ensure_utc(tick.received_at), tick.price))
-        cutoff = tick.received_at - timedelta(seconds=310)
+        retention_seconds = (
+            max(self.config.btc_v8.long_volatility_window_seconds + 5, 65)
+            if self._orderbook_chase_mode()
+            else 310
+        )
+        cutoff = tick.received_at - timedelta(seconds=retention_seconds)
         self.chainlink_ticks = [row for row in self.chainlink_ticks if row[0] >= cutoff]
 
     def add_polymarket_book(self, direction: Direction, book: OrderBookSnapshot) -> None:
-        self.registry.save_raw_event(
-            SignalEvent(
-                source="polymarket",
-                market_type="polymarket",
-                kind="book",
-                symbol=direction.value,
-                bids=book.bids,
-                asks=book.asks,
-                exchange_timestamp=_ensure_utc(book.timestamp),
-                received_at=_ensure_utc(book.received_at),
-                valid=book.depth_trusted,
-                reason=None if book.depth_trusted else "depth_untrusted",
-                raw=book.raw,
+        chase_mode = self._orderbook_chase_mode()
+        if not chase_mode:
+            self.registry.save_raw_event(
+                SignalEvent(
+                    source="polymarket",
+                    market_type="polymarket",
+                    kind="book",
+                    symbol=direction.value,
+                    bids=book.bids,
+                    asks=book.asks,
+                    exchange_timestamp=_ensure_utc(book.timestamp),
+                    received_at=_ensure_utc(book.received_at),
+                    valid=book.depth_trusted,
+                    reason=None if book.depth_trusted else "depth_untrusted",
+                    raw=book.raw,
+                )
             )
-        )
         previous = self.polymarket_books.get(direction)
         self.polymarket_books[direction] = book
+        if chase_mode:
+            return
         value = _top_of_book_ofi(previous, book)
         history = self.polymarket_ofi[direction]
         history.append((_ensure_utc(book.received_at), value))
@@ -1496,21 +1636,27 @@ class BtcV8Engine:
 
     def add_signal(self, event: SignalEvent) -> None:
         event.processed_at = utc_now()
-        self.registry.save_raw_event(event)
         source = event.source
+        chase_mode = self._orderbook_chase_mode()
+        if chase_mode and source == "binance_futures":
+            return
+        if not chase_mode:
+            self.registry.save_raw_event(event)
         if event.kind in {"trade", "liquidation"}:
             if event.kind == "trade":
                 self.health[source] = event
             target = self.trades.setdefault(source, [])
             if event.valid and event.price is not None and event.price > 0:
                 target.append(event)
-            cutoff = event.received_at - timedelta(seconds=65)
+            cutoff = event.received_at - timedelta(seconds=5 if chase_mode else 65)
             self.trades[source] = [item for item in target if item.received_at >= cutoff]
             return
         if event.kind == "book":
             self.health[source] = event
             previous = self.books.get(source)
             self.books[source] = event
+            if chase_mode:
+                return
             history = self.book_ofi.setdefault(source, [])
             history.append((event.received_at, _top_of_book_ofi(previous, event)))
             cutoff = event.received_at - timedelta(seconds=65)
@@ -1574,6 +1720,94 @@ class BtcV8Engine:
         rows = _window_values(self.book_ofi.get(source, []), now, seconds)
         return clamp(sum(value for _, value in rows) / len(rows), -1.0, 1.0) if rows else 0.0
 
+    def _chase_probabilities(
+        self,
+        market: MarketState,
+        now: datetime,
+        settings: BtcV8Config,
+        current_at: datetime,
+        current_price: float,
+        age: float,
+        remaining: float,
+        sigma: float,
+        z_score: float,
+        formula_up: float,
+    ) -> tuple[float, float, dict[str, float], dict[str, Any]]:
+        raw_fresh_sources = [
+            source for source in settings.spot_exchanges if self._source_fresh(source, now)
+        ]
+        raw_midpoints = {
+            source: float(midpoint)
+            for source in raw_fresh_sources
+            if (midpoint := _book_metrics(self.books.get(source))["midpoint"]) is not None
+        }
+        anomalous_sources: set[str] = set()
+        if len(raw_midpoints) >= 2:
+            median_midpoint = statistics.median(raw_midpoints.values())
+            anomalous_sources = {
+                source
+                for source, midpoint in raw_midpoints.items()
+                if abs(math.log(midpoint / median_midpoint)) > 0.005
+            }
+        fresh_sources = [
+            source for source in raw_fresh_sources if source not in anomalous_sources
+        ]
+        spot_returns_1s = {
+            source: value
+            for source in fresh_sources
+            if (value := _return_for_window(self._trade_prices(source), now, 1)) is not None
+        }
+        chainlink_return_1s = _return_for_window(self.chainlink_ticks, now, 1)
+        lead_returns_1s = [
+            value - chainlink_return_1s
+            for value in spot_returns_1s.values()
+            if chainlink_return_1s is not None
+        ]
+        source_health = self._source_health(now)
+        for source in anomalous_sources:
+            source_health[source]["fresh"] = False
+            source_health[source]["last_reason"] = "price_outlier"
+        diagnostics = {
+            "runtime_profile": "orderbook_chase_lightweight",
+            "raw_event_archive_enabled": False,
+            "futures_features_enabled": False,
+            "model_metrics_enabled": False,
+            "chainlink_open_price": market.threshold_price,
+            "chainlink_current_price": current_price,
+            "chainlink_tick_at": current_at.isoformat(),
+            "chainlink_age_seconds": age,
+            "chase_chainlink_max_age_seconds": min(
+                CHASE_MAX_CHAINLINK_AGE_SECONDS,
+                settings.spot_stale_seconds,
+                settings.chainlink_stale_seconds,
+            ),
+            "remaining_seconds": remaining,
+            "sigma": sigma,
+            "z_score": z_score,
+            "formula_probability_up": formula_up,
+            "model_probability_up": formula_up,
+            "residual_model_enabled": False,
+            "fresh_spot_exchanges": fresh_sources,
+            "anomalous_spot_exchanges": sorted(anomalous_sources),
+            "fresh_spot_count": len(fresh_sources),
+            "required_fresh_spot_count": settings.min_fresh_spot_exchanges,
+            "timestamp_basis": "received_at",
+            "spot_returns_1s": spot_returns_1s,
+            "chainlink_return_1s": chainlink_return_1s,
+            "spot_chainlink_lead_return_1s": (
+                statistics.median(lead_returns_1s) if lead_returns_1s else None
+            ),
+            "spot_positive_return_sources_1s": sum(
+                1 for value in spot_returns_1s.values() if value > 0
+            ),
+            "spot_negative_return_sources_1s": sum(
+                1 for value in spot_returns_1s.values() if value < 0
+            ),
+            "features": {},
+            "source_health": source_health,
+        }
+        return formula_up, formula_up, {}, diagnostics
+
     def _probabilities(
         self, market: MarketState, books: dict[Direction, OrderBookSnapshot], now: datetime
     ) -> tuple[float, float, dict[str, float], dict[str, Any]] | None:
@@ -1603,6 +1837,19 @@ class BtcV8Engine:
         log_return = math.log(current_price / market.threshold_price)
         z_score = log_return / (sigma * math.sqrt(remaining))
         formula_up = clamp(normal_cdf(z_score), 0.01, 0.99)
+        if settings.orderbook_chase_mode:
+            return self._chase_probabilities(
+                market,
+                now,
+                settings,
+                current_at,
+                current_price,
+                age,
+                remaining,
+                sigma,
+                z_score,
+                formula_up,
+            )
         crossings = 0
         prior_side: bool | None = None
         for _, price in long_rows:
@@ -1786,8 +2033,12 @@ class BtcV8Engine:
             )
         features["fresh_spot_fraction"] = len(fresh_sources) / max(1, len(settings.spot_exchanges))
         self._futures_features(features, now, sigma, spot_midpoints)
-        maximum_correction = settings.max_probability_correction_points / 100.0
-        model_up = self.model.probability(formula_up, features, maximum_correction)
+        residual_model_enabled = not settings.orderbook_chase_mode
+        if residual_model_enabled:
+            maximum_correction = settings.max_probability_correction_points / 100.0
+            model_up = self.model.probability(formula_up, features, maximum_correction)
+        else:
+            model_up = formula_up
         source_health = self._source_health(now)
         for source in anomalous_sources:
             source_health[source]["fresh"] = False
@@ -1796,11 +2047,18 @@ class BtcV8Engine:
             "chainlink_open_price": market.threshold_price,
             "chainlink_current_price": current_price,
             "chainlink_tick_at": current_at.isoformat(),
+            "chainlink_age_seconds": age,
+            "chase_chainlink_max_age_seconds": min(
+                CHASE_MAX_CHAINLINK_AGE_SECONDS,
+                settings.spot_stale_seconds,
+                settings.chainlink_stale_seconds,
+            ),
             "remaining_seconds": remaining,
             "sigma": sigma,
             "z_score": z_score,
             "formula_probability_up": formula_up,
             "model_probability_up": model_up,
+            "residual_model_enabled": residual_model_enabled,
             "fresh_spot_exchanges": fresh_sources,
             "anomalous_spot_exchanges": sorted(anomalous_sources),
             "fresh_spot_count": len(fresh_sources),
@@ -2167,7 +2425,7 @@ class BtcV8Engine:
         self.registry.save_round(self.current_round)
         self.confirmations.clear()
         self.events.append(("btc_v8_trade", trade))
-        self._refresh_views()
+        self._record_trade_view(trade, opened_position=True)
 
     def _evaluate_sell(
         self,
@@ -2329,7 +2587,7 @@ class BtcV8Engine:
         self.confirmations.clear()
         self.status = self.last_reason = "sold"
         self.events.append(("btc_v8_trade", trade))
-        self._refresh_views()
+        self._record_trade_view(trade, completed_position=True)
         return True
 
     def evaluate(
@@ -2366,9 +2624,11 @@ class BtcV8Engine:
             **diagnostics,
             "model_probability_down": 1.0 - model_up,
             "formula_probability_down": 1.0 - formula_up,
-            "model": self.model.model_dump(mode="json"),
             "decision_policy": decision_policy,
-            "feature_contributions": sorted(
+        }
+        if not decision_policy["orderbook_chase_mode"]:
+            self.diagnostics["model"] = self.model.model_dump(mode="json")
+            self.diagnostics["feature_contributions"] = sorted(
                 (
                     {
                         "feature": name,
@@ -2381,11 +2641,14 @@ class BtcV8Engine:
                 ),
                 key=lambda item: abs(item["contribution"]),
                 reverse=True,
-            )[:12],
-        }
+            )[:12]
         elapsed = max(0.0, (now - market.start_time).total_seconds())
         snapshot_second = int(elapsed // self.current_round.settings.snapshot_interval_seconds) * self.current_round.settings.snapshot_interval_seconds
-        if snapshot_second != self.last_snapshot_second and elapsed <= 300:
+        if (
+            not decision_policy["orderbook_chase_mode"]
+            and snapshot_second != self.last_snapshot_second
+            and elapsed <= 300
+        ):
             if self.registry.save_snapshot(
                 V8Snapshot(
                     market_id=market.condition_id,
@@ -2537,7 +2800,11 @@ class BtcV8Engine:
         return events
 
     def dashboard_state(self) -> dict[str, Any]:
-        pending_model_key, pending_not_before = self.registry.pending_model()
+        chase_mode = self._orderbook_chase_mode()
+        if chase_mode:
+            pending_model_key, pending_not_before = None, None
+        else:
+            pending_model_key, pending_not_before = self.registry.pending_model()
         return {
             "enabled": self.config.btc_v8.enabled,
             "status": self.status,
@@ -2546,9 +2813,9 @@ class BtcV8Engine:
                 self.current_round.settings.model_dump(mode="json")
                 if self.current_round else self.config.btc_v8.model_dump(mode="json")
             ),
-            "model": self.model.model_dump(mode="json"),
+            "model": None if chase_mode else self.model.model_dump(mode="json"),
             "model_control": {
-                "active_model_key": self.registry.active_model_key(),
+                "active_model_key": None if chase_mode else self.registry.active_model_key(),
                 "pending_model_key": pending_model_key,
                 "pending_model_not_before": (
                     pending_not_before.isoformat() if pending_not_before else None

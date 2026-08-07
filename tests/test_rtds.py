@@ -6,6 +6,12 @@ import pytest
 from polybtc.clients import BinanceClient, PolymarketClient, parse_rtds_crypto_price_message
 from polybtc.config import AppConfig, SourceConfig
 from polybtc.engine import PaperEngine
+from polybtc.market import (
+    TWAP_RTDS_CANDIDATE_SOURCE,
+    TWAP_RTDS_THRESHOLD_SOURCE,
+    threshold_is_tradable,
+    threshold_needs_page_confirmation,
+)
 from polybtc.models import MarketState, PriceTick
 
 
@@ -38,6 +44,43 @@ def test_parse_rtds_crypto_price_message_ignores_other_symbols() -> None:
     ticks = parse_rtds_crypto_price_message({"payload": {"symbol": "eth/usd", "value": 3000}})
 
     assert ticks == []
+
+
+def test_parse_rtds_twap_message_requires_exact_topic_and_window() -> None:
+    received_at = datetime(2026, 8, 7, 12, 10, 1, 250000, tzinfo=timezone.utc)
+    message = {
+        "topic": "crypto_prices_twap_thirty",
+        "type": "update",
+        "payload": {
+            "symbol": "btc/usd",
+            "timestamp": 1786104600000,
+            "value": 65031.38890253371,
+            "window_s": 30,
+        },
+    }
+
+    ticks = parse_rtds_crypto_price_message(
+        message,
+        received_at=received_at,
+        source="polymarket_rtds_twap_30s",
+        expected_topic="crypto_prices_twap_thirty",
+        window_seconds=30,
+    )
+
+    assert len(ticks) == 1
+    assert ticks[0].source == "polymarket_rtds_twap_30s"
+    assert ticks[0].exchange_timestamp == datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    assert parse_rtds_crypto_price_message(
+        {**message, "topic": "crypto_prices_chainlink"},
+        expected_topic="crypto_prices_twap_thirty",
+        window_seconds=30,
+    ) == []
+    wrong_window = {**message, "payload": {**message["payload"], "window_s": 60}}
+    assert parse_rtds_crypto_price_message(
+        wrong_window,
+        expected_topic="crypto_prices_twap_thirty",
+        window_seconds=30,
+    ) == []
 
 
 def test_eth_clients_use_eth_spot_and_chainlink_symbols() -> None:
@@ -97,6 +140,146 @@ def test_eth_engine_captures_only_eth_boundary_tick() -> None:
     assert engine.polymarket_tick.symbol == "ETH/USD"
     assert engine.market is not None
     assert engine.market.threshold_candidate_price == 3540.25
+
+
+def test_engine_accepts_exact_twap_boundary_tick_while_page_confirmation_is_pending() -> None:
+    start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    market = MarketState(
+        condition_id="twap-market",
+        slug=f"btc-updown-5m-{int(start.timestamp())}",
+        question="Bitcoin Up or Down",
+        threshold_price=None,
+        threshold_source="dynamic_start_price",
+        start_time=start,
+        end_time=start + timedelta(minutes=5),
+        up_token_id="up",
+        down_token_id="down",
+        raw={
+            "cryptoMarketConfig": {
+                "twapEnabled": True,
+                "twapLookbackSeconds": 30,
+            }
+        },
+    )
+    engine.set_market(market)
+
+    # The point-price stream must not become a candidate for a TWAP market.
+    engine.set_polymarket_tick(
+        PriceTick(
+            source="polymarket_rtds",
+            symbol="BTC/USD",
+            price=65020,
+            exchange_timestamp=start,
+            received_at=start + timedelta(seconds=1),
+        )
+    )
+    assert market.threshold_candidate_price is None
+
+    changed = engine.set_polymarket_twap_tick(
+        PriceTick(
+            source="polymarket_rtds_twap_30s",
+            symbol="BTC/USD",
+            price=65031.38890253371,
+            exchange_timestamp=start,
+            received_at=start + timedelta(seconds=1, milliseconds=250),
+        )
+    )
+
+    assert changed is True
+    assert market.threshold_price == 65031.38890253371
+    assert market.threshold_source == TWAP_RTDS_THRESHOLD_SOURCE
+    assert market.threshold_candidate_source == TWAP_RTDS_CANDIDATE_SOURCE
+    assert market.threshold_verified is True
+    assert threshold_is_tradable(market) is True
+    assert threshold_needs_page_confirmation(market) is True
+    assert engine.polymarket_tick is not None
+    assert engine.polymarket_tick.price == 65020
+    assert engine.settlement_price_tick() is engine.polymarket_twap_tick
+
+    engine.set_tick(
+        PriceTick(
+            source="binance",
+            symbol="BTCUSDT",
+            price=65080,
+            exchange_timestamp=start + timedelta(seconds=2),
+            received_at=start + timedelta(seconds=2),
+        )
+    )
+    assert engine.edge_correction_usd() == 65080 - 65031.38890253371
+    assert engine.edge_correction_source() == "binance_minus_polymarket_twap_30s"
+
+
+def test_twap_market_does_not_fall_back_to_chainlink_point_price() -> None:
+    start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    engine.set_market(
+        MarketState(
+            condition_id="twap-market",
+            slug=f"btc-updown-5m-{int(start.timestamp())}",
+            question="Bitcoin Up or Down",
+            threshold_price=None,
+            start_time=start,
+            end_time=start + timedelta(minutes=5),
+            up_token_id="up",
+            down_token_id="down",
+            raw={"cryptoMarketConfig": {"twapEnabled": True, "twapLookbackSeconds": 30}},
+        )
+    )
+    engine.set_polymarket_tick(
+        PriceTick(
+            source="polymarket_rtds",
+            symbol="BTC/USD",
+            price=65020,
+            exchange_timestamp=start + timedelta(seconds=1),
+            received_at=start + timedelta(seconds=2),
+        )
+    )
+    engine.set_tick(
+        PriceTick(
+            source="binance",
+            symbol="BTCUSDT",
+            price=65080,
+            exchange_timestamp=start + timedelta(seconds=2),
+            received_at=start + timedelta(seconds=2),
+        )
+    )
+
+    assert engine.settlement_price_tick() is None
+    assert engine.edge_correction_usd() is None
+    assert engine.edge_correction_source() == "polymarket_price_unavailable"
+
+
+def test_engine_rejects_late_twap_boundary_tick() -> None:
+    start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    market = MarketState(
+        condition_id="twap-market",
+        slug=f"btc-updown-5m-{int(start.timestamp())}",
+        question="Bitcoin Up or Down",
+        threshold_price=None,
+        threshold_source="dynamic_start_price",
+        start_time=start,
+        end_time=start + timedelta(minutes=5),
+        up_token_id="up",
+        down_token_id="down",
+        raw={"cryptoMarketConfig": {"twapEnabled": True, "twapLookbackSeconds": 30}},
+    )
+    engine.set_market(market)
+
+    changed = engine.set_polymarket_twap_tick(
+        PriceTick(
+            source="polymarket_rtds_twap_30s",
+            symbol="BTC/USD",
+            price=65031.38,
+            exchange_timestamp=start,
+            received_at=start + timedelta(seconds=4),
+        )
+    )
+
+    assert changed is False
+    assert market.threshold_price is None
+    assert threshold_is_tradable(market) is False
 
 
 def test_parse_rtds_crypto_price_message_ignores_heartbeats() -> None:

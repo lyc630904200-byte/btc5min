@@ -4,7 +4,11 @@ import os
 
 from polybtc.config import AppConfig
 from polybtc.journal import RunJournal
-from polybtc.runner import cleanup_expired_runs, data_cleanup_loop
+from polybtc.runner import (
+    btc_v8_data_cleanup_loop,
+    cleanup_expired_runs,
+    data_cleanup_loop,
+)
 
 
 def test_cleanup_removes_only_expired_run_directories(tmp_path) -> None:
@@ -50,3 +54,77 @@ def test_cleanup_loop_returns_without_removing_runs_when_disabled(tmp_path) -> N
 
 def test_data_cleanup_is_enabled_by_default() -> None:
     assert AppConfig().data_cleanup_enabled is True
+
+
+def test_v8_data_cleanup_loop_uses_configured_retention(tmp_path) -> None:
+    class RegistrySpy:
+        def __init__(self) -> None:
+            self.calls: list[tuple[float, int]] = []
+            self.raw_calls: list[tuple[float, int]] = []
+            self.checkpoint_calls = 0
+
+        def cleanup_expired_snapshots(
+            self,
+            retention_hours: float,
+            now: datetime,
+            batch_size: int,
+        ) -> int:
+            assert now.tzinfo == timezone.utc
+            self.calls.append((retention_hours, batch_size))
+            return 1
+
+        def cleanup_expired_raw_events(
+            self,
+            retention_hours: float,
+            now: datetime,
+            batch_size: int,
+        ) -> int:
+            assert now.tzinfo == timezone.utc
+            self.raw_calls.append((retention_hours, batch_size))
+            return 0
+
+        def checkpoint_wal(self) -> None:
+            self.checkpoint_calls += 1
+
+    async def run_once() -> None:
+        task = asyncio.create_task(btc_v8_data_cleanup_loop(config, registry, journal))
+        while not registry.calls:
+            await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    active = tmp_path / "active"
+    journal = RunJournal(active)
+    config = AppConfig(
+        data_dir=tmp_path,
+        data_cleanup_interval_seconds=1,
+        btc_v8={"orderbook_chase_mode": True, "snapshot_retention_hours": 12},
+    )
+    registry = RegistrySpy()
+
+    asyncio.run(run_once())
+
+    assert registry.calls == [(12, 2_000)]
+    assert registry.raw_calls == [(0, 5_000)]
+    assert registry.checkpoint_calls == 1
+
+
+def test_v8_data_cleanup_loop_returns_when_cleanup_is_disabled(tmp_path) -> None:
+    class RegistrySpy:
+        calls = 0
+
+        def cleanup_expired_snapshots(self, *args, **kwargs) -> int:
+            self.calls += 1
+            return 0
+
+    active = tmp_path / "active"
+    journal = RunJournal(active)
+    config = AppConfig(data_dir=tmp_path, data_cleanup_enabled=False)
+    registry = RegistrySpy()
+
+    asyncio.run(asyncio.wait_for(btc_v8_data_cleanup_loop(config, registry, journal), 0.1))
+
+    assert registry.calls == 0

@@ -66,9 +66,10 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert '<th>卖出或结算：时间 / 均价 / 金额</th>' in html
     assert "function groupV8Trades(trades)" in html
     assert "const tradeGroups = groupV8Trades(trades);" in html
-    assert 'id="v8SourceMetrics"' in html
-    assert 'id="v8Contributions"' in html
-    assert 'id="v8Calibration"' in html
+    assert 'id="v8TimeMetrics"' not in html
+    assert 'id="v8SourceMetrics"' not in html
+    assert 'id="v8Contributions"' not in html
+    assert 'id="v8Calibration"' not in html
     assert 'id="v8Form"' in html
     assert 'id="v8AutoDecision" type="checkbox"' in html
     assert 'id="v8OrderbookChase" type="checkbox"' in html
@@ -86,16 +87,28 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert 'id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5"' in html
     assert 'id="v8BuyEdge" type="number" min="0" step="0.01" value="5"' in html
     assert 'id="v8EvalMs" type="number" min="1" step="1" value="250"' in html
+    assert 'id="v8SnapshotRetentionHours" type="number" min="1" step="1" value="24"' in html
+    assert "'v8SnapshotSeconds'," in html
+    assert "'v8RetentionHours'," in html
+    assert "'v8SnapshotRetentionHours'," in html
+    assert "'v8MaxCorrection'," in html
+    assert "document.querySelectorAll('[data-v8-model-only], [data-v8-chase-unused]')" in html
     assert 'id="v8UseBinance" type="checkbox" checked' in html
     assert 'id="v8UseCoinbase" type="checkbox" checked' in html
     assert 'id="v8UseKraken" type="checkbox" checked' in html
     assert "function escapeHtml(value)" in html
     assert "spot_exchanges: spotExchanges" in html
+    assert "const settlementTick = snapshot.settlement_tick || polymarketTick;" in html
+    assert "const polymarketPrice = settlementTick?.price" in html
+    assert "const chainlinkCurrentPrice = btcSnapshot?.settlement_tick?.price" in html
+    assert "setText('v8ChainlinkCurrent', chainlinkCurrentPrice" in html
     assert "buy_edge_cents: runtimeNumber('v8BuyEdge')" in html
     assert "sell_edge_cents: runtimeNumber('v8SellEdge')" in html
     assert "chase_take_profit_arm_usd: runtimeNumber('v8ChaseProfitArm')" in html
     assert "chase_take_profit_drawdown_usd: runtimeNumber('v8ChaseProfitDrawdown')" in html
     assert "chase_take_profit_drawdown_fraction: runtimeNumber('v8ChaseProfitFraction')" in html
+    assert "snapshot_retention_hours: runtimeNumber('v8SnapshotRetentionHours')" in html
+    assert "chase_chainlink_stale:" in html
     assert "chase_profit_trailing: '追赶模式：可执行利润回撤止盈'" in html
 
 
@@ -871,6 +884,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
                 "chase_take_profit_drawdown_fraction": 0.40,
                 "spot_exchanges": ["binance", "coinbase"],
                 "min_fresh_spot_exchanges": 2,
+                "snapshot_retention_hours": 12,
             }
         }
     )
@@ -884,6 +898,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     assert response["pending_btc_v8"]["chase_take_profit_arm_usd"] == 0.30
     assert response["pending_btc_v8"]["chase_take_profit_drawdown_usd"] == 0.20
     assert response["pending_btc_v8"]["chase_take_profit_drawdown_fraction"] == 0.40
+    assert response["pending_btc_v8"]["snapshot_retention_hours"] == 12
     assert response["pending_pair_match"]["enabled"] is False
     assert response["pending_btc_recovery"]["enabled"] is False
     assert response["pending_btc_dynamic"]["enabled"] is False
@@ -922,6 +937,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         assert engine.current_round.settings.chase_take_profit_drawdown_usd == 0.20
         assert engine.current_round.settings.chase_take_profit_drawdown_fraction == 0.40
         assert engine.current_round.settings.spot_exchanges == ["binance", "coinbase"]
+        assert engine.current_round.settings.snapshot_retention_hours == 12
     finally:
         registry.close()
 
@@ -937,6 +953,7 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
     assert reloaded.config.btc_v8.chase_take_profit_drawdown_usd == 0.20
     assert reloaded.config.btc_v8.chase_take_profit_drawdown_fraction == 0.40
     assert reloaded.config.btc_v8.spot_exchanges == ["binance", "coinbase"]
+    assert reloaded.config.btc_v8.snapshot_retention_hours == 12
     assert reloaded.config.pair_match.enabled is False
     assert reloaded.config.btc_recovery.enabled is False
     assert reloaded.config.btc_dynamic.enabled is False

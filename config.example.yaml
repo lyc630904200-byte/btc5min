@@ -152,6 +152,7 @@ btc_v8:
   spot_stale_seconds: 2
   chainlink_stale_seconds: 10
   raw_retention_hours: 24
+  snapshot_retention_hours: 24
   short_volatility_window_seconds: 10
   long_volatility_window_seconds: 60
   volatility_floor_bps: 0.5

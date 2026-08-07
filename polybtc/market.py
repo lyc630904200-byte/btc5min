@@ -18,7 +18,12 @@ VERIFIED_DYNAMIC_THRESHOLD_SOURCES = {
     "polymarket_page_verified_open_price",
     "gamma_page_verified_price_to_beat",
     "polymarket_page_rtds_verified_open_price",
+    "polymarket_rtds_twap_30s_verified_open_price",
+    "polymarket_page_twap_rtds_verified_open_price",
 }
+TWAP_RTDS_CANDIDATE_SOURCE = "polymarket_rtds_twap_30s_start_tick"
+TWAP_RTDS_THRESHOLD_SOURCE = "polymarket_rtds_twap_30s_verified_open_price"
+TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE = "polymarket_page_twap_rtds_verified_open_price"
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -80,6 +85,38 @@ def markets_are_adjacent(current: MarketState, candidate: MarketState) -> bool:
     )
 
 
+def market_twap_lookback_seconds(market: MarketState) -> int | None:
+    raw = market.raw if isinstance(market.raw, dict) else {}
+    settings = raw.get("cryptoMarketConfig")
+    if not isinstance(settings, dict) or settings.get("twapEnabled") is not True:
+        return None
+    value = settings.get("twapLookbackSeconds")
+    if type(value) is not int or value <= 0:
+        return None
+    return value
+
+
+def twap_threshold_candidate_is_valid(market: MarketState) -> bool:
+    return bool(
+        market_twap_lookback_seconds(market) == 30
+        and market.threshold_candidate_price is not None
+        and market.threshold_price is not None
+        and abs(market.threshold_candidate_price - market.threshold_price) <= 0.01
+        and market.threshold_candidate_source == TWAP_RTDS_CANDIDATE_SOURCE
+        and market.threshold_candidate_observed_at == market.start_time
+        and market.threshold_candidate_received_at is not None
+        and market.start_time is not None
+        and market.start_time - timedelta(seconds=1)
+        <= market.threshold_candidate_received_at
+        <= market.start_time + timedelta(seconds=3)
+        and not market.threshold_candidate_conflicted
+    )
+
+
+def threshold_needs_page_confirmation(market: MarketState) -> bool:
+    return market.threshold_source == TWAP_RTDS_THRESHOLD_SOURCE and threshold_is_tradable(market)
+
+
 def threshold_is_tradable(market: MarketState) -> bool:
     if market.threshold_price is None or not market.threshold_verified:
         return False
@@ -100,6 +137,11 @@ def threshold_is_tradable(market: MarketState) -> bool:
     )
     if not common_verified:
         return False
+    if market.threshold_source in {
+        TWAP_RTDS_THRESHOLD_SOURCE,
+        TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE,
+    }:
+        return twap_threshold_candidate_is_valid(market)
     candidate_fields_present = any(
         value is not None
         for value in (

@@ -5,6 +5,12 @@ from datetime import datetime, timedelta, timezone
 
 from .config import AppConfig
 from .entry_registry import InMemoryMarketEntryRegistry, MarketEntryRegistry
+from .market import (
+    TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE,
+    TWAP_RTDS_CANDIDATE_SOURCE,
+    TWAP_RTDS_THRESHOLD_SOURCE,
+    market_twap_lookback_seconds,
+)
 from .models import Direction, ExitReason, MarketState, OrderBookSnapshot, Position, PriceTick, rest_request_started_at
 from .strategy import StrategyState, evaluate_entry, evaluate_exit, position_from_entry, settle_position
 
@@ -13,6 +19,7 @@ MAX_RECENT_REJECTIONS = 500
 REJECTION_RECORD_INTERVAL = timedelta(seconds=1)
 RTDS_THRESHOLD_EARLY_TOLERANCE = timedelta(seconds=1)
 RTDS_THRESHOLD_LATE_TOLERANCE = timedelta(seconds=2)
+RTDS_TWAP_THRESHOLD_LATE_TOLERANCE = timedelta(seconds=3)
 RTDS_DUPLICATE_PRICE_TOLERANCE = 1e-9
 
 
@@ -31,6 +38,7 @@ class PaperEngine:
         self.market: MarketState | None = None
         self.tick: PriceTick | None = None
         self.polymarket_tick: PriceTick | None = None
+        self.polymarket_twap_tick: PriceTick | None = None
         self.books: dict[Direction, OrderBookSnapshot] = {}
         self.open_position: Position | None = None
         self.positions: list[Position] = []
@@ -49,6 +57,8 @@ class PaperEngine:
         self.entry_confirmation_updates = 0
         self.polymarket_ticks_by_exchange_time: dict[datetime, PriceTick] = {}
         self.polymarket_tick_conflicts: set[datetime] = set()
+        self.polymarket_twap_ticks_by_exchange_time: dict[datetime, PriceTick] = {}
+        self.polymarket_twap_tick_conflicts: set[datetime] = set()
 
     def reset_entry_confirmation(self) -> None:
         self.entry_confirmation_direction = None
@@ -99,6 +109,7 @@ class PaperEngine:
             self._settle_if_expired(datetime.now(timezone.utc), force=True)
         self.market = market
         self.apply_polymarket_start_threshold_candidate()
+        self.apply_polymarket_twap_start_threshold_candidate()
         if is_new_market:
             self.books = {}
             self.reset_entry_confirmation()
@@ -132,6 +143,19 @@ class PaperEngine:
         self.apply_polymarket_start_threshold_candidate()
         self.evaluate_after_market_data(tick.received_at)
 
+    def set_polymarket_twap_tick(self, tick: PriceTick) -> bool:
+        if (
+            tick.source != "polymarket_rtds_twap_30s"
+            or tick.symbol.upper() != f"{self.asset}/USD"
+            or not math.isfinite(tick.price)
+        ):
+            return False
+        self.remember_polymarket_twap_tick(tick)
+        self.polymarket_twap_tick = tick
+        changed = self.apply_polymarket_twap_start_threshold_candidate()
+        self.evaluate_after_market_data(tick.received_at)
+        return changed
+
     def remember_polymarket_tick(self, tick: PriceTick) -> None:
         if (
             tick.source != "polymarket_rtds"
@@ -159,6 +183,8 @@ class PaperEngine:
     def apply_polymarket_start_threshold_candidate(self) -> bool:
         market = self.market
         if market is None or market.start_time is None:
+            return False
+        if market_twap_lookback_seconds(market) is not None:
             return False
         start_time = market.start_time.astimezone(timezone.utc)
         if start_time in self.polymarket_tick_conflicts:
@@ -188,22 +214,125 @@ class PaperEngine:
         market.threshold_candidate_conflicted = False
         return changed
 
-    def polymarket_price_is_fresh(self, now: datetime | None = None) -> bool:
-        if self.polymarket_tick is None:
+    def remember_polymarket_twap_tick(self, tick: PriceTick) -> None:
+        if (
+            tick.source != "polymarket_rtds_twap_30s"
+            or tick.symbol.upper() != f"{self.asset}/USD"
+            or tick.exchange_timestamp is None
+            or not math.isfinite(tick.price)
+        ):
+            return
+        exchange_time = tick.exchange_timestamp
+        if exchange_time.tzinfo is None:
+            exchange_time = exchange_time.replace(tzinfo=timezone.utc)
+        else:
+            exchange_time = exchange_time.astimezone(timezone.utc)
+        existing = self.polymarket_twap_ticks_by_exchange_time.get(exchange_time)
+        if existing is not None and abs(existing.price - tick.price) > RTDS_DUPLICATE_PRICE_TOLERANCE:
+            self.polymarket_twap_tick_conflicts.add(exchange_time)
+        else:
+            self.polymarket_twap_ticks_by_exchange_time[exchange_time] = tick
+        cutoff = tick.received_at - timedelta(minutes=10)
+        for timestamp in list(self.polymarket_twap_ticks_by_exchange_time):
+            if timestamp < cutoff:
+                self.polymarket_twap_ticks_by_exchange_time.pop(timestamp, None)
+                self.polymarket_twap_tick_conflicts.discard(timestamp)
+
+    def apply_polymarket_twap_start_threshold_candidate(self) -> bool:
+        market = self.market
+        if (
+            market is None
+            or market.start_time is None
+            or market_twap_lookback_seconds(market) != 30
+        ):
             return False
-        reference_time = now or (self.tick.received_at if self.tick else self.polymarket_tick.received_at)
-        age_seconds = (reference_time - self.polymarket_tick.received_at).total_seconds()
+        start_time = market.start_time.astimezone(timezone.utc)
+        if start_time in self.polymarket_twap_tick_conflicts:
+            changed = bool(
+                market.threshold_price is not None
+                or market.threshold_verified
+                or not market.threshold_candidate_conflicted
+            )
+            market.threshold_price = None
+            market.threshold_source = "threshold_verification_conflict"
+            market.threshold_observed_at = None
+            market.threshold_verified = False
+            market.threshold_candidate_price = None
+            market.threshold_candidate_source = "polymarket_rtds_twap_conflict"
+            market.threshold_candidate_observed_at = start_time
+            market.threshold_candidate_received_at = None
+            market.threshold_candidate_conflicted = True
+            return changed
+        tick = self.polymarket_twap_ticks_by_exchange_time.get(start_time)
+        if (
+            tick is None
+            or tick.received_at < start_time - RTDS_THRESHOLD_EARLY_TOLERANCE
+            or tick.received_at > start_time + RTDS_TWAP_THRESHOLD_LATE_TOLERANCE
+        ):
+            return False
+        page_verified = market.threshold_source == TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE
+        conflicts_with_page = bool(
+            page_verified
+            and market.threshold_price is not None
+            and abs(market.threshold_price - tick.price) > 0.01
+        )
+        if conflicts_with_page:
+            market.threshold_price = None
+            market.threshold_source = "threshold_verification_conflict"
+            market.threshold_observed_at = None
+            market.threshold_verified = False
+            market.threshold_candidate_price = None
+            market.threshold_candidate_source = "polymarket_rtds_twap_conflict"
+            market.threshold_candidate_observed_at = start_time
+            market.threshold_candidate_received_at = tick.received_at
+            market.threshold_candidate_conflicted = True
+            return True
+        changed = bool(
+            market.threshold_candidate_price != tick.price
+            or market.threshold_candidate_source != TWAP_RTDS_CANDIDATE_SOURCE
+            or market.threshold_candidate_observed_at != start_time
+            or market.threshold_candidate_conflicted
+            or (not page_verified and market.threshold_price != tick.price)
+            or not market.threshold_verified
+        )
+        market.threshold_candidate_price = tick.price
+        market.threshold_candidate_source = TWAP_RTDS_CANDIDATE_SOURCE
+        market.threshold_candidate_observed_at = start_time
+        market.threshold_candidate_received_at = tick.received_at
+        market.threshold_candidate_conflicted = False
+        if not page_verified:
+            market.threshold_price = tick.price
+            market.threshold_source = TWAP_RTDS_THRESHOLD_SOURCE
+            market.threshold_observed_at = start_time
+            market.threshold_verified = True
+            market.threshold_fetched_at = tick.received_at
+        return changed
+
+    def settlement_price_tick(self) -> PriceTick | None:
+        if self.market is not None and market_twap_lookback_seconds(self.market) == 30:
+            return self.polymarket_twap_tick
+        return self.polymarket_tick
+
+    def polymarket_price_is_fresh(self, now: datetime | None = None) -> bool:
+        settlement_tick = self.settlement_price_tick()
+        if settlement_tick is None:
+            return False
+        reference_time = now or (self.tick.received_at if self.tick else settlement_tick.received_at)
+        age_seconds = (reference_time - settlement_tick.received_at).total_seconds()
         return 0 <= age_seconds <= self.config.sources.rtds_stale_seconds
 
     def edge_correction_usd(self, now: datetime | None = None) -> float | None:
-        if self.tick and self.polymarket_tick and self.polymarket_price_is_fresh(now):
-            return self.tick.price - self.polymarket_tick.price
+        settlement_tick = self.settlement_price_tick()
+        if self.tick and settlement_tick and self.polymarket_price_is_fresh(now):
+            return self.tick.price - settlement_tick.price
         return None
 
     def edge_correction_source(self, now: datetime | None = None) -> str:
         if self.edge_correction_usd(now) is not None:
+            if self.settlement_price_tick() is self.polymarket_twap_tick:
+                return "binance_minus_polymarket_twap_30s"
             return "binance_minus_polymarket"
-        return "polymarket_price_stale" if self.polymarket_tick else "polymarket_price_unavailable"
+        return "polymarket_price_stale" if self.settlement_price_tick() else "polymarket_price_unavailable"
 
     def capture_dynamic_threshold(self, tick: PriceTick) -> bool:
         if not self.market or self.market.threshold_price is not None:

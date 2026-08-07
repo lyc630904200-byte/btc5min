@@ -48,6 +48,8 @@ class DashboardHub:
             "market": None,
             "tick": None,
             "polymarket_tick": None,
+            "polymarket_twap_tick": None,
+            "settlement_tick": None,
             "books": {},
             "open_position": None,
             "summary": {},
@@ -209,6 +211,17 @@ class DashboardHub:
         if event_type == "polymarket_tick" and isinstance(payload, dict):
             return {
                 "type": "polymarket_tick",
+                "payload": {
+                    "price": payload.get("price"),
+                    "received_at": payload.get("received_at"),
+                    "exchange_timestamp": payload.get("exchange_timestamp"),
+                    "source": payload.get("source"),
+                    "symbol": payload.get("symbol"),
+                },
+            }
+        if event_type == "polymarket_twap_tick" and isinstance(payload, dict):
+            return {
+                "type": "polymarket_twap_tick",
                 "payload": {
                     "price": payload.get("price"),
                     "received_at": payload.get("received_at"),
@@ -642,6 +655,7 @@ class DashboardHub:
             "spot_stale_seconds",
             "chainlink_stale_seconds",
             "raw_retention_hours",
+            "snapshot_retention_hours",
             "short_volatility_window_seconds",
             "long_volatility_window_seconds",
             "volatility_floor_bps",
@@ -866,7 +880,7 @@ class DashboardHub:
             event_type = event.get("type") if isinstance(event, dict) else None
             minimum_interval = (
                 self.push_interval
-                if event_type in {"tick", "polymarket_tick", "book", "pair_state"}
+                if event_type in {"tick", "polymarket_tick", "polymarket_twap_tick", "book", "pair_state"}
                 else None
             )
             should_push = minimum_interval is None or now - self.last_push_at >= minimum_interval

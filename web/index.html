@@ -419,8 +419,8 @@
             <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="dynamicMarketSlug">--</div></div>
             <div class="kv-row"><div class="kv-label">状态</div><div class="kv-value" id="dynamicReason">--</div></div>
             <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="dynamicTimeLeft">--</div></div>
-            <div class="kv-row"><div class="kv-label">Chainlink开盘</div><div class="kv-value" id="dynamicOpenPrice">--</div></div>
-            <div class="kv-row"><div class="kv-label">Chainlink当前</div><div class="kv-value" id="dynamicCurrentPrice">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink TWAP开盘</div><div class="kv-value" id="dynamicOpenPrice">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink TWAP当前</div><div class="kv-value" id="dynamicCurrentPrice">--</div></div>
             <div class="kv-row"><div class="kv-label">Z值 / 波动率</div><div class="kv-value" id="dynamicZVol">--</div></div>
             <div class="kv-row"><div class="kv-label">训练快照</div><div class="kv-value" id="dynamicSnapshotSchedule">--</div></div>
             <div class="kv-row"><div class="kv-label">运行模型</div><div class="kv-value" id="dynamicModelVersion">--</div></div>
@@ -455,10 +455,10 @@
             <div class="kv-row"><div class="kv-label">现货领先</div><div class="kv-value" id="v8ChaseLead">--</div></div>
             <div class="kv-row"><div class="kv-label">追赶目标</div><div class="kv-value" id="v8ChaseTarget">--</div></div>
             <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="v8TimeLeft">--</div></div>
-            <div class="kv-row"><div class="kv-label">Chainlink开盘</div><div class="kv-value" id="v8ChainlinkOpen">--</div></div>
-            <div class="kv-row"><div class="kv-label">Chainlink当前</div><div class="kv-value" id="v8ChainlinkCurrent">--</div></div>
-            <div class="kv-row"><div class="kv-label">模型版本</div><div class="kv-value" id="v8ModelVersion">--</div></div>
-            <div class="kv-row"><div class="kv-label">已训练市场</div><div class="kv-value" id="v8TrainedMarkets">0</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink TWAP开盘</div><div class="kv-value" id="v8ChainlinkOpen">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink TWAP当前</div><div class="kv-value" id="v8ChainlinkCurrent">--</div></div>
+            <div class="kv-row" data-v8-model-only><div class="kv-label">模型版本</div><div class="kv-value" id="v8ModelVersion">--</div></div>
+            <div class="kv-row" data-v8-model-only><div class="kv-label">已训练市场</div><div class="kv-value" id="v8TrainedMarkets">0</div></div>
             <div class="kv-row"><div class="kv-label">本场买入次数</div><div class="kv-value" id="v8EntryCount">0 / 3</div></div>
             <div class="kv-row"><div class="kv-label">新鲜现货源</div><div class="kv-value" id="v8FreshCount">0 / 2</div></div>
           </div>
@@ -468,11 +468,11 @@
           <div class="panel-head"><div class="panel-title">概率与绩效</div><div class="tag amber">paper</div></div>
           <div class="panel-body metrics">
             <div class="metric"><div class="metric-name">公式 UP</div><div class="metric-value" id="v8FormulaUp">--</div></div>
-            <div class="metric"><div class="metric-name">V8 UP</div><div class="metric-value" id="v8ModelUp">--</div></div>
-            <div class="metric"><div class="metric-name">V8 DOWN</div><div class="metric-value" id="v8ModelDown">--</div></div>
-            <div class="metric"><div class="metric-name">走步 Brier</div><div class="metric-value" id="v8Brier">--</div></div>
-            <div class="metric"><div class="metric-name">准确率</div><div class="metric-value" id="v8Accuracy">--</div></div>
-            <div class="metric"><div class="metric-name">已评估快照</div><div class="metric-value" id="v8Snapshots">0</div></div>
+            <div class="metric" data-v8-model-only><div class="metric-name">V8 UP</div><div class="metric-value" id="v8ModelUp">--</div></div>
+            <div class="metric" data-v8-model-only><div class="metric-name">V8 DOWN</div><div class="metric-value" id="v8ModelDown">--</div></div>
+            <div class="metric" data-v8-model-only><div class="metric-name">走步 Brier</div><div class="metric-value" id="v8Brier">--</div></div>
+            <div class="metric" data-v8-model-only><div class="metric-name">准确率</div><div class="metric-value" id="v8Accuracy">--</div></div>
+            <div class="metric" data-v8-model-only><div class="metric-name">已评估快照</div><div class="metric-value" id="v8Snapshots">0</div></div>
             <div class="metric"><div class="metric-name">完成持仓</div><div class="metric-value" id="v8Completed">0</div></div>
             <div class="metric"><div class="metric-name">胜率</div><div class="metric-value" id="v8WinRate">--</div></div>
             <div class="metric metric-wide"><div class="metric-name">已实现盈亏</div><div class="metric-value" id="v8Pnl">0.00</div></div>
@@ -701,7 +701,7 @@
             <div class="reason"><strong>Binance 现货</strong><span class="mono" id="v8SourceBinance">未连接</span></div>
             <div class="reason"><strong>Coinbase 现货</strong><span class="mono" id="v8SourceCoinbase">未连接</span></div>
             <div class="reason"><strong>Kraken 现货</strong><span class="mono" id="v8SourceKraken">未连接</span></div>
-            <div class="reason"><strong>Binance 永续</strong><span class="mono" id="v8SourceFutures">未连接</span></div>
+            <div class="reason" data-v8-chase-unused><strong>Binance 永续</strong><span class="mono" id="v8SourceFutures">未连接</span></div>
           </div>
         </div>
 
@@ -716,16 +716,6 @@
             <div class="reason"><strong>开仓时间</strong><span class="mono" id="v8PositionTime">--</span></div>
             <div class="reason"><strong>回撤止盈</strong><span class="mono" id="v8ChaseProfitState">--</span></div>
           </div>
-        </div>
-
-        <div class="panel v8-only">
-          <div class="panel-head"><div class="panel-title">分时 Brier</div><div class="tag amber">走步评估</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>市场秒段</th><th>Brier</th></tr></thead><tbody id="v8TimeMetrics"></tbody></table></div></div>
-        </div>
-
-        <div class="panel v8-only">
-          <div class="panel-head"><div class="panel-title">来源可用性表现</div><div class="tag amber">已结算快照</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>样本</th><th>Brier</th><th>准确率</th></tr></thead><tbody id="v8SourceMetrics"></tbody></table></div></div>
         </div>
 
         <div class="panel v8-only">
@@ -912,6 +902,7 @@
               <label class="setting"><span class="setting-label">现货过期阈值（秒）</span><input class="setting-input" id="v8SpotStale" type="number" min="0.1" step="0.1" value="2" required></label>
               <label class="setting"><span class="setting-label">Chainlink过期阈值（秒）</span><input class="setting-input" id="v8ChainlinkStale" type="number" min="0.1" step="0.1" value="10" required></label>
               <label class="setting"><span class="setting-label">原始事件保留（小时）</span><input class="setting-input" id="v8RetentionHours" type="number" min="1" step="1" value="24" required></label>
+              <label class="setting"><span class="setting-label">历史快照保留（小时）</span><input class="setting-input" id="v8SnapshotRetentionHours" type="number" min="1" step="1" value="24" required></label>
               <label class="setting"><span class="setting-label">短波动窗口（秒）</span><input class="setting-input" id="v8ShortVol" type="number" min="1" step="1" value="10" required></label>
               <label class="setting"><span class="setting-label">长波动窗口（秒）</span><input class="setting-input" id="v8LongVol" type="number" min="2" step="1" value="60" required></label>
               <label class="setting"><span class="setting-label">波动率下限（bps）</span><input class="setting-input" id="v8VolFloor" type="number" min="0" step="0.01" value="0.5" required></label>
@@ -921,15 +912,6 @@
           </form>
         </div>
 
-        <div class="panel">
-          <div class="panel-head"><div class="panel-title">主要特征贡献</div><div class="tag amber">Logistic 残差</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>特征</th><th>值</th><th>权重</th><th>贡献</th></tr></thead><tbody id="v8Contributions"></tbody></table></div></div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head"><div class="panel-title">概率校准</div><div class="tag amber">已结算快照</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>概率桶</th><th>样本</th><th>平均概率</th><th>实际UP率</th></tr></thead><tbody id="v8Calibration"></tbody></table></div></div>
-        </div>
       </section>
     </main>
   </div>
@@ -1044,6 +1026,7 @@
       spot_stale_seconds: 'v8SpotStale',
       chainlink_stale_seconds: 'v8ChainlinkStale',
       raw_retention_hours: 'v8RetentionHours',
+      snapshot_retention_hours: 'v8SnapshotRetentionHours',
       short_volatility_window_seconds: 'v8ShortVol',
       long_volatility_window_seconds: 'v8LongVol',
       volatility_floor_bps: 'v8VolFloor',
@@ -1064,10 +1047,7 @@
       recoveryOrders: '',
       reasons: '',
       timeline: '',
-      v8TimeMetrics: '',
       v8Trades: '',
-      v8Contributions: '',
-      v8Calibration: '',
     };
 
     function setText(id, value) {
@@ -1245,6 +1225,15 @@
         'v8SellConfirmUpdates',
         'v8MaxLoss',
       ].forEach((id) => { $(id).disabled = automatic || chase; });
+      [
+        'v8SnapshotSeconds',
+        'v8RetentionHours',
+        'v8SnapshotRetentionHours',
+        'v8MaxCorrection',
+      ].forEach((id) => { $(id).disabled = chase; });
+      document.querySelectorAll('[data-v8-model-only], [data-v8-chase-unused]').forEach((element) => {
+        element.hidden = chase;
+      });
       $('v8AutoEmergencyLoss').disabled = !automatic;
       [
         'v8ChaseProfitArm',
@@ -1744,6 +1733,8 @@
       const market = btcSnapshot?.market;
       const diagnostics = dynamic.diagnostics || {};
       const model = dynamic.model || diagnostics.model || {};
+      const chainlinkOpenPrice = market?.threshold_price ?? diagnostics.chainlink_open_price;
+      const chainlinkCurrentPrice = btcSnapshot?.settlement_tick?.price ?? diagnostics.chainlink_current_price;
       const enabled = Boolean((dynamic.config || {}).enabled);
       setText('dynamicState', enabled ? dynamicReasonText(dynamic.status) : '关闭');
       setClass('dynamicState', `tag ${enabled ? 'green' : 'blue'}`);
@@ -1751,8 +1742,8 @@
       setText('dynamicReason', dynamicReasonText(dynamic.last_reason));
       const left = secondsLeft(market);
       setText('dynamicTimeLeft', left == null ? '--' : `${left}s`);
-      setText('dynamicOpenPrice', diagnostics.chainlink_open_price == null ? '--' : fmtPrice(diagnostics.chainlink_open_price));
-      setText('dynamicCurrentPrice', diagnostics.chainlink_current_price == null ? '--' : fmtPrice(diagnostics.chainlink_current_price));
+      setText('dynamicOpenPrice', chainlinkOpenPrice == null ? '--' : fmtPrice(chainlinkOpenPrice));
+      setText('dynamicCurrentPrice', chainlinkCurrentPrice == null ? '--' : fmtPrice(chainlinkCurrentPrice));
       setText(
         'dynamicZVol',
         diagnostics.z_score == null
@@ -1901,6 +1892,7 @@
         chainlink_open_unverified: 'Chainlink 开盘价未核验',
         chainlink_current_unavailable: 'Chainlink 当前价不可用',
         chainlink_stale: 'Chainlink 数据过期',
+        chase_chainlink_stale: '追赶模式：Chainlink TWAP 更新停顿',
         insufficient_fresh_spot_exchanges: '新鲜现货源不足',
         entry_window_closed: '新买入窗口已关闭',
         market_entry_limit: '本场买入次数已满',
@@ -2013,6 +2005,8 @@
       const modelControl = v8.model_control || {};
       const summary = v8.summary || {};
       const settings = v8.config || {};
+      const chainlinkOpenPrice = market?.threshold_price ?? diagnostics.chainlink_open_price;
+      const chainlinkCurrentPrice = btcSnapshot?.settlement_tick?.price ?? diagnostics.chainlink_current_price;
       const enabled = Boolean(settings.enabled);
       setText('v8State', enabled ? v8ReasonText(v8.status) : '关闭');
       setClass('v8State', `tag ${enabled ? 'green' : 'blue'}`);
@@ -2037,8 +2031,8 @@
       );
       const left = secondsLeft(market);
       setText('v8TimeLeft', left == null ? '--' : `${left}s`);
-      setText('v8ChainlinkOpen', diagnostics.chainlink_open_price == null ? '--' : fmtPrice(diagnostics.chainlink_open_price));
-      setText('v8ChainlinkCurrent', diagnostics.chainlink_current_price == null ? '--' : fmtPrice(diagnostics.chainlink_current_price));
+      setText('v8ChainlinkOpen', chainlinkOpenPrice == null ? '--' : fmtPrice(chainlinkOpenPrice));
+      setText('v8ChainlinkCurrent', chainlinkCurrentPrice == null ? '--' : fmtPrice(chainlinkCurrentPrice));
       setText(
         'v8ModelVersion',
         model.version == null
@@ -2094,23 +2088,6 @@
       }
       setText('v8ChaseProfitState', chaseProfitState);
 
-      const timeMetrics = summary.brier_by_time || {};
-      updateHtmlWhenChanged(
-        'v8TimeMetrics',
-        'v8TimeMetrics',
-        JSON.stringify(timeMetrics),
-        Object.entries(timeMetrics).map(([bucket, value]) => `<tr><td>${bucket}s</td><td>${value == null ? '--' : fmtNumber(value, 4)}</td></tr>`).join('') || '<tr><td colspan="2">暂无已结算快照</td></tr>',
-      );
-      const sourceMetrics = summary.by_source_availability || {};
-      const sourceMetricRows = Object.entries(sourceMetrics).flatMap(([source, states]) =>
-        Object.entries(states || {}).map(([state, values]) => `<tr><td>${escapeHtml(source)}</td><td>${state === 'available' ? '可用' : '缺失'}</td><td>${values.count || 0}</td><td>${values.brier == null ? '--' : fmtNumber(values.brier, 4)}</td><td>${values.accuracy == null ? '--' : `${fmtNumber(values.accuracy * 100, 1)}%`}</td></tr>`),
-      );
-      updateHtmlWhenChanged(
-        'v8SourceMetrics',
-        'v8SourceMetrics',
-        JSON.stringify(sourceMetrics),
-        sourceMetricRows.join('') || '<tr><td colspan="5">暂无已结算快照</td></tr>',
-      );
       const trades = v8.recent_trades || [];
       const tradeGroups = groupV8Trades(trades);
       setText('v8TradeCount', tradeGroups.length);
@@ -2135,20 +2112,6 @@
             <td>${exit?.realized_pnl == null ? '--' : pnlHtml(exit.realized_pnl)}</td>
           </tr>`;
         }).join('') || '<tr><td colspan="9">暂无 V8 成交</td></tr>',
-      );
-      const contributions = diagnostics.feature_contributions || [];
-      updateHtmlWhenChanged(
-        'v8Contributions',
-        'v8Contributions',
-        JSON.stringify(contributions),
-        contributions.map((item) => `<tr><td>${item.feature}</td><td>${fmtNumber(item.value, 4)}</td><td>${fmtNumber(item.weight, 4)}</td><td>${fmtSigned(item.contribution, 5)}</td></tr>`).join('') || '<tr><td colspan="4">模型尚无非零贡献</td></tr>',
-      );
-      const calibration = summary.calibration || [];
-      updateHtmlWhenChanged(
-        'v8Calibration',
-        'v8Calibration',
-        JSON.stringify(calibration),
-        calibration.map((item) => `<tr><td>${item.bucket}%</td><td>${item.count}</td><td>${fmtNumber(item.mean_probability, 3)}</td><td>${fmtNumber(item.outcome_rate, 3)}</td></tr>`).join('') || '<tr><td colspan="4">暂无校准样本</td></tr>',
       );
       renderV8Config({ btc_v8: v8, pending_btc_v8: pendingV8, config_status: configStatus });
     }
@@ -2443,6 +2406,7 @@
       const market = snapshot.market;
       const tick = snapshot.tick;
       const polymarketTick = snapshot.polymarket_tick;
+      const settlementTick = snapshot.settlement_tick || polymarketTick;
       const upBook = snapshot.books?.UP;
       const downBook = snapshot.books?.DOWN;
       const summary = snapshot.summary || {};
@@ -2516,7 +2480,7 @@
 
       const threshold = market?.threshold_price ? Number(market.threshold_price) : null;
       const price = tick?.price ? Number(tick.price) : null;
-      const polymarketPrice = polymarketTick?.price ? Number(polymarketTick.price) : null;
+      const polymarketPrice = settlementTick?.price ? Number(settlementTick.price) : null;
       const correction = dynamicCorrection(snapshot, price, polymarketPrice);
       const rawEdge = threshold !== null && price !== null ? price - threshold : null;
       const marketEdge = rawEdge !== null ? rawEdge - correction : null;
@@ -3098,6 +3062,7 @@
             spot_stale_seconds: runtimeNumber('v8SpotStale'),
             chainlink_stale_seconds: runtimeNumber('v8ChainlinkStale'),
             raw_retention_hours: runtimeNumber('v8RetentionHours'),
+            snapshot_retention_hours: runtimeNumber('v8SnapshotRetentionHours'),
             short_volatility_window_seconds: runtimeNumber('v8ShortVol'),
             long_volatility_window_seconds: runtimeNumber('v8LongVol'),
             volatility_floor_bps: runtimeNumber('v8VolFloor'),

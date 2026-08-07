@@ -435,6 +435,7 @@ class BtcV8Config(BaseModel):
     spot_stale_seconds: float = 2.0
     chainlink_stale_seconds: float = 10.0
     raw_retention_hours: float = 24.0
+    snapshot_retention_hours: float = 24.0
     short_volatility_window_seconds: int = 10
     long_volatility_window_seconds: int = 60
     volatility_floor_bps: float = 0.5
@@ -451,6 +452,7 @@ class BtcV8Config(BaseModel):
         "spot_stale_seconds",
         "chainlink_stale_seconds",
         "raw_retention_hours",
+        "snapshot_retention_hours",
     )
     @classmethod
     def positive_v8_value(cls, value: float) -> float:

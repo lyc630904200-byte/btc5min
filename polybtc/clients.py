@@ -22,6 +22,10 @@ from .models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceT
 
 CLOB_SUBSCRIPTION_TYPE = "market"
 POLYMARKET_RTDS_CRYPTO_TOPIC = "crypto_prices_chainlink"
+POLYMARKET_RTDS_TWAP_TOPICS = {
+    30: "crypto_prices_twap_thirty",
+    60: "crypto_prices_twap_sixty",
+}
 PROXY_ATTEMPT_TIMEOUT_SECONDS = 1.5
 CLOB_HEARTBEAT_SECONDS = 10
 CLOB_RECONNECT_DELAY_SECONDS = 0.25
@@ -391,6 +395,9 @@ def parse_rtds_crypto_price_message(
     *,
     symbol: str = "btc/usd",
     received_at: datetime | None = None,
+    source: str = "polymarket_rtds",
+    expected_topic: str | None = None,
+    window_seconds: int | None = None,
 ) -> list[PriceTick]:
     if isinstance(raw, (bytes, bytearray)):
         raw = raw.decode("utf-8")
@@ -404,11 +411,20 @@ def parse_rtds_crypto_price_message(
     else:
         return []
 
+    if expected_topic is not None and str(payload.get("topic") or "") != expected_topic:
+        return []
     message_payload = payload.get("payload") if isinstance(payload, dict) else None
     if not isinstance(message_payload, dict):
         return []
     if str(message_payload.get("symbol") or "").lower() != symbol.lower():
         return []
+    if window_seconds is not None:
+        try:
+            payload_window = int(message_payload.get("window_s"))
+        except (TypeError, ValueError):
+            return []
+        if payload_window != window_seconds:
+            return []
 
     now = received_at or datetime.now(timezone.utc)
     rows = message_payload.get("data")
@@ -427,7 +443,7 @@ def parse_rtds_crypto_price_message(
             continue
         ticks.append(
             PriceTick(
-                source="polymarket_rtds",
+                source=source,
                 symbol=symbol.upper(),
                 price=price,
                 exchange_timestamp=exchange_timestamp,
@@ -454,6 +470,7 @@ class PolymarketOutcomePrice:
     start_time: datetime | None = None
     end_time: datetime | None = None
     updated_at_ms: int = 0
+    twap_lookback_seconds: int | None = None
 
 
 PAST_RESULT_RE = re.compile(
@@ -533,8 +550,15 @@ def parse_polymarket_outcome_prices(html: str, asset: str = "BTC") -> list[Polym
     grouped: dict[str, list[PolymarketOutcomePrice]] = {}
     for item in react_query_objects(html):
         query_key = item.get("queryKey")
+        legacy_key = len(query_key) == 6
+        twap_key = (
+            len(query_key) == 8
+            and query_key[6] is True
+            and type(query_key[7]) is int
+            and query_key[7] == 30
+        )
         if (
-            len(query_key) != 6
+            not (legacy_key or twap_key)
             or query_key[:3] != ["crypto-prices", "price", asset]
             or query_key[4] != "fiveminute"
         ):
@@ -569,6 +593,7 @@ def parse_polymarket_outcome_prices(html: str, asset: str = "BTC") -> list[Polym
                 start_time=start,
                 end_time=end,
                 updated_at_ms=updated_at_ms,
+                twap_lookback_seconds=query_key[7] if twap_key else None,
             )
         )
     prices: list[PolymarketOutcomePrice] = []
@@ -869,14 +894,21 @@ class PolymarketClient:
         )
         return {"ok": True, "latency_ms": (end - start).total_seconds() * 1000, "used_env_proxy": used_env_proxy, "payload": response.json()}
 
-    async def rtds_crypto_price_ticks(self, symbol: str | None = None) -> AsyncIterator[PriceTick]:
-        symbol = symbol or self.rtds_symbol
+    async def _rtds_price_ticks(
+        self,
+        *,
+        topic: str,
+        event_type: str,
+        source: str,
+        symbol: str,
+        window_seconds: int | None = None,
+    ) -> AsyncIterator[PriceTick]:
         subscription = {
             "action": "subscribe",
             "subscriptions": [
                 {
-                    "topic": POLYMARKET_RTDS_CRYPTO_TOPIC,
-                    "type": "*",
+                    "topic": topic,
+                    "type": event_type,
                     "filters": json.dumps({"symbol": symbol}, separators=(",", ":")),
                 }
             ],
@@ -912,7 +944,13 @@ class PolymarketClient:
                                 f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
                                 f"{self.config.rtds_stale_seconds:g} seconds"
                             ) from exc
-                        ticks = parse_rtds_crypto_price_message(message, symbol=symbol)
+                        ticks = parse_rtds_crypto_price_message(
+                            message,
+                            symbol=symbol,
+                            source=source,
+                            expected_topic=topic,
+                            window_seconds=window_seconds,
+                        )
                         if ticks:
                             last_tick_at = loop.time()
                         for tick in ticks:
@@ -921,6 +959,32 @@ class PolymarketClient:
                 if connected or options == options_list[-1]:
                     raise
                 continue
+
+    async def rtds_crypto_price_ticks(self, symbol: str | None = None) -> AsyncIterator[PriceTick]:
+        async for tick in self._rtds_price_ticks(
+            topic=POLYMARKET_RTDS_CRYPTO_TOPIC,
+            event_type="*",
+            source="polymarket_rtds",
+            symbol=symbol or self.rtds_symbol,
+        ):
+            yield tick
+
+    async def rtds_twap_price_ticks(
+        self,
+        window_seconds: int = 30,
+        symbol: str | None = None,
+    ) -> AsyncIterator[PriceTick]:
+        topic = POLYMARKET_RTDS_TWAP_TOPICS.get(window_seconds)
+        if topic is None:
+            raise ValueError(f"unsupported Polymarket RTDS TWAP window: {window_seconds}")
+        async for tick in self._rtds_price_ticks(
+            topic=topic,
+            event_type="update",
+            source=f"polymarket_rtds_twap_{window_seconds}s",
+            symbol=symbol or self.rtds_symbol,
+            window_seconds=window_seconds,
+        ):
+            yield tick
 
     async def event_page_text(self, market_slug: str, timeout: float | None = None) -> str:
         response, _, _, _ = await get_direct_first(

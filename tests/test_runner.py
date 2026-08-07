@@ -2,11 +2,18 @@ from datetime import datetime, timedelta, timezone
 
 from polybtc.config import AppConfig
 from polybtc.engine import PaperEngine
+from polybtc.market import (
+    TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE,
+    TWAP_RTDS_CANDIDATE_SOURCE,
+    TWAP_RTDS_THRESHOLD_SOURCE,
+    threshold_is_tradable,
+)
 from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot
 from polybtc.runner import (
     THRESHOLD_FINALIZATION_DELAY,
     apply_polymarket_page_threshold,
     books_need_rest_refresh,
+    btc_v8_signal_source_enabled,
     coalesce_live_events,
     current_market_with_page_threshold,
     live_book_payload,
@@ -68,6 +75,20 @@ def test_v8_pauses_standard_entry_for_every_asset() -> None:
     assert standard_entry_enabled(config, "ETH") is False
 
 
+def test_orderbook_chase_collects_spot_but_pauses_futures_signals() -> None:
+    config = AppConfig(
+        btc_v8={"enabled": True, "orderbook_chase_mode": True}
+    )
+
+    assert btc_v8_signal_source_enabled(config, "binance") is True
+    assert btc_v8_signal_source_enabled(config, "coinbase") is True
+    assert btc_v8_signal_source_enabled(config, "kraken") is True
+    assert btc_v8_signal_source_enabled(config, "binance_futures") is False
+
+    config.btc_v8.orderbook_chase_mode = False
+    assert btc_v8_signal_source_enabled(config, "binance_futures") is True
+
+
 def interval_market(start: datetime, *, condition_id: str = "m1", threshold: float | None = None) -> MarketState:
     return MarketState(
         condition_id=condition_id,
@@ -83,11 +104,39 @@ def interval_market(start: datetime, *, condition_id: str = "m1", threshold: flo
     )
 
 
+def direct_twap_market(start: datetime, price: float = 65031.38890253371) -> MarketState:
+    current = interval_market(start)
+    current.raw = {
+        "cryptoMarketConfig": {
+            "twapEnabled": True,
+            "twapLookbackSeconds": 30,
+        }
+    }
+    current.threshold_price = price
+    current.threshold_source = TWAP_RTDS_THRESHOLD_SOURCE
+    current.threshold_observed_at = start
+    current.threshold_verified = True
+    current.threshold_fetched_at = start + timedelta(seconds=1)
+    current.threshold_candidate_price = price
+    current.threshold_candidate_source = TWAP_RTDS_CANDIDATE_SOURCE
+    current.threshold_candidate_observed_at = start
+    current.threshold_candidate_received_at = start + timedelta(seconds=1)
+    return current
+
+
 class FakePolymarketClient:
-    def __init__(self, price: float = 64001.5, *, include_outcome: bool = True, previous_close: float | None = None):
+    def __init__(
+        self,
+        price: float = 64001.5,
+        *,
+        include_outcome: bool = True,
+        previous_close: float | None = None,
+        twap_lookback_seconds: int | None = None,
+    ):
         self.price = price
         self.include_outcome = include_outcome
         self.previous_close = price if previous_close is None else previous_close
+        self.twap_lookback_seconds = twap_lookback_seconds
         self.outcome_calls = 0
 
     async def outcome_price(self, market_slug: str):
@@ -103,6 +152,7 @@ class FakePolymarketClient:
             close_price=None,
             start_time=start,
             end_time=start + timedelta(minutes=5),
+            twap_lookback_seconds=self.twap_lookback_seconds,
         )
 
     async def past_results(self, market_slug: str):
@@ -222,6 +272,98 @@ def test_apply_polymarket_page_threshold_rejects_rtds_page_mismatch() -> None:
 
     assert current.threshold_price is None
     assert current.threshold_verified is False
+
+
+def test_apply_polymarket_page_threshold_verifies_twap_with_previous_close() -> None:
+    start = datetime(2026, 8, 7, 11, 35, tzinfo=timezone.utc)
+    current = interval_market(start)
+    current.threshold_candidate_price = 64976.95396493532
+    current.threshold_candidate_source = "polymarket_rtds_start_tick"
+    current.threshold_candidate_observed_at = start
+    current.threshold_candidate_received_at = start + timedelta(seconds=1)
+
+    __import__("asyncio").run(
+        apply_polymarket_page_threshold(
+            FakePolymarketClient(
+                price=64973.61243863471,
+                previous_close=64973.61243863471,
+                twap_lookback_seconds=30,
+            ),
+            current,
+            now=start + timedelta(seconds=5),
+        )
+    )
+
+    assert current.threshold_price == 64973.61243863471
+    assert current.threshold_source == "polymarket_page_verified_open_price"
+    assert current.threshold_verified is True
+
+
+def test_twap_fast_threshold_survives_until_page_data_arrives() -> None:
+    start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    current = direct_twap_market(start)
+
+    changed = __import__("asyncio").run(
+        apply_polymarket_page_threshold(
+            FakePolymarketClient(include_outcome=False, twap_lookback_seconds=30),
+            current,
+            now=start + timedelta(seconds=3),
+        )
+    )
+
+    assert changed is False
+    assert current.threshold_price == 65031.38890253371
+    assert current.threshold_source == TWAP_RTDS_THRESHOLD_SOURCE
+    assert current.threshold_verified is True
+    assert threshold_is_tradable(current) is True
+
+
+def test_twap_page_confirmation_upgrades_fast_threshold_source() -> None:
+    start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    current = direct_twap_market(start)
+
+    changed = __import__("asyncio").run(
+        apply_polymarket_page_threshold(
+            FakePolymarketClient(
+                price=65031.38890253371,
+                previous_close=65031.38890253371,
+                twap_lookback_seconds=30,
+            ),
+            current,
+            now=start + timedelta(seconds=90),
+        )
+    )
+
+    assert changed is True
+    assert current.threshold_price == 65031.38890253371
+    assert current.threshold_source == TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE
+    assert current.threshold_verified is True
+    assert current.threshold_fetched_at == start + timedelta(seconds=90)
+    assert threshold_is_tradable(current) is True
+
+
+def test_twap_page_conflict_invalidates_fast_threshold() -> None:
+    start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
+    current = direct_twap_market(start)
+
+    changed = __import__("asyncio").run(
+        apply_polymarket_page_threshold(
+            FakePolymarketClient(
+                price=65030.0,
+                previous_close=65030.0,
+                twap_lookback_seconds=30,
+            ),
+            current,
+            now=start + timedelta(seconds=90),
+        )
+    )
+
+    assert changed is True
+    assert current.threshold_price is None
+    assert current.threshold_source == "threshold_verification_conflict"
+    assert current.threshold_verified is False
+    assert current.threshold_candidate_conflicted is True
+    assert threshold_is_tradable(current) is False
 
 
 def test_apply_polymarket_page_threshold_retries_until_page_matches_rtds() -> None:
@@ -541,6 +683,21 @@ def test_coalesce_live_events_keeps_latest_tick_and_books() -> None:
         ("market", {"slug": "m1"}),
         ("tick", {"price": 3}),
         ("book", (Direction.DOWN, "new-down")),
+    ]
+
+
+def test_coalesce_live_events_keeps_latest_twap_tick() -> None:
+    events = [
+        ("polymarket_twap_tick", {"price": 1}),
+        ("polymarket_twap_tick", {"price": 2}),
+        ("market", {"slug": "m1"}),
+        ("polymarket_twap_tick", {"price": 3}),
+    ]
+
+    assert coalesce_live_events(events) == [
+        ("polymarket_twap_tick", {"price": 2}),
+        ("market", {"slug": "m1"}),
+        ("polymarket_twap_tick", {"price": 3}),
     ]
 
 

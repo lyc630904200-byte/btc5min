@@ -367,6 +367,7 @@ def test_orderbook_chase_signal_uses_received_spot_lead_and_consensus() -> None:
         "remaining_seconds": 100,
         "chainlink_open_price": 100_000,
         "chainlink_current_price": 100_000,
+        "chainlink_age_seconds": 0.1,
         "spot_chainlink_lead_return_1s": 0.001,
         "spot_positive_return_sources_1s": 2,
         "spot_negative_return_sources_1s": 0,
@@ -398,6 +399,75 @@ def test_orderbook_chase_signal_uses_received_spot_lead_and_consensus() -> None:
     assert small_probability_move["eligible"] is False
     assert small_probability_move["reason"] == "chase_probability_move_small"
 
+    diagnostics["remaining_seconds"] = 100
+    diagnostics["chainlink_age_seconds"] = 2.01
+    stale_chainlink = v8_orderbook_chase_signal(0.50, diagnostics)
+    assert stale_chainlink["eligible"] is False
+    assert stale_chainlink["reason"] == "chase_chainlink_stale"
+
+
+def test_orderbook_chase_stale_chainlink_cancels_buy_confirmation(tmp_path) -> None:
+    start = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    current = market(start, "chase-stale-chainlink")
+    engine, _ = make_engine(
+        tmp_path,
+        orderbook_chase_mode=True,
+        slippage_reserve_cents=0,
+        max_entries_per_market=1,
+    )
+    engine.set_market(current, start)
+
+    history_at = start + timedelta(seconds=9)
+    engine.add_chainlink_tick(
+        PriceTick(
+            source="polymarket_rtds_twap_30s",
+            symbol="BTC/USD",
+            price=100_000,
+            exchange_timestamp=history_at,
+            received_at=history_at,
+        )
+    )
+    for source in ("binance", "coinbase"):
+        engine.add_signal(signal(source, "trade", history_at, price=100_000))
+        engine.add_signal(signal(source, "book", history_at, price=100_000))
+
+    first = start + timedelta(seconds=10)
+    books = poly_books(current, first, up_bid=0.45, up_ask=0.46, down_bid=0.53, down_ask=0.54)
+    engine.add_chainlink_tick(
+        PriceTick(
+            source="polymarket_rtds_twap_30s",
+            symbol="BTC/USD",
+            price=100_000,
+            exchange_timestamp=first,
+            received_at=first,
+        )
+    )
+    for source in ("binance", "coinbase"):
+        engine.add_signal(signal(source, "trade", first, price=100_100))
+        engine.add_signal(signal(source, "book", first, price=100_100))
+    for direction, book in books.items():
+        engine.add_polymarket_book(direction, book)
+    engine.evaluate(current, books, first, force=True)
+
+    assert engine.status == "confirming_buy"
+    assert "buy" in engine.confirmations
+
+    stale_at = start + timedelta(seconds=12, milliseconds=100)
+    books = poly_books(
+        current, stale_at, up_bid=0.45, up_ask=0.46, down_bid=0.53, down_ask=0.54
+    )
+    for source in ("binance", "coinbase"):
+        engine.add_signal(signal(source, "trade", stale_at, price=100_100))
+        engine.add_signal(signal(source, "book", stale_at, price=100_100))
+    for direction, book in books.items():
+        engine.add_polymarket_book(direction, book)
+    engine.evaluate(current, books, stale_at, force=True)
+
+    assert engine.position is None
+    assert engine.last_reason == "chase_chainlink_stale"
+    assert engine.diagnostics["chainlink_age_seconds"] == pytest.approx(2.1)
+    assert "buy" not in engine.confirmations
+
 
 def test_orderbook_chase_exit_takes_catchup_and_enforces_timeout() -> None:
     opened = datetime(2026, 8, 3, tzinfo=timezone.utc)
@@ -419,6 +489,11 @@ def test_orderbook_chase_exit_takes_catchup_and_enforces_timeout() -> None:
         position, 0.58, 0.03, diagnostics, opened + timedelta(seconds=1)
     )
     assert caught_up["reason"] == "chase_caught_up"
+
+    caught_up_at_timeout = v8_orderbook_chase_exit_decision(
+        position, 0.58, 0.03, diagnostics, opened + timedelta(seconds=5)
+    )
+    assert caught_up_at_timeout["reason"] == "chase_caught_up"
 
     timed_out = v8_orderbook_chase_exit_decision(
         position, 0.50, -0.20, diagnostics, opened + timedelta(seconds=5)
@@ -516,7 +591,9 @@ def test_orderbook_chase_trailing_profit_waits_for_arm_and_drawdown() -> None:
     assert decision["required_profit_drawdown_usd"] == pytest.approx(0.15)
 
 
-def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(tmp_path) -> None:
+def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(
+    tmp_path, monkeypatch
+) -> None:
     start = datetime(2026, 8, 3, tzinfo=timezone.utc)
     current = market(start, "chase-market")
     engine, registry = make_engine(
@@ -526,6 +603,19 @@ def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(tmp_path) -
         max_entries_per_market=1,
     )
     engine.set_market(current, start)
+    original_summary = registry.summary
+
+    def fail_if_full_v8_feature_path_runs(*args, **kwargs):
+        raise AssertionError("orderbook chase must use the lightweight feature path")
+
+    monkeypatch.setattr(engine, "_futures_features", fail_if_full_v8_feature_path_runs)
+    monkeypatch.setattr(engine, "_cvd", fail_if_full_v8_feature_path_runs)
+    monkeypatch.setattr(engine, "_polymarket_ofi", fail_if_full_v8_feature_path_runs)
+
+    def fail_if_trade_recomputes_full_summary():
+        raise AssertionError("trade path must not recompute the full V8 history summary")
+
+    monkeypatch.setattr(registry, "summary", fail_if_trade_recomputes_full_summary)
 
     history_at = start + timedelta(seconds=9)
     engine.add_chainlink_tick(
@@ -564,6 +654,28 @@ def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(tmp_path) -
 
     assert engine.diagnostics["timestamp_basis"] == "received_at"
     assert engine.diagnostics["orderbook_chase"]["direction"] == "UP"
+    assert engine.diagnostics["runtime_profile"] == "orderbook_chase_lightweight"
+    assert engine.diagnostics["raw_event_archive_enabled"] is False
+    assert engine.diagnostics["futures_features_enabled"] is False
+    assert engine.diagnostics["model_metrics_enabled"] is False
+    assert engine.diagnostics["residual_model_enabled"] is False
+    assert engine.diagnostics["features"] == {}
+    assert "model" not in engine.diagnostics
+    assert "feature_contributions" not in engine.diagnostics
+    assert engine.diagnostics["model_probability_up"] == pytest.approx(
+        engine.diagnostics["formula_probability_up"]
+    )
+    assert registry.snapshots(current.condition_id) == []
+    engine.add_signal(signal("binance_futures", "trade", now, price=100_100))
+    assert engine.trades["binance_futures"] == []
+    registry.flush_raw_events(force=True)
+    assert registry.connection.execute(
+        "SELECT COUNT(*) AS value FROM btc_v8_raw_events"
+    ).fetchone()["value"] == 0
+    assert registry.connection.execute(
+        "SELECT COUNT(*) AS value FROM btc_v8_models"
+    ).fetchone()["value"] == 0
+    assert engine.dashboard_state()["model"] is None
     assert engine.position is not None
     assert engine.position.strategy_mode == "orderbook_chase"
     position_id = engine.position.position_id
@@ -594,10 +706,17 @@ def test_orderbook_chase_opens_from_spot_lead_and_sells_into_catchup(tmp_path) -
     assert closed is not None and closed.realized_pnl is not None
     assert closed.realized_pnl > 0
     assert closed.exit_reason == "chase_caught_up"
+    assert engine.dashboard_state()["summary"]["positions"] == 1
+    assert engine.dashboard_state()["summary"]["completed_positions"] == 1
+    assert engine.dashboard_state()["summary"]["wins"] == 1
     trades = registry.recent_trades()
     assert trades[0]["strategy_mode"] == "orderbook_chase"
     assert trades[0]["reason"] == "chase_caught_up"
     assert trades[1]["reason"] == "chase_buy"
+    model_version = registry.load_model("v8").version
+    monkeypatch.setattr(registry, "summary", original_summary)
+    engine.settle(current.slug, Direction.UP, start + timedelta(minutes=5))
+    assert registry.load_model("v8").version == model_version
     registry.close()
 
 
@@ -919,6 +1038,38 @@ def test_raw_books_coalesce_to_one_event_per_source_symbol_and_250ms_bucket(tmp_
         "2026-08-03T00:00:00.250000+00:00"
     )
     assert registry.decode_raw_payload('{"legacy":true}') == {"legacy": True}
+    registry.close()
+
+
+def test_snapshot_cleanup_removes_expired_snapshots_even_from_current_round(tmp_path) -> None:
+    now = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    start = now - timedelta(days=2)
+    current = market(start, "still-current")
+    engine, registry = make_engine(tmp_path)
+    engine.set_market(current, start)
+    for snapshot_second, created_at in (
+        (10, start + timedelta(seconds=10)),
+        (20, start + timedelta(seconds=20)),
+        (30, now - timedelta(hours=1)),
+    ):
+        registry.save_snapshot(
+            V8Snapshot(
+                market_id=current.condition_id,
+                snapshot_second=snapshot_second,
+                formula_probability=0.5,
+                model_probability=0.5,
+                features={"remaining_time": 0.5},
+                fresh_spot_exchanges=["binance", "coinbase"],
+                created_at=created_at,
+            )
+        )
+
+    assert engine.current_round is not None
+    assert engine.current_round.market_id == current.condition_id
+    assert registry.cleanup_expired_snapshots(24, now, batch_size=1) == 1
+    assert registry.cleanup_expired_snapshots(24, now, batch_size=1) == 1
+    assert registry.cleanup_expired_snapshots(24, now, batch_size=1) == 0
+    assert [snapshot.snapshot_second for snapshot in registry.snapshots(current.condition_id)] == [30]
     registry.close()
 
 
