@@ -51,6 +51,39 @@ def test_dynamic_sizing_controls_are_mutually_exclusive() -> None:
     assert "loss_cooldown_minutes: runtimeNumber('dynamicCooldownMinutes')" in html
 
 
+def test_weighted_dashboard_exposes_independent_shadow_strategy_views() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="assetWEIGHTED"' in html
+    assert 'id="weightedForm"' in html
+    assert 'id="weightedConfigStatus" role="status" aria-live="polite"' in html
+    assert 'id="weightedScoreChart"' in html
+    assert 'id="weightedComponents"' in html
+    assert 'id="weightedGates"' in html
+    assert 'id="weightedAttempts"' in html
+    assert 'id="weightedPositions"' in html
+    assert html.count("<th>信号时间</th>") == 2
+    assert html.count('class="weighted-lane-column">Observed 对照</th>') == 2
+    assert html.count('class="weighted-lane-column">P95 对照</th>') == 2
+    assert "function groupWeightedAttempts(attempts)" in html
+    assert "function groupWeightedPositions(positions, attemptGroups)" in html
+    assert "function fmtWeightedDateTime(value)" in html
+    assert "const attemptGroups = groupWeightedAttempts(attempts);" in html
+    assert "const positionGroups = groupWeightedPositions(positions, attemptGroups);" in html
+    assert "`${attemptGroups.length}组 / ${attempts.length}轨`" in html
+    assert "book_velocity_3s: '盘口3秒速度'" in html
+    assert "gap_velocity_3s: '价差3秒速度'" in html
+    assert "book_acceleration_3s: '盘口加速度'" in html
+    assert "gap_acceleration_3s: '价差加速度'" in html
+    assert "showWeightedSaveFeedback('保存中...', '', 0);" in html
+    assert "showWeightedSaveFeedback('已保存', 'success');" in html
+    assert "showWeightedSaveFeedback('保存失败', 'error');" in html
+    assert "btc_weighted: {" in html
+    assert "fetch('/api/config'," in html
+
+
 def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     html = (
         Path(__file__).resolve().parents[1] / "web" / "index.html"
@@ -71,28 +104,35 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert 'id="v8Contributions"' not in html
     assert 'id="v8Calibration"' not in html
     assert 'id="v8Form"' in html
-    assert 'id="v8AutoDecision" type="checkbox"' in html
-    assert 'id="v8OrderbookChase" type="checkbox"' in html
-    assert 'id="v8AutoEmergencyLoss" type="checkbox"' in html
-    assert "auto_decision_mode: $('v8AutoDecision').checked" in html
-    assert "orderbook_chase_mode: $('v8OrderbookChase').checked" in html
-    assert "auto_emergency_loss_enabled: $('v8AutoEmergencyLoss').checked" in html
-    assert "function syncV8DecisionModeState()" in html
-    assert "'v8MaxLoss'," in html
+    assert 'id="v8ConfigStatus" role="status" aria-live="polite"' in html
+    assert 'class="settings-save v8-save" id="saveV8"' in html
+    assert "showV8SaveFeedback('保存中...', '', 0);" in html
+    assert "showV8SaveFeedback('已保存', 'success');" in html
+    assert "showV8SaveFeedback('保存失败', 'error');" in html
+    assert "status.textContent = appliesNext ? '保存成功，下一场BTC生效' : '保存成功，已生效';" in html
+    assert 'id="v8AutoDecision"' not in html
+    assert 'id="v8OrderbookChase"' not in html
+    assert 'id="v8AutoEmergencyLoss"' not in html
+    assert 'id="v8MinDirectionBps"' in html
+    assert 'id="v8MinEffectiveEdge"' in html
+    assert 'id="v8MinBuyPrice" type="number" min="0" max="100" step="1" value="15"' in html
+    assert 'id="v8MaxBuyPrice" type="number" min="0" max="100" step="1" value="90"' in html
+    assert 'id="v8DirectionAverageWindow"' in html
+    assert 'id="v8BasisWindow"' in html
+    assert "Object.entries(v8Inputs).map(([field, id]) => [field, runtimeNumber(id)])" in html
     assert '<strong>持仓方向 / 均价</strong>' in html
     assert 'id="v8ChaseLead"' in html
     assert 'id="v8ChaseTarget"' in html
     assert 'id="v8ChaseProfitState"' in html
     assert "`${position.direction} · ${positionPrice}`" in html
     assert 'id="v8QuoteAmount" type="number" min="0.01" step="0.01" value="5"' in html
-    assert 'id="v8BuyEdge" type="number" min="0" step="0.01" value="5"' in html
     assert 'id="v8EvalMs" type="number" min="1" step="1" value="250"' in html
-    assert 'id="v8SnapshotRetentionHours" type="number" min="1" step="1" value="24"' in html
-    assert "'v8SnapshotSeconds'," in html
-    assert "'v8RetentionHours'," in html
-    assert "'v8SnapshotRetentionHours'," in html
-    assert "'v8MaxCorrection'," in html
-    assert "document.querySelectorAll('[data-v8-model-only], [data-v8-chase-unused]')" in html
+    assert 'id="v8SnapshotRetentionHours"' not in html
+    assert 'id="v8SnapshotSeconds"' not in html
+    assert "'v8RetentionHours'," not in html
+    assert "'v8SnapshotRetentionHours'," not in html
+    assert "'v8MaxCorrection'," not in html
+    assert "data-v8-model-only" not in html
     assert 'id="v8UseBinance" type="checkbox" checked' in html
     assert 'id="v8UseCoinbase" type="checkbox" checked' in html
     assert 'id="v8UseKraken" type="checkbox" checked' in html
@@ -102,14 +142,12 @@ def test_v8_dashboard_has_independent_health_trading_and_config_views() -> None:
     assert "const polymarketPrice = settlementTick?.price" in html
     assert "const chainlinkCurrentPrice = btcSnapshot?.settlement_tick?.price" in html
     assert "setText('v8ChainlinkCurrent', chainlinkCurrentPrice" in html
-    assert "buy_edge_cents: runtimeNumber('v8BuyEdge')" in html
-    assert "sell_edge_cents: runtimeNumber('v8SellEdge')" in html
-    assert "chase_take_profit_arm_usd: runtimeNumber('v8ChaseProfitArm')" in html
-    assert "chase_take_profit_drawdown_usd: runtimeNumber('v8ChaseProfitDrawdown')" in html
-    assert "chase_take_profit_drawdown_fraction: runtimeNumber('v8ChaseProfitFraction')" in html
-    assert "snapshot_retention_hours: runtimeNumber('v8SnapshotRetentionHours')" in html
+    assert "min_effective_edge_cents: 'v8MinEffectiveEdge'" in html
+    assert "chase_take_profit_arm_usd: 'v8ChaseProfitArm'" in html
+    assert "chase_take_profit_drawdown_usd: 'v8ChaseProfitDrawdown'" in html
+    assert "chase_take_profit_drawdown_fraction: 'v8ChaseProfitFraction'" in html
     assert "chase_chainlink_stale:" in html
-    assert "chase_profit_trailing: '追赶模式：可执行利润回撤止盈'" in html
+    assert "chase_profit_trailing: 'TWAP方向模式：可执行利润回撤止盈'" in html
 
 
 def test_compact_market_exposes_threshold_verification() -> None:
@@ -667,6 +705,61 @@ def test_btc_recovery_config_waits_only_for_next_btc_market_and_persists(tmp_pat
     assert reloaded.config.btc_recovery.exit_seconds_after_open == 270.0
 
 
+def test_btc_weighted_config_is_independent_and_activates_next_btc_market(tmp_path) -> None:
+    config = AppConfig(data_dir=tmp_path, btc_v8={"enabled": True})
+    hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, config)
+
+    def snapshot(asset: str, market_id: str, start: str, end: str) -> dict:
+        return {
+            "asset": asset,
+            "event": {"type": "market", "payload": {}},
+            "market": {
+                "asset": asset,
+                "condition_id": market_id,
+                "slug": f"{asset.lower()}-updown-5m-1",
+                "start_time": start,
+                "end_time": end,
+            },
+            "books": {},
+            "btc_weighted": {},
+        }
+
+    old_start, old_end = "2026-08-09T00:00:00Z", "2026-08-09T00:05:00Z"
+    asyncio.run(hub.publish(snapshot("BTC", "btc-old", old_start, old_end)))
+
+    response = hub.set_runtime_config(
+        {
+            "btc_weighted": {
+                "enabled": True,
+                "entry_score_threshold": 72,
+                "book_std_floor_cents": 0.75,
+                "gap_std_floor_bps": 0.2,
+            }
+        }
+    )
+
+    assert response["config_status"] == "pending_next_btc_market"
+    assert response["btc_weighted"]["enabled"] is False
+    assert response["pending_btc_weighted"]["enabled"] is True
+    assert response["pending_btc_weighted"]["entry_score_threshold"] == 72.0
+    assert response["pending_btc_v8"]["enabled"] is True
+
+    new_start, new_end = "2026-08-09T00:05:00Z", "2026-08-09T00:10:00Z"
+    asyncio.run(hub.publish(snapshot("BTC", "btc-new", new_start, new_end)))
+    assert hub.config.btc_weighted.enabled is True
+    assert hub.config.btc_v8.enabled is True
+    assert hub.pending_config is None
+
+    reloaded = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    assert reloaded.config.btc_weighted.enabled is True
+    assert reloaded.config.btc_weighted.entry_score_threshold == 72.0
+    assert reloaded.config.btc_weighted.book_std_floor_cents == 0.75
+    assert reloaded.config.btc_weighted.gap_std_floor_bps == 0.2
+    assert reloaded.config.btc_v8.enabled is True
+
+
 def test_real_trading_config_is_backward_compatible_and_activates_next_btc_market(
     tmp_path,
 ) -> None:
@@ -873,32 +966,34 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         {
             "btc_v8": {
                 "enabled": True,
-                "auto_decision_mode": True,
-                "orderbook_chase_mode": False,
-                "auto_emergency_loss_enabled": False,
                 "quote_amount_usd": 6,
-                "buy_edge_cents": 6.5,
-                "sell_edge_cents": 2.5,
+                "min_direction_signal_bps": 0.02,
+                "min_signal_sigma": 0.04,
+                "min_probability_move_points": 0.1,
+                "min_buy_price_cents": 20,
+                "max_buy_price_cents": 90,
+                "min_effective_edge_cents": 0.5,
                 "chase_take_profit_arm_usd": 0.30,
                 "chase_take_profit_drawdown_usd": 0.20,
                 "chase_take_profit_drawdown_fraction": 0.40,
                 "spot_exchanges": ["binance", "coinbase"],
                 "min_fresh_spot_exchanges": 2,
-                "snapshot_retention_hours": 12,
             }
         }
     )
     assert response["config_status"] == "pending_next_btc_market"
     assert response["btc_v8"]["enabled"] is False
     assert response["pending_btc_v8"]["enabled"] is True
-    assert response["pending_btc_v8"]["auto_decision_mode"] is True
-    assert response["pending_btc_v8"]["orderbook_chase_mode"] is False
-    assert response["pending_btc_v8"]["auto_emergency_loss_enabled"] is False
     assert response["pending_btc_v8"]["quote_amount_usd"] == 6
+    assert response["pending_btc_v8"]["min_direction_signal_bps"] == 0.02
+    assert response["pending_btc_v8"]["min_buy_price_cents"] == 20
+    assert response["pending_btc_v8"]["max_buy_price_cents"] == 90
+    assert response["pending_btc_v8"]["min_effective_edge_cents"] == 0.5
     assert response["pending_btc_v8"]["chase_take_profit_arm_usd"] == 0.30
     assert response["pending_btc_v8"]["chase_take_profit_drawdown_usd"] == 0.20
     assert response["pending_btc_v8"]["chase_take_profit_drawdown_fraction"] == 0.40
-    assert response["pending_btc_v8"]["snapshot_retention_hours"] == 12
+    assert "auto_decision_mode" not in response["pending_btc_v8"]
+    assert "snapshot_retention_hours" not in response["pending_btc_v8"]
     assert response["pending_pair_match"]["enabled"] is False
     assert response["pending_btc_recovery"]["enabled"] is False
     assert response["pending_btc_dynamic"]["enabled"] is False
@@ -928,16 +1023,15 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         engine = BtcV8Engine(config, registry)
         engine.set_market(next_market, start)
         assert engine.current_round is not None
-        assert engine.current_round.settings.auto_decision_mode is True
-        assert engine.current_round.settings.orderbook_chase_mode is False
-        assert engine.current_round.settings.auto_emergency_loss_enabled is False
         assert engine.current_round.settings.quote_amount_usd == 6
-        assert engine.current_round.settings.buy_edge_cents == 6.5
+        assert engine.current_round.settings.min_direction_signal_bps == 0.02
+        assert engine.current_round.settings.min_buy_price_cents == 20
+        assert engine.current_round.settings.max_buy_price_cents == 90
+        assert engine.current_round.settings.min_effective_edge_cents == 0.5
         assert engine.current_round.settings.chase_take_profit_arm_usd == 0.30
         assert engine.current_round.settings.chase_take_profit_drawdown_usd == 0.20
         assert engine.current_round.settings.chase_take_profit_drawdown_fraction == 0.40
         assert engine.current_round.settings.spot_exchanges == ["binance", "coinbase"]
-        assert engine.current_round.settings.snapshot_retention_hours == 12
     finally:
         registry.close()
 
@@ -945,15 +1039,15 @@ def test_btc_v8_config_persists_and_applies_before_next_btc_round(tmp_path) -> N
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert reloaded.config.btc_v8.enabled is True
-    assert reloaded.config.btc_v8.auto_decision_mode is True
-    assert reloaded.config.btc_v8.orderbook_chase_mode is False
-    assert reloaded.config.btc_v8.auto_emergency_loss_enabled is False
     assert reloaded.config.btc_v8.quote_amount_usd == 6
+    assert reloaded.config.btc_v8.min_direction_signal_bps == 0.02
+    assert reloaded.config.btc_v8.min_buy_price_cents == 20
+    assert reloaded.config.btc_v8.max_buy_price_cents == 90
+    assert reloaded.config.btc_v8.min_effective_edge_cents == 0.5
     assert reloaded.config.btc_v8.chase_take_profit_arm_usd == 0.30
     assert reloaded.config.btc_v8.chase_take_profit_drawdown_usd == 0.20
     assert reloaded.config.btc_v8.chase_take_profit_drawdown_fraction == 0.40
     assert reloaded.config.btc_v8.spot_exchanges == ["binance", "coinbase"]
-    assert reloaded.config.btc_v8.snapshot_retention_hours == 12
     assert reloaded.config.pair_match.enabled is False
     assert reloaded.config.btc_recovery.enabled is False
     assert reloaded.config.btc_dynamic.enabled is False

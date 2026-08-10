@@ -75,18 +75,16 @@ def test_v8_pauses_standard_entry_for_every_asset() -> None:
     assert standard_entry_enabled(config, "ETH") is False
 
 
-def test_orderbook_chase_collects_spot_but_pauses_futures_signals() -> None:
-    config = AppConfig(
-        btc_v8={"enabled": True, "orderbook_chase_mode": True}
-    )
+def test_v8_direction_mode_collects_spot_but_pauses_futures_signals() -> None:
+    config = AppConfig(btc_v8={"enabled": True})
 
     assert btc_v8_signal_source_enabled(config, "binance") is True
     assert btc_v8_signal_source_enabled(config, "coinbase") is True
     assert btc_v8_signal_source_enabled(config, "kraken") is True
     assert btc_v8_signal_source_enabled(config, "binance_futures") is False
 
-    config.btc_v8.orderbook_chase_mode = False
-    assert btc_v8_signal_source_enabled(config, "binance_futures") is True
+    config.btc_v8.enabled = False
+    assert btc_v8_signal_source_enabled(config, "binance") is False
 
 
 def interval_market(start: datetime, *, condition_id: str = "m1", threshold: float | None = None) -> MarketState:

@@ -89,6 +89,23 @@ class DashboardHub:
                 "recent_orders": [],
                 "recent_rounds": [],
             },
+            "btc_weighted": {
+                "mode": "SHADOW_ONLY",
+                "enabled": self.config.btc_weighted.enabled,
+                "status": "starting",
+                "last_reason": "starting",
+                "config": self.config.btc_weighted.model_dump(mode="json"),
+                "round": None,
+                "scores": {"UP": None, "DOWN": None},
+                "components": {"UP": {}, "DOWN": {}},
+                "weights": {},
+                "confirmations": {},
+                "positions": [],
+                "recent_attempts": [],
+                "recent_positions": [],
+                "score_history": [],
+                "summary": {},
+            },
             "btc_v8": {
                 "enabled": self.config.btc_v8.enabled,
                 "status": "starting",
@@ -101,6 +118,34 @@ class DashboardHub:
                 "candidates": {},
                 "summary": {},
                 "recent_trades": [],
+            },
+            "orderbook_chase": {
+                "mode": "SHADOW_ONLY",
+                "enabled": self.config.orderbook_chase.enabled,
+                "status": "starting",
+                "last_reason": "starting",
+                "paused": False,
+                "emergency_stopped": False,
+                "signer": {
+                    "ephemeral": True,
+                    "connected": False,
+                    "error": None,
+                    "private_key_persisted": False,
+                    "post_order_available": False,
+                },
+                "config": self.config.orderbook_chase.model_dump(mode="json"),
+                "latency": {},
+                "strategy": {},
+                "signal_source": {
+                    "engine": "btc_v8",
+                    "shared_instance": True,
+                    "duplicate_v8_engine": False,
+                    "confirmed_buy_results": True,
+                    "lane_local_sell_state": True,
+                },
+                "positions": [],
+                "recent_attempts": [],
+                "summary": {},
             },
             "real_trading": {
                 "status": "starting",
@@ -123,7 +168,9 @@ class DashboardHub:
         self.pair_match_state = self.latest["pair_match"]
         self.btc_recovery_state = self.latest["btc_recovery"]
         self.btc_dynamic_state = self.latest["btc_dynamic"]
+        self.btc_weighted_state = self.latest["btc_weighted"]
         self.btc_v8_state = self.latest["btc_v8"]
+        self.orderbook_chase_state = self.latest["orderbook_chase"]
         self.real_trading_state = self.latest["real_trading"]
         self.events: list[dict[str, Any]] = []
         self.events_by_asset: dict[str, list[dict[str, Any]]] = {
@@ -255,9 +302,15 @@ class DashboardHub:
             "btc_dynamic_statistics_reset",
             "btc_dynamic_model_reset",
             "btc_dynamic_model_reset_pending",
+            "btc_weighted_attempt",
+            "btc_weighted_position",
+            "btc_weighted_round",
+            "btc_weighted_settlement",
             "btc_v8_trade",
             "btc_v8_round",
             "btc_v8_settlement",
+            "orderbook_chase_attempt",
+            "orderbook_chase_position",
         }:
             return {"type": event_type, "payload": {}}
         return event
@@ -345,7 +398,9 @@ class DashboardHub:
             "pair_match": self.config.pair_match.model_dump(mode="json"),
             "btc_recovery": self.config.btc_recovery.model_dump(mode="json"),
             "btc_dynamic": self.config.btc_dynamic.model_dump(mode="json"),
+            "btc_weighted": self.config.btc_weighted.model_dump(mode="json"),
             "btc_v8": self.config.btc_v8.model_dump(mode="json"),
+            "orderbook_chase": self.config.orderbook_chase.model_dump(mode="json"),
             "real_trading": self.config.real_trading.model_dump(mode="json"),
         }
 
@@ -364,7 +419,9 @@ class DashboardHub:
             "pending_pair_match": pending.get("pair_match"),
             "pending_btc_recovery": pending.get("btc_recovery"),
             "pending_btc_dynamic": pending.get("btc_dynamic"),
+            "pending_btc_weighted": pending.get("btc_weighted"),
             "pending_btc_v8": pending.get("btc_v8"),
+            "pending_orderbook_chase": pending.get("orderbook_chase"),
             "pending_real_trading": pending.get("real_trading"),
         }
 
@@ -389,8 +446,12 @@ class DashboardHub:
                 recovery_payload.update(active.get("btc_recovery") or {})
                 dynamic_payload = self.config.btc_dynamic.model_dump()
                 dynamic_payload.update(active.get("btc_dynamic") or {})
+                weighted_payload = self.config.btc_weighted.model_dump()
+                weighted_payload.update(active.get("btc_weighted") or {})
                 v8_payload = self.config.btc_v8.model_dump()
                 v8_payload.update(active.get("btc_v8") or {})
+                chase_payload = self.config.orderbook_chase.model_dump()
+                chase_payload.update(active.get("orderbook_chase") or {})
                 real_payload = self.config.real_trading.model_dump()
                 real_payload.update(active.get("real_trading") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
@@ -398,7 +459,11 @@ class DashboardHub:
                 pair_match = type(self.config.pair_match).model_validate(pair_payload)
                 btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
                 btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
+                btc_weighted = type(self.config.btc_weighted).model_validate(weighted_payload)
                 btc_v8 = type(self.config.btc_v8).model_validate(v8_payload)
+                orderbook_chase = type(self.config.orderbook_chase).model_validate(
+                    chase_payload
+                )
                 real_trading = type(self.config.real_trading).model_validate(real_payload)
             except (TypeError, ValueError):
                 pass
@@ -408,7 +473,9 @@ class DashboardHub:
                 self.config.pair_match = pair_match
                 self.config.btc_recovery = btc_recovery
                 self.config.btc_dynamic = btc_dynamic
+                self.config.btc_weighted = btc_weighted
                 self.config.btc_v8 = btc_v8
+                self.config.orderbook_chase = orderbook_chase
                 self.config.real_trading = real_trading
 
         pending = payload.get("pending")
@@ -424,8 +491,12 @@ class DashboardHub:
                 recovery_payload.update(pending.get("btc_recovery") or {})
                 dynamic_payload = self.config.btc_dynamic.model_dump()
                 dynamic_payload.update(pending.get("btc_dynamic") or {})
+                weighted_payload = self.config.btc_weighted.model_dump()
+                weighted_payload.update(pending.get("btc_weighted") or {})
                 v8_payload = self.config.btc_v8.model_dump()
                 v8_payload.update(pending.get("btc_v8") or {})
+                chase_payload = self.config.orderbook_chase.model_dump()
+                chase_payload.update(pending.get("orderbook_chase") or {})
                 real_payload = self.config.real_trading.model_dump()
                 real_payload.update(pending.get("real_trading") or {})
                 strategy = type(self.config.strategy).model_validate(strategy_payload)
@@ -433,7 +504,11 @@ class DashboardHub:
                 pair_match = type(self.config.pair_match).model_validate(pair_payload)
                 btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
                 btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
+                btc_weighted = type(self.config.btc_weighted).model_validate(weighted_payload)
                 btc_v8 = type(self.config.btc_v8).model_validate(v8_payload)
+                orderbook_chase = type(self.config.orderbook_chase).model_validate(
+                    chase_payload
+                )
                 real_trading = type(self.config.real_trading).model_validate(real_payload)
             except (TypeError, ValueError):
                 return
@@ -443,7 +518,9 @@ class DashboardHub:
                 "pair_match": pair_match.model_dump(),
                 "btc_recovery": btc_recovery.model_dump(),
                 "btc_dynamic": btc_dynamic.model_dump(),
+                "btc_weighted": btc_weighted.model_dump(),
                 "btc_v8": btc_v8.model_dump(),
+                "orderbook_chase": orderbook_chase.model_dump(),
                 "real_trading": real_trading.model_dump(),
             }
             scope = payload.get("pending_scope")
@@ -464,7 +541,9 @@ class DashboardHub:
                 "pair_match": self.config.pair_match.model_dump(),
                 "btc_recovery": self.config.btc_recovery.model_dump(),
                 "btc_dynamic": self.config.btc_dynamic.model_dump(),
+                "btc_weighted": self.config.btc_weighted.model_dump(),
                 "btc_v8": self.config.btc_v8.model_dump(),
+                "orderbook_chase": self.config.orderbook_chase.model_dump(),
                 "real_trading": self.config.real_trading.model_dump(),
             },
             "pending": self.pending_config,
@@ -519,8 +598,14 @@ class DashboardHub:
         self.config.btc_dynamic = type(self.config.btc_dynamic).model_validate(
             self.pending_config["btc_dynamic"]
         )
+        self.config.btc_weighted = type(self.config.btc_weighted).model_validate(
+            self.pending_config["btc_weighted"]
+        )
         self.config.btc_v8 = type(self.config.btc_v8).model_validate(
             self.pending_config["btc_v8"]
+        )
+        self.config.orderbook_chase = type(self.config.orderbook_chase).model_validate(
+            self.pending_config["orderbook_chase"]
         )
         self.config.real_trading = type(self.config.real_trading).model_validate(
             self.pending_config["real_trading"]
@@ -538,7 +623,9 @@ class DashboardHub:
         pair_update = payload.get("pair_match")
         recovery_update = payload.get("btc_recovery")
         dynamic_update = payload.get("btc_dynamic")
+        weighted_update = payload.get("btc_weighted")
         v8_update = payload.get("btc_v8")
+        chase_update = payload.get("orderbook_chase")
         real_update = payload.get("real_trading")
         if strategy_update is not None and not isinstance(strategy_update, dict):
             raise ValueError("strategy must be an object")
@@ -550,8 +637,12 @@ class DashboardHub:
             raise ValueError("btc_recovery must be an object")
         if dynamic_update is not None and not isinstance(dynamic_update, dict):
             raise ValueError("btc_dynamic must be an object")
+        if weighted_update is not None and not isinstance(weighted_update, dict):
+            raise ValueError("btc_weighted must be an object")
         if v8_update is not None and not isinstance(v8_update, dict):
             raise ValueError("btc_v8 must be an object")
+        if chase_update is not None and not isinstance(chase_update, dict):
+            raise ValueError("orderbook_chase must be an object")
         if real_update is not None and not isinstance(real_update, dict):
             raise ValueError("real_trading must be an object")
         if not any(
@@ -561,12 +652,14 @@ class DashboardHub:
                 pair_update,
                 recovery_update,
                 dynamic_update,
+                weighted_update,
                 v8_update,
+                chase_update,
                 real_update,
             )
         ):
             raise ValueError(
-                "strategy, risk, pair_match, btc_recovery, btc_dynamic, btc_v8, or real_trading settings are required"
+                "strategy, risk, pair_match, btc_recovery, btc_dynamic, btc_weighted, btc_v8, orderbook_chase, or real_trading settings are required"
             )
 
         strategy_fields = {
@@ -627,40 +720,9 @@ class DashboardHub:
             "volatility_floor_bps",
             "max_probability_correction_points",
         }
-        v8_fields = {
-            "enabled",
-            "auto_decision_mode",
-            "orderbook_chase_mode",
-            "auto_emergency_loss_enabled",
-            "quote_amount_usd",
-            "buy_edge_cents",
-            "sell_edge_cents",
-            "slippage_reserve_cents",
-            "entry_end_seconds",
-            "sell_end_seconds",
-            "buy_confirmation_seconds",
-            "buy_confirmation_updates",
-            "sell_confirmation_seconds",
-            "sell_confirmation_updates",
-            "reentry_cooldown_seconds",
-            "max_entries_per_market",
-            "max_loss_usd",
-            "chase_take_profit_arm_usd",
-            "chase_take_profit_drawdown_usd",
-            "chase_take_profit_drawdown_fraction",
-            "evaluation_interval_ms",
-            "snapshot_interval_seconds",
-            "spot_exchanges",
-            "min_fresh_spot_exchanges",
-            "spot_stale_seconds",
-            "chainlink_stale_seconds",
-            "raw_retention_hours",
-            "snapshot_retention_hours",
-            "short_volatility_window_seconds",
-            "long_volatility_window_seconds",
-            "volatility_floor_bps",
-            "max_probability_correction_points",
-        }
+        weighted_fields = set(type(self.config.btc_weighted).model_fields)
+        v8_fields = set(type(self.config.btc_v8).model_fields)
+        chase_fields = set(type(self.config.orderbook_chase).model_fields)
         real_fields = {
             "enabled",
             "order_quantity",
@@ -675,7 +737,9 @@ class DashboardHub:
         unexpected_pair = set(pair_update or {}) - pair_fields
         unexpected_recovery = set(recovery_update or {}) - recovery_fields
         unexpected_dynamic = set(dynamic_update or {}) - dynamic_fields
+        unexpected_weighted = set(weighted_update or {}) - weighted_fields
         unexpected_v8 = set(v8_update or {}) - v8_fields
+        unexpected_chase = set(chase_update or {}) - chase_fields
         unexpected_real = set(real_update or {}) - real_fields
         if any(
             (
@@ -684,7 +748,9 @@ class DashboardHub:
                 unexpected_pair,
                 unexpected_recovery,
                 unexpected_dynamic,
+                unexpected_weighted,
                 unexpected_v8,
+                unexpected_chase,
                 unexpected_real,
             )
         ):
@@ -694,7 +760,9 @@ class DashboardHub:
                 | unexpected_pair
                 | unexpected_recovery
                 | unexpected_dynamic
+                | unexpected_weighted
                 | unexpected_v8
+                | unexpected_chase
                 | unexpected_real
             )
             raise ValueError(f"unsupported runtime settings: {', '.join(names)}")
@@ -714,10 +782,18 @@ class DashboardHub:
             pending.get("btc_dynamic") or self.config.btc_dynamic.model_dump()
         )
         dynamic_payload.update(dynamic_update or {})
+        weighted_payload = dict(
+            pending.get("btc_weighted") or self.config.btc_weighted.model_dump()
+        )
+        weighted_payload.update(weighted_update or {})
         v8_payload = dict(
             pending.get("btc_v8") or self.config.btc_v8.model_dump()
         )
         v8_payload.update(v8_update or {})
+        chase_payload = dict(
+            pending.get("orderbook_chase") or self.config.orderbook_chase.model_dump()
+        )
+        chase_payload.update(chase_update or {})
         real_payload = dict(
             pending.get("real_trading") or self.config.real_trading.model_dump()
         )
@@ -741,7 +817,9 @@ class DashboardHub:
         pair_match = type(self.config.pair_match).model_validate(pair_payload)
         btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
         btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
+        btc_weighted = type(self.config.btc_weighted).model_validate(weighted_payload)
         btc_v8 = type(self.config.btc_v8).model_validate(v8_payload)
+        orderbook_chase = type(self.config.orderbook_chase).model_validate(chase_payload)
         real_trading = type(self.config.real_trading).model_validate(real_payload)
         self.pending_config = {
             "strategy": strategy.model_dump(),
@@ -749,10 +827,14 @@ class DashboardHub:
             "pair_match": pair_match.model_dump(),
             "btc_recovery": btc_recovery.model_dump(),
             "btc_dynamic": btc_dynamic.model_dump(),
+            "btc_weighted": btc_weighted.model_dump(),
             "btc_v8": btc_v8.model_dump(),
+            "orderbook_chase": orderbook_chase.model_dump(),
             "real_trading": real_trading.model_dump(),
         }
-        btc_only = bool(recovery_update or dynamic_update or v8_update or real_update) and not any(
+        btc_only = bool(
+            recovery_update or dynamic_update or weighted_update or v8_update or chase_update or real_update
+        ) and not any(
             (strategy_update, risk_update, pair_update)
         )
         self.pending_config_scope = "btc" if btc_only else "aligned"
@@ -843,9 +925,15 @@ class DashboardHub:
             btc_dynamic = snapshot.pop("btc_dynamic", None)
             if isinstance(btc_dynamic, dict) and btc_dynamic:
                 self.btc_dynamic_state = btc_dynamic
+            btc_weighted = snapshot.pop("btc_weighted", None)
+            if isinstance(btc_weighted, dict) and btc_weighted:
+                self.btc_weighted_state = btc_weighted
             btc_v8 = snapshot.pop("btc_v8", None)
             if isinstance(btc_v8, dict) and btc_v8:
                 self.btc_v8_state = btc_v8
+            orderbook_chase = snapshot.pop("orderbook_chase", None)
+            if isinstance(orderbook_chase, dict) and orderbook_chase:
+                self.orderbook_chase_state = orderbook_chase
             real_trading = snapshot.pop("real_trading", None)
             if isinstance(real_trading, dict) and real_trading:
                 self.real_trading_state = real_trading
@@ -870,7 +958,9 @@ class DashboardHub:
             combined["pair_match"] = self.pair_match_state
             combined["btc_recovery"] = self.btc_recovery_state
             combined["btc_dynamic"] = self.btc_dynamic_state
+            combined["btc_weighted"] = self.btc_weighted_state
             combined["btc_v8"] = self.btc_v8_state
+            combined["orderbook_chase"] = self.orderbook_chase_state
             combined["real_trading"] = self.real_trading_state
             combined["ws_url"] = self.ws_url
             combined["control_token"] = self.control_token
@@ -958,6 +1048,10 @@ class DashboardHub:
         self.control_commands.put((f"real_trading_{command}", True))
         return {"accepted": True, "command": command}
 
+    def request_orderbook_chase_control(self, command: str) -> dict[str, Any]:
+        self.control_commands.put((f"orderbook_chase_{command}", True))
+        return {"accepted": True, "command": command, "mode": "SHADOW_ONLY"}
+
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     hub: DashboardHub
@@ -997,6 +1091,20 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/orderbook-chase/"):
+            if self.headers.get("X-Polybtc-Control-Token") != self.hub.control_token:
+                self.send_json(403, {"error": "invalid control token"})
+                return
+            action = self.path.removeprefix("/api/orderbook-chase/")
+            allowed = {"pause", "resume", "emergency-stop"}
+            if action not in allowed:
+                self.send_error(404)
+                return
+            self.send_json(
+                202,
+                self.hub.request_orderbook_chase_control(action.replace("-", "_")),
+            )
+            return
         if self.path.startswith("/api/real-trading/"):
             if self.headers.get("X-Polybtc-Control-Token") != self.hub.control_token:
                 self.send_json(403, {"error": "invalid control token"})

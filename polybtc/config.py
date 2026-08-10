@@ -377,6 +377,96 @@ class BtcDynamicConfig(BaseModel):
         return self
 
 
+class BtcWeightedConfig(BaseModel):
+    enabled: bool = False
+    quote_amount_usd: float = 5.0
+    entry_score_threshold: float = 70.0
+    entry_lead_points: float = 8.0
+    entry_confirmation_seconds: float = 2.0
+    entry_confirmation_updates: int = 3
+    max_entries_per_market: int = 1
+    min_entry_remaining_seconds: float = 10.0
+    min_hold_seconds: float = 15.0
+    exit_score_threshold: float = 70.0
+    exit_lead_points: float = 10.0
+    exit_confirmation_seconds: float = 3.0
+    exit_confirmation_updates: int = 3
+    min_buy_price_cents: float = 15.0
+    max_buy_price_cents: float = 90.0
+    max_spread_cents: float = 5.0
+    chainlink_max_age_seconds: float = 2.0
+    book_max_age_seconds: float = 1.0
+    max_one_tick_loss_usd: float = 0.50
+    short_volatility_window_seconds: int = 10
+    long_volatility_window_seconds: int = 60
+    volatility_floor_bps: float = 0.5
+    book_std_floor_cents: float = 0.5
+    gap_std_floor_bps: float = 0.1
+    sample_tolerance_seconds: float = 1.0
+    weight_ema_seconds: float = 3.0
+    score_history_seconds: int = 300
+
+    @field_validator(
+        "quote_amount_usd",
+        "entry_confirmation_seconds",
+        "min_entry_remaining_seconds",
+        "min_hold_seconds",
+        "exit_confirmation_seconds",
+        "max_spread_cents",
+        "chainlink_max_age_seconds",
+        "book_max_age_seconds",
+        "max_one_tick_loss_usd",
+        "volatility_floor_bps",
+        "book_std_floor_cents",
+        "gap_std_floor_bps",
+        "sample_tolerance_seconds",
+        "weight_ema_seconds",
+    )
+    @classmethod
+    def positive_weighted_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC weighted values must be positive")
+        return value
+
+    @field_validator(
+        "entry_score_threshold",
+        "entry_lead_points",
+        "exit_score_threshold",
+        "exit_lead_points",
+    )
+    @classmethod
+    def weighted_score_range(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("BTC weighted score thresholds must be within 0-100")
+        return value
+
+    @field_validator(
+        "entry_confirmation_updates",
+        "exit_confirmation_updates",
+        "max_entries_per_market",
+        "short_volatility_window_seconds",
+        "long_volatility_window_seconds",
+        "score_history_seconds",
+    )
+    @classmethod
+    def positive_weighted_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("BTC weighted counts must be at least one")
+        return value
+
+    @model_validator(mode="after")
+    def valid_weighted_shape(self) -> "BtcWeightedConfig":
+        if not 0 <= self.min_buy_price_cents < self.max_buy_price_cents <= 100:
+            raise ValueError("BTC weighted buy price range must be within 0-100 cents")
+        if self.min_entry_remaining_seconds > 300:
+            raise ValueError("BTC weighted entry remaining time must be at most 300 seconds")
+        if self.short_volatility_window_seconds >= self.long_volatility_window_seconds:
+            raise ValueError("BTC weighted short volatility window must be below long window")
+        if self.long_volatility_window_seconds > self.score_history_seconds:
+            raise ValueError("BTC weighted long volatility window exceeds score history")
+        return self
+
+
 class RealTradingConfig(BaseModel):
     enabled: bool = False
     order_quantity: float = 1.0
@@ -407,52 +497,92 @@ class RealTradingConfig(BaseModel):
 
 class BtcV8Config(BaseModel):
     enabled: bool = False
-    auto_decision_mode: bool = False
-    orderbook_chase_mode: bool = False
-    auto_emergency_loss_enabled: bool = False
     quote_amount_usd: float = 5.0
-    buy_edge_cents: float = 5.0
-    sell_edge_cents: float = 2.0
-    slippage_reserve_cents: float = 1.35
-    entry_end_seconds: float = 285.0
-    sell_end_seconds: float = 298.0
-    buy_confirmation_seconds: float = 2.0
+    slippage_reserve_cents: float = 0.5
+    exit_fee_reserve_fraction: float = 0.0
+    min_direction_signal_bps: float = 0.03
+    min_signal_sigma: float = 0.05
+    min_probability_move_points: float = 0.2
+    min_target_direction_probability: float = 0.40
+    min_supporting_sources: int = 1
+    min_buy_price_cents: float = 15.0
+    max_buy_price_cents: float = 90.0
+    min_effective_edge_cents: float = 0.5
+    low_price_penalty_start_cents: float = 45.0
+    low_price_penalty_weight: float = 1.5
+    buy_score_price_weight: float = 1.0
+    buy_score_edge_weight: float = 0.30
+    max_one_tick_loss_usd: float = 0.50
+    buy_confirmation_seconds: float = 1.0
     buy_confirmation_updates: int = 2
-    sell_confirmation_seconds: float = 1.0
-    sell_confirmation_updates: int = 2
+    sell_confirmation_seconds: float = 0.50
+    sell_confirmation_updates: int = 1
+    reversal_confirmation_seconds: float = 10.0
+    reversal_confirmation_updates: int = 2
     reentry_cooldown_seconds: float = 3.0
-    max_entries_per_market: int = 3
-    max_loss_usd: float = 2.5
+    max_entries_per_market: int = 2
+    min_entry_remaining_seconds: float = 60.0
+    min_hold_seconds: float = 30.0
+    max_hold_seconds: float = 90.0
+    min_profit_usd: float = 0.05
+    hard_stop_loss_usd: float = 1.50
+    emergency_stop_loss_usd: float = 2.00
     chase_take_profit_arm_usd: float = 0.25
     chase_take_profit_drawdown_usd: float = 0.15
     chase_take_profit_drawdown_fraction: float = 0.35
+    polymarket_trend_window_seconds: float = 3.0
+    polymarket_trend_min_span_seconds: float = 1.0
+    chainlink_max_age_seconds: float = 5.0
+    signal_retention_seconds: float = 65.0
+    direction_short_seconds: int = 10
+    direction_long_seconds: int = 30
+    direction_average_window_seconds: float = 30.0
+    direction_average_min_span_seconds: float = 20.0
+    direction_average_min_samples: int = 15
+    direction_average_max_sample_gap_seconds: float = 2.5
+    basis_window_seconds: float = 300.0
+    basis_exclusion_seconds: float = 10.0
+    basis_min_span_seconds: float = 60.0
+    basis_min_samples: int = 30
+    basis_max_pair_age_seconds: float = 1.0
+    basis_mad_multiplier: float = 6.0
+    basis_min_clip_bps: float = 2.0
+    basis_max_clip_bps: float = 10.0
     evaluation_interval_ms: int = 250
-    snapshot_interval_seconds: int = 1
     spot_exchanges: list[Literal["binance", "coinbase", "kraken"]] = Field(
         default_factory=lambda: ["binance", "coinbase", "kraken"]
     )
-    min_fresh_spot_exchanges: int = 2
+    min_fresh_spot_exchanges: int = 1
     spot_stale_seconds: float = 2.0
-    chainlink_stale_seconds: float = 10.0
-    raw_retention_hours: float = 24.0
-    snapshot_retention_hours: float = 24.0
     short_volatility_window_seconds: int = 10
     long_volatility_window_seconds: int = 60
     volatility_floor_bps: float = 0.5
-    max_probability_correction_points: float = 10.0
 
     @field_validator(
         "quote_amount_usd",
         "buy_confirmation_seconds",
         "sell_confirmation_seconds",
+        "reversal_confirmation_seconds",
         "reentry_cooldown_seconds",
-        "max_loss_usd",
+        "min_entry_remaining_seconds",
+        "min_hold_seconds",
+        "max_hold_seconds",
+        "hard_stop_loss_usd",
+        "emergency_stop_loss_usd",
         "chase_take_profit_arm_usd",
         "chase_take_profit_drawdown_usd",
+        "polymarket_trend_window_seconds",
+        "polymarket_trend_min_span_seconds",
+        "chainlink_max_age_seconds",
+        "signal_retention_seconds",
+        "direction_average_window_seconds",
+        "direction_average_min_span_seconds",
+        "direction_average_max_sample_gap_seconds",
+        "basis_window_seconds",
+        "basis_min_span_seconds",
+        "basis_max_pair_age_seconds",
+        "max_one_tick_loss_usd",
         "spot_stale_seconds",
-        "chainlink_stale_seconds",
-        "raw_retention_hours",
-        "snapshot_retention_hours",
     )
     @classmethod
     def positive_v8_value(cls, value: float) -> float:
@@ -461,11 +591,20 @@ class BtcV8Config(BaseModel):
         return value
 
     @field_validator(
-        "buy_edge_cents",
-        "sell_edge_cents",
         "slippage_reserve_cents",
+        "min_direction_signal_bps",
+        "min_signal_sigma",
+        "min_probability_move_points",
+        "min_effective_edge_cents",
+        "low_price_penalty_weight",
+        "buy_score_price_weight",
+        "buy_score_edge_weight",
         "volatility_floor_bps",
-        "max_probability_correction_points",
+        "min_profit_usd",
+        "basis_exclusion_seconds",
+        "basis_mad_multiplier",
+        "basis_min_clip_bps",
+        "basis_max_clip_bps",
     )
     @classmethod
     def non_negative_v8_value(cls, value: float) -> float:
@@ -473,27 +612,35 @@ class BtcV8Config(BaseModel):
             raise ValueError("BTC V8 thresholds must not be negative")
         return value
 
-    @field_validator("chase_take_profit_drawdown_fraction")
+    @field_validator(
+        "min_target_direction_probability",
+        "chase_take_profit_drawdown_fraction",
+    )
     @classmethod
-    def valid_v8_fraction(cls, value: float) -> float:
+    def valid_v8_probability(cls, value: float) -> float:
         if not 0 < value <= 1:
-            raise ValueError("BTC V8 drawdown fraction must be within (0, 1]")
+            raise ValueError("BTC V8 probabilities must be within (0, 1]")
         return value
 
-    @field_validator("entry_end_seconds", "sell_end_seconds")
+    @field_validator("exit_fee_reserve_fraction")
     @classmethod
-    def valid_v8_market_second(cls, value: float) -> float:
-        if not 0 < value <= 300:
-            raise ValueError("BTC V8 market seconds must be within (0, 300]")
+    def valid_v8_reserve_fraction(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("BTC V8 exit fee reserve fraction must be within [0, 1]")
         return value
 
     @field_validator(
         "buy_confirmation_updates",
         "sell_confirmation_updates",
+        "reversal_confirmation_updates",
         "max_entries_per_market",
+        "min_supporting_sources",
         "min_fresh_spot_exchanges",
         "evaluation_interval_ms",
-        "snapshot_interval_seconds",
+        "direction_short_seconds",
+        "direction_long_seconds",
+        "direction_average_min_samples",
+        "basis_min_samples",
         "short_volatility_window_seconds",
         "long_volatility_window_seconds",
     )
@@ -513,18 +660,73 @@ class BtcV8Config(BaseModel):
 
     @model_validator(mode="after")
     def valid_v8_shape(self) -> "BtcV8Config":
-        if self.auto_decision_mode and self.orderbook_chase_mode:
-            raise ValueError("BTC V8 automatic and orderbook chase modes are mutually exclusive")
-        if self.entry_end_seconds >= self.sell_end_seconds:
-            raise ValueError("BTC V8 entry end must be before sell end")
+        if not 0 <= self.min_buy_price_cents < self.max_buy_price_cents <= 100:
+            raise ValueError("BTC V8 buy price range must be within 0-100 cents")
+        if not 0 <= self.low_price_penalty_start_cents <= 100:
+            raise ValueError("BTC V8 low-price penalty start must be within 0-100 cents")
+        if self.min_probability_move_points > 100:
+            raise ValueError("BTC V8 probability move must be at most 100 points")
+        if self.min_entry_remaining_seconds > 300:
+            raise ValueError("BTC V8 entry remaining time must be at most 300 seconds")
+        if self.min_hold_seconds > self.max_hold_seconds:
+            raise ValueError("BTC V8 minimum hold must not exceed maximum hold")
+        if self.polymarket_trend_min_span_seconds > self.polymarket_trend_window_seconds:
+            raise ValueError("BTC V8 trend span must not exceed its window")
+        if self.direction_short_seconds >= self.direction_long_seconds:
+            raise ValueError("BTC V8 direction short window must be below long window")
+        if self.direction_average_min_span_seconds > self.direction_average_window_seconds:
+            raise ValueError("BTC V8 direction average span must not exceed its window")
+        if self.basis_exclusion_seconds >= self.basis_window_seconds:
+            raise ValueError("BTC V8 basis exclusion must be below its window")
+        if self.basis_min_clip_bps > self.basis_max_clip_bps:
+            raise ValueError("BTC V8 basis minimum clip must not exceed maximum clip")
         if self.short_volatility_window_seconds >= self.long_volatility_window_seconds:
             raise ValueError("BTC V8 short volatility window must be below long window")
         if self.min_fresh_spot_exchanges > len(self.spot_exchanges):
             raise ValueError("BTC V8 fresh exchange minimum exceeds configured exchanges")
-        if self.max_probability_correction_points > 100:
-            raise ValueError("BTC V8 probability correction must be at most 100 points")
+        if self.min_supporting_sources > len(self.spot_exchanges):
+            raise ValueError("BTC V8 supporting source minimum exceeds configured exchanges")
         return self
 
+class OrderbookChaseConfig(BaseModel):
+    """High-fidelity shadow execution settings; strategy decisions come from BTC V8."""
+
+    enabled: bool = False
+    latency_probe_interval_seconds: float = 2.0
+    latency_window_minutes: float = 15.0
+    latency_min_samples: int = 30
+    latency_max_age_seconds: float = 5.0
+    readiness_required_roundtrips: int = 200
+    observed_survival_threshold: float = 0.90
+    p95_survival_threshold: float = 0.80
+
+    @field_validator(
+        "latency_probe_interval_seconds",
+        "latency_window_minutes",
+        "latency_max_age_seconds",
+    )
+    @classmethod
+    def positive_chase_latency_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("orderbook chase latency values must be positive")
+        return value
+
+    @field_validator(
+        "latency_min_samples",
+        "readiness_required_roundtrips",
+    )
+    @classmethod
+    def positive_chase_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("orderbook chase counts must be at least one")
+        return value
+
+    @field_validator("observed_survival_threshold", "p95_survival_threshold")
+    @classmethod
+    def valid_chase_threshold(cls, value: float) -> float:
+        if not 0 < value <= 1:
+            raise ValueError("orderbook chase survival thresholds must be within (0, 1]")
+        return value
 
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
@@ -537,7 +739,9 @@ class AppConfig(BaseModel):
     pair_match: PairMatchConfig = Field(default_factory=PairMatchConfig)
     btc_recovery: BtcRecoveryConfig = Field(default_factory=BtcRecoveryConfig)
     btc_dynamic: BtcDynamicConfig = Field(default_factory=BtcDynamicConfig)
+    btc_weighted: BtcWeightedConfig = Field(default_factory=BtcWeightedConfig)
     btc_v8: BtcV8Config = Field(default_factory=BtcV8Config)
+    orderbook_chase: OrderbookChaseConfig = Field(default_factory=OrderbookChaseConfig)
     real_trading: RealTradingConfig = Field(default_factory=RealTradingConfig)
 
     @field_validator("data_retention_hours", "data_cleanup_interval_seconds")

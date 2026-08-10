@@ -6,7 +6,6 @@ data_cleanup_interval_seconds: 300
 sources:
   enabled_assets:
     - BTC
-    - ETH
   # Windows system proxy is used by default; set this only for a manual fallback.
   proxy_url:
   market_slug: btc-updown-5m-1783704300
@@ -118,45 +117,110 @@ btc_dynamic:
   volatility_floor_bps: 0.5
   max_probability_correction_points: 10
 
-btc_v8:
-  # Independent multi-exchange local simulation; no real-order adapter is used.
-  enabled: false
-  # When enabled, model EV controls buy/sell thresholds; hard risk controls remain active.
-  auto_decision_mode: false
-  # Short-horizon local simulation driven by spot moves that lead Chainlink/Polymarket.
-  orderbook_chase_mode: false
-  auto_emergency_loss_enabled: false
+btc_weighted:
+  # Independent score-driven shadow strategy. It never submits a real order.
+  enabled: true
   quote_amount_usd: 5
-  buy_edge_cents: 5
-  sell_edge_cents: 2
-  slippage_reserve_cents: 1.35
-  entry_end_seconds: 285
-  sell_end_seconds: 298
-  buy_confirmation_seconds: 2
+  entry_score_threshold: 70
+  entry_lead_points: 8
+  entry_confirmation_seconds: 2
+  entry_confirmation_updates: 3
+  max_entries_per_market: 1
+  min_entry_remaining_seconds: 10
+  min_hold_seconds: 15
+  exit_score_threshold: 70
+  exit_lead_points: 10
+  exit_confirmation_seconds: 3
+  exit_confirmation_updates: 3
+  min_buy_price_cents: 15
+  max_buy_price_cents: 90
+  max_spread_cents: 5
+  chainlink_max_age_seconds: 2
+  book_max_age_seconds: 1
+  max_one_tick_loss_usd: 0.50
+  short_volatility_window_seconds: 10
+  long_volatility_window_seconds: 60
+  volatility_floor_bps: 0.5
+  book_std_floor_cents: 0.5
+  gap_std_floor_bps: 0.1
+  sample_tolerance_seconds: 1
+  weight_ema_seconds: 3
+  score_history_seconds: 300
+
+btc_v8:
+  enabled: false
+  quote_amount_usd: 5
+  slippage_reserve_cents: 0.5
+  exit_fee_reserve_fraction: 0
+  min_direction_signal_bps: 0.03
+  min_signal_sigma: 0.05
+  min_probability_move_points: 0.2
+  min_target_direction_probability: 0.40
+  min_supporting_sources: 1
+  min_buy_price_cents: 15
+  max_buy_price_cents: 90
+  min_effective_edge_cents: 0.5
+  low_price_penalty_start_cents: 45
+  low_price_penalty_weight: 1.5
+  buy_score_price_weight: 1
+  buy_score_edge_weight: 0.30
+  max_one_tick_loss_usd: 0.50
+  buy_confirmation_seconds: 1
   buy_confirmation_updates: 2
-  sell_confirmation_seconds: 1
-  sell_confirmation_updates: 2
+  sell_confirmation_seconds: 0.5
+  sell_confirmation_updates: 1
+  reversal_confirmation_seconds: 10
+  reversal_confirmation_updates: 2
   reentry_cooldown_seconds: 3
-  max_entries_per_market: 3
-  max_loss_usd: 2.5
+  max_entries_per_market: 2
+  min_entry_remaining_seconds: 60
+  min_hold_seconds: 30
+  max_hold_seconds: 90
+  min_profit_usd: 0.05
+  hard_stop_loss_usd: 1.50
+  emergency_stop_loss_usd: 2
   chase_take_profit_arm_usd: 0.25
   chase_take_profit_drawdown_usd: 0.15
   chase_take_profit_drawdown_fraction: 0.35
+  polymarket_trend_window_seconds: 3
+  polymarket_trend_min_span_seconds: 1
+  chainlink_max_age_seconds: 5
+  signal_retention_seconds: 65
+  direction_short_seconds: 10
+  direction_long_seconds: 30
+  direction_average_window_seconds: 30
+  direction_average_min_span_seconds: 20
+  direction_average_min_samples: 15
+  direction_average_max_sample_gap_seconds: 2.5
+  basis_window_seconds: 300
+  basis_exclusion_seconds: 10
+  basis_min_span_seconds: 60
+  basis_min_samples: 30
+  basis_max_pair_age_seconds: 1
+  basis_mad_multiplier: 6
+  basis_min_clip_bps: 2
+  basis_max_clip_bps: 10
   evaluation_interval_ms: 250
-  snapshot_interval_seconds: 1
   spot_exchanges:
     - binance
     - coinbase
     - kraken
-  min_fresh_spot_exchanges: 2
+  min_fresh_spot_exchanges: 1
   spot_stale_seconds: 2
-  chainlink_stale_seconds: 10
-  raw_retention_hours: 24
-  snapshot_retention_hours: 24
   short_volatility_window_seconds: 10
   long_volatility_window_seconds: 60
   volatility_floor_bps: 0.5
-  max_probability_correction_points: 10
+
+orderbook_chase:
+  # Consumes confirmed BTC V8 buys. This shadow executor never posts an order.
+  enabled: false
+  latency_probe_interval_seconds: 2
+  latency_window_minutes: 15
+  latency_min_samples: 30
+  latency_max_age_seconds: 5
+  readiness_required_roundtrips: 200
+  observed_survival_threshold: 0.90
+  p95_survival_threshold: 0.80
 
 real_trading:
   # Real execution follows only the BTC recovery initial-order signal.

@@ -801,6 +801,18 @@ class BtcRecoveryEngine:
         if market.asset.upper() != "BTC":
             return
         now = now or datetime.now(timezone.utc)
+        if not self.config.btc_recovery.enabled:
+            self.current_market = market
+            self.current_round = None
+            self.status = "disabled"
+            self.last_reason = self.status
+            return
+        if market.start_time is None:
+            self.current_market = market
+            self.current_round = None
+            self.status = "market_start_unavailable"
+            self.last_reason = self.status
+            return
         if self.current_market and self.current_market.condition_id == market.condition_id:
             self.current_market = market
             return
@@ -818,11 +830,6 @@ class BtcRecoveryEngine:
             self.status = existing.phase.value.lower()
             self.last_reason = self.status
             self.refresh_history()
-            return
-        if not self.config.btc_recovery.enabled or market.start_time is None:
-            self.current_round = None
-            self.status = "disabled" if not self.config.btc_recovery.enabled else "market_start_unavailable"
-            self.last_reason = self.status
             return
         settings = self.config.btc_recovery.model_copy(deep=True)
         entry_at = market.start_time + timedelta(seconds=settings.entry_seconds_after_open)
@@ -1376,6 +1383,30 @@ class BtcRecoveryEngine:
     ) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
         books = books or {}
+        if not self.config.btc_recovery.enabled:
+            self.current_round = None
+            self.status = "disabled"
+            self.last_reason = self.status
+            return {
+                "status": self.status,
+                "last_reason": self.last_reason,
+                "pair_match_paused": False,
+                "recovery_orders_stopped": self.recovery_orders_stopped,
+                "config": self.config.btc_recovery.model_dump(mode="json"),
+                "round": None,
+                "positions": {},
+                "arbitrage_check": {
+                    "yes_sell_avg": None,
+                    "no_sell_avg": None,
+                    "yes_no_sell_sum": None,
+                    "projected_exit_fees_usd": None,
+                    "projected_net_pnl": None,
+                    "reason": "disabled",
+                },
+                "summary": self._summary,
+                "recent_orders": self._recent_order_summaries,
+                "recent_rounds": self._recent_round_payloads,
+            }
         round_ = self.current_round
         positions: dict[str, dict[str, Any]] = {}
         projected_results: dict[Direction, ExecutionResult] = {}

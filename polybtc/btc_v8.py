@@ -15,7 +15,13 @@ from pydantic import BaseModel, Field
 from .btc_dynamic import clamp, dynamic_max_price, logit, normal_cdf, sigmoid
 from .config import AppConfig, BtcV8Config
 from .models import Direction, MarketState, OrderBookSnapshot, PriceTick
-from .orderbook import simulate_buy, simulate_sell, taker_fee_usd
+from .orderbook import (
+    ExecutionResult,
+    simulate_buy,
+    simulate_buy_quantity,
+    simulate_sell,
+    taker_fee_usd,
+)
 from .signal_sources import SignalEvent, iso_time
 
 
@@ -31,61 +37,51 @@ AUTO_EXIT_LOSS_FRACTION = 0.50
 AUTO_EXIT_FULL_CONFIDENCE_MARKETS = 100
 AUTO_EXIT_RISK_THRESHOLD = 0.58
 AUTO_EXIT_TERMINAL_SECONDS = 10.0
-CHASE_BUY_CONFIRMATION_SECONDS = 0.25
-CHASE_BUY_CONFIRMATION_UPDATES = 2
-CHASE_SELL_CONFIRMATION_SECONDS = 0.25
-CHASE_SELL_CONFIRMATION_UPDATES = 2
-CHASE_MAX_HOLD_SECONDS = 5.0
-CHASE_MIN_SIGNAL_SIGMA = 1.0
-CHASE_MIN_PROBABILITY_MOVE = 0.03
-CHASE_MIN_NET_EDGE = 0.01
-CHASE_MIN_PROFIT_USD = 0.02
-CHASE_MAX_CHAINLINK_AGE_SECONDS = 2.0
+def v8_lead_signal_formula(settings: BtcV8Config) -> str:
+    return (
+        f"time_weighted_average_{settings.direction_average_window_seconds:g}s("
+        f"spot_momentum_{settings.direction_short_seconds}s "
+        f"+ 0.5*spot_momentum_{settings.direction_long_seconds}s "
+        "+ 0.35*calibrated_spot_twap_gap "
+        f"- twap_drift_{settings.direction_short_seconds}s "
+        f"- 0.5*twap_drift_{settings.direction_long_seconds}s)"
+    )
+
+
+def v8_buy_score(
+    avg_price: float,
+    edge_per_share: float,
+    settings: BtcV8Config | None = None,
+) -> float:
+    settings = settings or BtcV8Config()
+    return (
+        float(avg_price) * settings.buy_score_price_weight
+        + float(edge_per_share) * settings.buy_score_edge_weight
+    )
+
+
+def v8_low_price_penalty(
+    avg_price: float,
+    settings: BtcV8Config | None = None,
+) -> float:
+    settings = settings or BtcV8Config()
+    penalty_start = settings.low_price_penalty_start_cents / 100.0
+    return max(0.0, penalty_start - float(avg_price)) * settings.low_price_penalty_weight
 
 
 def v8_decision_policy(settings: BtcV8Config) -> dict[str, float | int | bool]:
-    if settings.orderbook_chase_mode:
-        return {
-            "auto_decision_mode": False,
-            "orderbook_chase_mode": True,
-            "automated_mode": True,
-            "buy_edge_cents": CHASE_MIN_NET_EDGE * 100.0,
-            "sell_edge_cents": 0.0,
-            "buy_confirmation_seconds": CHASE_BUY_CONFIRMATION_SECONDS,
-            "buy_confirmation_updates": CHASE_BUY_CONFIRMATION_UPDATES,
-            "sell_confirmation_seconds": CHASE_SELL_CONFIRMATION_SECONDS,
-            "sell_confirmation_updates": CHASE_SELL_CONFIRMATION_UPDATES,
-            "use_fixed_max_loss": False,
-            "emergency_loss_fraction": AUTO_EXIT_LOSS_FRACTION,
-            "emergency_loss_enabled": False,
-        }
-    if settings.auto_decision_mode:
-        return {
-            "auto_decision_mode": True,
-            "orderbook_chase_mode": False,
-            "automated_mode": True,
-            "buy_edge_cents": 0.0,
-            "sell_edge_cents": 0.0,
-            "buy_confirmation_seconds": AUTO_BUY_CONFIRMATION_SECONDS,
-            "buy_confirmation_updates": AUTO_BUY_CONFIRMATION_UPDATES,
-            "sell_confirmation_seconds": AUTO_SELL_CONFIRMATION_SECONDS,
-            "sell_confirmation_updates": AUTO_SELL_CONFIRMATION_UPDATES,
-            "use_fixed_max_loss": False,
-            "emergency_loss_fraction": AUTO_EXIT_LOSS_FRACTION,
-            "emergency_loss_enabled": settings.auto_emergency_loss_enabled,
-        }
     return {
         "auto_decision_mode": False,
-        "orderbook_chase_mode": False,
-        "automated_mode": False,
-        "buy_edge_cents": settings.buy_edge_cents,
-        "sell_edge_cents": settings.sell_edge_cents,
+        "orderbook_chase_mode": True,
+        "automated_mode": True,
+        "buy_edge_cents": settings.min_effective_edge_cents,
+        "sell_edge_cents": 0.0,
         "buy_confirmation_seconds": settings.buy_confirmation_seconds,
         "buy_confirmation_updates": settings.buy_confirmation_updates,
         "sell_confirmation_seconds": settings.sell_confirmation_seconds,
         "sell_confirmation_updates": settings.sell_confirmation_updates,
-        "use_fixed_max_loss": True,
-        "emergency_loss_fraction": 0.0,
+        "use_fixed_max_loss": False,
+        "emergency_loss_fraction": AUTO_EXIT_LOSS_FRACTION,
         "emergency_loss_enabled": False,
     }
 
@@ -541,22 +537,67 @@ def v8_auto_exit_decision(
 def v8_orderbook_chase_signal(
     formula_probability_up: float,
     diagnostics: dict[str, Any],
+    settings: BtcV8Config | None = None,
 ) -> dict[str, Any]:
-    lead_return = diagnostics.get("spot_chainlink_lead_return_1s")
+    settings = settings or BtcV8Config()
+    lead_return = diagnostics.get(
+        "twap_direction_signal_return",
+        diagnostics.get("spot_chainlink_lead_return_1s"),
+    )
     chainlink_age = diagnostics.get("chainlink_age_seconds")
     max_chainlink_age = float(
         diagnostics.get("chase_chainlink_max_age_seconds")
-        or CHASE_MAX_CHAINLINK_AGE_SECONDS
+        or settings.chainlink_max_age_seconds
     )
     sigma = max(float(diagnostics.get("sigma") or 0.0), 1e-12)
     remaining = max(float(diagnostics.get("remaining_seconds") or 0.0), 0.001)
     current_price = float(diagnostics.get("chainlink_current_price") or 0.0)
     open_price = float(diagnostics.get("chainlink_open_price") or 0.0)
-    required_sources = max(
+    fresh_required_sources = max(
         1, int(diagnostics.get("required_fresh_spot_count") or 1)
     )
-    positive_sources = int(diagnostics.get("spot_positive_return_sources_1s") or 0)
-    negative_sources = int(diagnostics.get("spot_negative_return_sources_1s") or 0)
+    required_sources = min(fresh_required_sources, settings.min_supporting_sources)
+    lead_returns_by_source: dict[str, float] = {}
+    raw_lead_returns = diagnostics.get(
+        "twap_direction_signal_returns",
+        diagnostics.get("spot_lead_returns_1s"),
+    )
+    if isinstance(raw_lead_returns, dict):
+        for source, value in raw_lead_returns.items():
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number):
+                lead_returns_by_source[str(source)] = number
+    positive_lead_sources = sorted(
+        source for source, value in lead_returns_by_source.items() if value > 0
+    )
+    negative_lead_sources = sorted(
+        source for source, value in lead_returns_by_source.items() if value < 0
+    )
+    positive_sources = (
+        len(positive_lead_sources)
+        if lead_returns_by_source
+        else int(
+            diagnostics.get(
+                "spot_positive_lead_sources_1s",
+                diagnostics.get("spot_positive_return_sources_1s"),
+            )
+            or 0
+        )
+    )
+    negative_sources = (
+        len(negative_lead_sources)
+        if lead_returns_by_source
+        else int(
+            diagnostics.get(
+                "spot_negative_lead_sources_1s",
+                diagnostics.get("spot_negative_return_sources_1s"),
+            )
+            or 0
+        )
+    )
     supporting_sources = max(positive_sources, negative_sources)
     base = {
         "eligible": False,
@@ -565,12 +606,22 @@ def v8_orderbook_chase_signal(
         "target_probability_up": formula_probability_up,
         "target_probability": None,
         "lead_return_1s": lead_return,
+        "direction_signal_return": lead_return,
         "signal_strength": 0.0,
         "supporting_sources": supporting_sources,
         "required_sources": required_sources,
         "chainlink_age_seconds": chainlink_age,
         "max_chainlink_age_seconds": max_chainlink_age,
+        "lead_signal_formula": v8_lead_signal_formula(settings),
+        "min_direction_signal_bps": settings.min_direction_signal_bps,
+        "min_signal_sigma": settings.min_signal_sigma,
+        "min_probability_move": settings.min_probability_move_points / 100.0,
+        "min_target_direction_probability": settings.min_target_direction_probability,
+        "lead_returns_by_source_1s": lead_returns_by_source,
+        "positive_lead_sources_1s": positive_lead_sources,
+        "negative_lead_sources_1s": negative_lead_sources,
     }
+
     if (
         chainlink_age is None
         or float(chainlink_age) < 0
@@ -584,6 +635,13 @@ def v8_orderbook_chase_signal(
     lead_return = float(lead_return)
     direction = Direction.UP if lead_return > 0 else Direction.DOWN
     same_direction_sources = positive_sources if direction == Direction.UP else negative_sources
+    supporting_lead_sources = (
+        positive_lead_sources if direction == Direction.UP else negative_lead_sources
+    )
+    opposing_lead_sources = (
+        negative_lead_sources if direction == Direction.UP else positive_lead_sources
+    )
+    support_key = ",".join(supporting_lead_sources) or str(same_direction_sources)
     signal_strength = abs(lead_return) / sigma
     projected_return = clamp(lead_return, -3.0 * sigma, 3.0 * sigma)
     projected_price = current_price * math.exp(projected_return)
@@ -591,6 +649,28 @@ def v8_orderbook_chase_signal(
     target_up = clamp(normal_cdf(projected_z), 0.01, 0.99)
     probability_move = abs(target_up - formula_probability_up)
     target_probability = target_up if direction == Direction.UP else 1.0 - target_up
+    absolute_return = math.log(current_price / open_price)
+    absolute_direction_probability = (
+        formula_probability_up if direction == Direction.UP else 1.0 - formula_probability_up
+    )
+    absolute_market_bps = absolute_return * 10_000.0
+    absolute_direction_neutral = (
+        abs(absolute_market_bps) <= 0.25 + 1e-12
+    )
+    absolute_direction_aligned = absolute_direction_neutral or (
+        absolute_return > 0 if direction == Direction.UP else absolute_return < 0
+    )
+    absolute_direction_probability_aligned = (
+        absolute_direction_neutral
+        or absolute_direction_probability + 1e-12
+        >= 0.50
+    )
+    absolute_direction_bps = (
+        absolute_return * 10_000.0
+        if direction == Direction.UP
+        else -absolute_return * 10_000.0
+    )
+    direction_signal_bps = abs(lead_return) * 10_000.0
     base.update(
         {
             "direction": direction.value,
@@ -599,21 +679,285 @@ def v8_orderbook_chase_signal(
             "projected_chainlink_price": projected_price,
             "lead_return_1s": lead_return,
             "lead_bps_1s": lead_return * 10_000.0,
+            "direction_signal_return": lead_return,
+            "direction_signal_bps": lead_return * 10_000.0,
+            "direction_signal_abs_bps": direction_signal_bps,
+            "chainlink_open_return_bps": absolute_return * 10_000.0,
+            "absolute_direction_bps": absolute_direction_bps,
+            "absolute_direction_probability": absolute_direction_probability,
+            "absolute_direction_aligned": absolute_direction_aligned,
+            "absolute_direction_probability_aligned": (
+                absolute_direction_probability_aligned
+            ),
+            "absolute_direction_neutral": absolute_direction_neutral,
+            "absolute_direction_neutral_bps": 0.25,
+            "absolute_direction_filter_enabled": False,
+            "signal_mode": "twap_direction",
             "signal_strength": signal_strength,
             "probability_move": probability_move,
             "supporting_sources": same_direction_sources,
+            "supporting_lead_sources": supporting_lead_sources,
+            "opposing_lead_sources": opposing_lead_sources,
+            "confirmation_key": (
+                f"twap_direction_average_{settings.direction_average_window_seconds:g}s:"
+                f"{direction.value}:{support_key}"
+            ),
         }
     )
     if same_direction_sources < required_sources:
         base["reason"] = "chase_consensus_insufficient"
-    elif signal_strength + 1e-12 < CHASE_MIN_SIGNAL_SIGMA:
+    elif direction_signal_bps + 1e-12 < settings.min_direction_signal_bps:
+        base["reason"] = "chase_direction_signal_too_small"
+    elif signal_strength + 1e-12 < settings.min_signal_sigma:
         base["reason"] = "chase_signal_weak"
-    elif probability_move + 1e-12 < CHASE_MIN_PROBABILITY_MOVE:
+    elif probability_move + 1e-12 < settings.min_probability_move_points / 100.0:
         base["reason"] = "chase_probability_move_small"
+    elif target_probability + 1e-12 < settings.min_target_direction_probability:
+        base["reason"] = "chase_target_probability_too_low"
     else:
         base["eligible"] = True
         base["reason"] = "chase_signal"
     return base
+
+
+def v8_buy_candidate(
+    *,
+    market: MarketState,
+    direction: Direction,
+    probability: float,
+    formula_probability: float,
+    settings: BtcV8Config,
+    book: OrderBookSnapshot | None,
+    book_reason: str | None,
+    taker_fee_rate: float,
+    valuation_probability: float | None = None,
+    strategy_mode: Literal["manual", "auto", "orderbook_chase"] | None = None,
+    decision_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Calculate a V8 buy candidate without reading or mutating engine state."""
+    policy = v8_decision_policy(settings)
+    valuation = probability if valuation_probability is None else valuation_probability
+    mode = strategy_mode or ("auto" if policy["auto_decision_mode"] else "manual")
+    full_estimated_exit_fee_per_share = (
+        taker_fee_usd(1.0, valuation, taker_fee_rate)
+        if mode == "orderbook_chase"
+        else 0.0
+    )
+    estimated_exit_fee_per_share = (
+        full_estimated_exit_fee_per_share * settings.exit_fee_reserve_fraction
+    )
+    limit = dynamic_max_price(
+        max(0.01, valuation - estimated_exit_fee_per_share),
+        taker_fee_rate,
+        settings.slippage_reserve_cents / 100.0,
+        float(policy["buy_edge_cents"]) / 100.0,
+        book.tick_size if book else market.tick_size,
+    )
+    result: dict[str, Any] = {
+        "direction": direction.value,
+        "probability": probability,
+        "formula_probability": formula_probability,
+        "valuation_probability": valuation,
+        "limit": limit,
+        "eligible": False,
+        "reason": book_reason,
+        "auto_decision_mode": policy["auto_decision_mode"],
+        "orderbook_chase_mode": policy["orderbook_chase_mode"],
+        "strategy_mode": mode,
+        "required_edge_cents": policy["buy_edge_cents"],
+        "full_estimated_exit_fee_per_share": full_estimated_exit_fee_per_share,
+        "estimated_exit_fee_per_share": estimated_exit_fee_per_share,
+        "exit_fee_reserve_fraction": settings.exit_fee_reserve_fraction,
+        "book_best_ask": book.best_ask if book else None,
+        "decision_details": decision_details or {},
+    }
+    if book_reason is not None or limit is None or book is None:
+        result["reason"] = book_reason or "model_edge_below_threshold"
+        return result
+    limited = book.model_copy(deep=True)
+    limited.asks = [level for level in limited.asks if level.price <= limit + 1e-12]
+    full_quote_execution = simulate_buy(
+        limited,
+        settings.quote_amount_usd,
+        taker_fee_rate,
+    )
+    max_quantity_by_tick = None
+    execution = full_quote_execution
+    if mode == "orderbook_chase":
+        tick_size = max(float(book.tick_size), 1e-12)
+        max_quantity_by_tick = settings.max_one_tick_loss_usd / tick_size
+        if (
+            not full_quote_execution.complete
+            or full_quote_execution.quantity > max_quantity_by_tick + 1e-12
+        ):
+            execution = simulate_buy_quantity(
+                limited,
+                max_quantity_by_tick,
+                taker_fee_rate,
+            )
+    result.update(execution.model_dump())
+    result.update(
+        {
+            "configured_quote_amount_usd": settings.quote_amount_usd,
+            "risk_sized": bool(
+                mode == "orderbook_chase"
+                and max_quantity_by_tick is not None
+                and execution.quantity + 1e-12 < full_quote_execution.quantity
+            ),
+            "max_one_tick_loss_usd": (
+                settings.max_one_tick_loss_usd
+                if mode == "orderbook_chase"
+                else None
+            ),
+            "max_quantity_by_tick": max_quantity_by_tick,
+        }
+    )
+    if not execution.complete:
+        if (
+            book.best_ask is not None
+            and limit is not None
+            and book.best_ask > limit + 1e-12
+            and execution.quantity <= 1e-12
+        ):
+            result["reason"] = "best_ask_above_limit"
+            result["limit_gap_cents"] = (book.best_ask - limit) * 100.0
+        else:
+            result["reason"] = "depth_below_limit"
+        return result
+    if mode == "orderbook_chase" and not (
+        settings.min_buy_price_cents / 100.0 - 1e-12
+        <= execution.avg_price
+        <= settings.max_buy_price_cents / 100.0 + 1e-12
+    ):
+        result["reason"] = "chase_price_out_of_range"
+        return result
+    if execution.quantity + 1e-12 < max(market.min_order_size, book.min_order_size):
+        result["reason"] = "quantity_below_market_minimum"
+        return result
+    buy_fee_per_share = execution.fee_usd / execution.quantity
+    unpenalized_edge = (
+        valuation
+        - execution.avg_price
+        - buy_fee_per_share
+        - estimated_exit_fee_per_share
+        - settings.slippage_reserve_cents / 100.0
+    )
+    low_price_penalty = (
+        v8_low_price_penalty(execution.avg_price, settings)
+        if mode == "orderbook_chase"
+        else 0.0
+    )
+    edge = unpenalized_edge - low_price_penalty
+    result["buy_fee_per_share"] = buy_fee_per_share
+    result["unpenalized_edge_per_share"] = unpenalized_edge
+    result["low_price_penalty_per_share"] = low_price_penalty
+    result["low_price_penalty_start_price"] = (
+        settings.low_price_penalty_start_cents / 100.0
+        if mode == "orderbook_chase"
+        else None
+    )
+    result["low_price_penalty_weight"] = (
+        settings.low_price_penalty_weight if mode == "orderbook_chase" else 0.0
+    )
+    result["effective_edge_per_share"] = edge
+    result["edge_per_share"] = edge
+    result["edge_formula"] = (
+        "valuation_probability-avg_price-buy_fee_per_share"
+        "-estimated_exit_fee_per_share-slippage_reserve-low_price_penalty"
+    )
+    result["buy_score"] = v8_buy_score(execution.avg_price, edge, settings)
+    result["buy_score_formula"] = (
+        f"avg_price*{settings.buy_score_price_weight:g}"
+        f"+edge_per_share*{settings.buy_score_edge_weight:g}"
+    )
+    if edge + 1e-12 < float(policy["buy_edge_cents"]) / 100.0:
+        result["reason"] = "actual_edge_below_threshold"
+        return result
+    if policy["automated_mode"]:
+        liquidation = simulate_sell(book.model_copy(deep=True), execution.quantity, taker_fee_rate)
+        result["immediate_liquidation_complete"] = liquidation.complete
+        if not liquidation.complete:
+            result["reason"] = "auto_exit_depth_unavailable"
+            return result
+        immediate_pnl = (
+            liquidation.quote
+            - liquidation.fee_usd
+            - execution.quote
+            - execution.fee_usd
+        )
+        loss_limit = max(0.01, execution.quote * AUTO_EXIT_LOSS_FRACTION)
+        result["immediate_liquidation_pnl"] = immediate_pnl
+        result["auto_loss_limit_usd"] = loss_limit
+        if immediate_pnl <= -loss_limit + 1e-12:
+            result["reason"] = "auto_liquidation_risk"
+            return result
+    result["eligible"] = True
+    result["reason"] = "eligible"
+    return result
+
+
+def v8_realized_pnl(position: V8Position, execution: ExecutionResult) -> float:
+    return (
+        execution.quote
+        - execution.fee_usd
+        - position.entry_quote
+        - position.entry_fee_usd
+    )
+
+
+def v8_sell_metrics(
+    position: V8Position,
+    execution: ExecutionResult,
+    probability: float,
+    slippage_reserve_cents: float,
+) -> tuple[float, float, float]:
+    net_value = (
+        execution.avg_price
+        - execution.fee_usd / execution.quantity
+        - slippage_reserve_cents / 100.0
+    )
+    return net_value, net_value - probability, v8_realized_pnl(position, execution)
+
+
+def v8_close_position(
+    position: V8Position,
+    execution: ExecutionResult,
+    now: datetime,
+    exit_reason: str | None,
+) -> float:
+    pnl = v8_realized_pnl(position, execution)
+    position.status = "CLOSED"
+    position.exit_price = execution.avg_price
+    position.exit_quote = execution.quote
+    position.exit_fee_usd = execution.fee_usd
+    position.realized_pnl = pnl
+    position.closed_at = now
+    position.exit_reason = exit_reason
+    return pnl
+
+
+def v8_confirmation(
+    confirmations: dict[str, dict[str, Any]],
+    key: str,
+    candidate_key: str | None,
+    update_key: str,
+    now: datetime,
+    seconds: float,
+    updates: int,
+) -> bool:
+    """Shared confirmation state machine used by V8 and delayed chase execution."""
+    if candidate_key is None:
+        confirmations.pop(key, None)
+        return False
+    state = confirmations.get(key)
+    if state is None or state["candidate"] != candidate_key:
+        state = {"candidate": candidate_key, "started_at": now, "updates": set()}
+        confirmations[key] = state
+    state["updates"].add(update_key)
+    return (
+        (now - state["started_at"]).total_seconds() + 1e-12 >= seconds
+        and len(state["updates"]) >= updates
+    )
 
 
 def v8_orderbook_chase_exit_decision(
@@ -625,23 +969,27 @@ def v8_orderbook_chase_exit_decision(
     take_profit_arm_usd: float = 0.25,
     take_profit_drawdown_usd: float = 0.15,
     take_profit_drawdown_fraction: float = 0.35,
+    settings: BtcV8Config | None = None,
 ) -> dict[str, Any]:
+    settings = settings or BtcV8Config()
     chase = diagnostics.get("orderbook_chase") or {}
     held_seconds = max(0.0, (_ensure_utc(now) - _ensure_utc(position.opened_at)).total_seconds())
     target = position.entry_target_probability or 1.0
-    entry_strength = max(position.entry_signal_strength or 0.0, CHASE_MIN_SIGNAL_SIGMA)
+    entry_strength = max(position.entry_signal_strength or 0.0, settings.min_signal_sigma)
     current_strength = float(chase.get("signal_strength") or 0.0)
     current_direction = chase.get("direction")
+    reversal_supporting_sources = int(chase.get("supporting_sources") or 0)
     signal_reversed = bool(
         chase.get("eligible")
         and current_direction
         and current_direction != position.direction.value
+        and reversal_supporting_sources >= settings.min_supporting_sources
     )
     signal_decayed = bool(
         held_seconds >= 1.0
         and (
             not chase.get("eligible")
-            or current_strength < max(CHASE_MIN_SIGNAL_SIGMA, entry_strength * 0.40)
+            or current_strength < max(settings.min_signal_sigma, entry_strength * 0.40)
         )
     )
     peak_pnl = max(
@@ -661,24 +1009,45 @@ def v8_orderbook_chase_exit_decision(
         and profit_drawdown + 1e-12 >= required_profit_drawdown
     )
     target_reached = net_value + 0.005 >= target
+    min_hold_satisfied = held_seconds + 1e-12 >= settings.min_hold_seconds
+    hard_stop = bool(
+        min_hold_satisfied and pnl <= -settings.hard_stop_loss_usd + 1e-12
+    )
+    emergency_stop = pnl <= -settings.emergency_stop_loss_usd + 1e-12
     reason = None
-    if pnl + 1e-12 >= CHASE_MIN_PROFIT_USD and target_reached:
+    if emergency_stop:
+        reason = "chase_emergency_stop"
+    elif (
+        min_hold_satisfied
+        and pnl + 1e-12 >= settings.min_profit_usd
+        and target_reached
+    ):
         reason = "chase_caught_up"
-    elif held_seconds + 1e-12 >= CHASE_MAX_HOLD_SECONDS:
+    elif hard_stop:
+        reason = "chase_hard_stop"
+    elif held_seconds + 1e-12 >= settings.max_hold_seconds:
         reason = "chase_timeout"
     elif signal_reversed:
         reason = "chase_signal_reversed"
-    elif trailing_profit_exit:
+    elif min_hold_satisfied and trailing_profit_exit:
         reason = "chase_profit_trailing"
     return {
         "eligible": reason is not None,
         "reason": reason or "chase_holding",
         "held_seconds": held_seconds,
-        "max_hold_seconds": CHASE_MAX_HOLD_SECONDS,
+        "min_hold_seconds": settings.min_hold_seconds,
+        "min_hold_satisfied": min_hold_satisfied,
+        "max_hold_seconds": settings.max_hold_seconds,
         "entry_target_probability": target,
         "exit_net_value_per_share": net_value,
         "target_reached": target_reached,
+        "hard_stop": hard_stop,
+        "hard_stop_loss_usd": settings.hard_stop_loss_usd,
+        "emergency_stop": emergency_stop,
+        "emergency_stop_loss_usd": settings.emergency_stop_loss_usd,
         "signal_reversed": signal_reversed,
+        "reversal_supporting_sources": reversal_supporting_sources,
+        "required_reversal_sources": settings.min_supporting_sources,
         "signal_decayed": signal_decayed,
         "take_profit_armed": take_profit_armed,
         "take_profit_arm_usd": take_profit_arm_usd,
@@ -1182,11 +1551,7 @@ class BtcV8Registry:
         )
         if round_ is None:
             return None
-        model = (
-            V8Model()
-            if round_.settings.orderbook_chase_mode
-            else self.load_model(round_.model_key)
-        )
+        model = V8Model()
         if round_.official_outcome is not None:
             return round_, model, [], False
         settlement_trades: list[V8Trade] = []
@@ -1223,18 +1588,6 @@ class BtcV8Registry:
         round_.closed_at = now
         round_.updated_at = now
         if not round_.trained:
-            if not round_.settings.orderbook_chase_mode:
-                samples = self.snapshots(round_.market_id)
-                if samples:
-                    label = 1.0 if outcome == Direction.UP else 0.0
-                    _update_v8_model(
-                        model,
-                        samples,
-                        label,
-                        [sample.model_probability for sample in samples],
-                        now,
-                    )
-                    self.save_model(model)
             round_.trained = True
         self.save_round(round_)
         return round_, model, settlement_trades, True
@@ -1381,7 +1734,7 @@ class BtcV8Registry:
             if not samples:
                 continue
             label = 1.0 if round_.official_outcome == Direction.UP else 0.0
-            correction = round_.settings.max_probability_correction_points / 100.0
+            correction = 0.0
             probabilities = [
                 model.probability(
                     sample.formula_probability,
@@ -1424,13 +1777,7 @@ class BtcV8Engine:
     def __init__(self, config: AppConfig, registry: BtcV8Registry):
         self.config = config
         self.registry = registry
-        self.model = (
-            V8Model()
-            if config.btc_v8.orderbook_chase_mode
-            else registry.load_model(registry.active_model_key())
-        )
-        if not config.btc_v8.orderbook_chase_mode and self.model.updated_at.year == 1970:
-            registry.save_model(self.model)
+        self.model = V8Model()
         self.current_round: V8Round | None = None
         self.position: V8Position | None = None
         self.chainlink_ticks: list[tuple[datetime, float]] = []
@@ -1441,7 +1788,16 @@ class BtcV8Engine:
         self.health: dict[str, SignalEvent] = {}
         self.book_ofi: dict[str, list[tuple[datetime, float]]] = {}
         self.values: dict[str, list[tuple[datetime, float]]] = {}
+        self.spot_twap_basis_history: dict[str, list[tuple[datetime, float]]] = {
+            source: [] for source in SPOT_EXCHANGES
+        }
+        self.twap_direction_signal_history: dict[
+            str, list[tuple[datetime, float]]
+        ] = {source: [] for source in SPOT_EXCHANGES}
         self.polymarket_books: dict[Direction, OrderBookSnapshot] = {}
+        self.polymarket_price_history: dict[
+            Direction, list[tuple[datetime, float, float, float]]
+        ] = {Direction.UP: [], Direction.DOWN: []}
         self.polymarket_ofi: dict[Direction, list[tuple[datetime, float]]] = {
             Direction.UP: [], Direction.DOWN: []
         }
@@ -1459,19 +1815,14 @@ class BtcV8Engine:
         self.candidates: dict[str, Any] = {}
         self.events: list[tuple[str, Any]] = []
         self._recent_trades: list[dict[str, Any]] = registry.recent_trades()
-        self._summary: dict[str, Any] = registry.summary(
-            include_model_metrics=not config.btc_v8.orderbook_chase_mode
-        )
+        self._summary: dict[str, Any] = registry.summary(include_model_metrics=False)
 
     def _orderbook_chase_mode(self) -> bool:
-        settings = self.current_round.settings if self.current_round else self.config.btc_v8
-        return settings.orderbook_chase_mode
+        return True
 
     def _refresh_views(self) -> None:
         self._recent_trades = self.registry.recent_trades()
-        self._summary = self.registry.summary(
-            include_model_metrics=not self._orderbook_chase_mode()
-        )
+        self._summary = self.registry.summary(include_model_metrics=False)
 
     def _record_trade_view(
         self,
@@ -1515,11 +1866,7 @@ class BtcV8Engine:
             return
         existing = self.registry.get_round(market.condition_id)
         if existing is None:
-            if self.config.btc_v8.orderbook_chase_mode:
-                market_model = self.model
-            else:
-                active_model_key = self.registry.activate_pending_for_market(market.start_time)
-                market_model = self.registry.load_model_before(active_model_key, market.start_time)
+            market_model = self.model
             self.current_round = V8Round(
                 market_id=market.condition_id,
                 market_slug=market.slug,
@@ -1538,22 +1885,10 @@ class BtcV8Engine:
         self.position = self.registry.get_position(self.current_round.current_position_id)
         latest_closed = self.registry.latest_closed_position(market.condition_id)
         self.last_exit_at = latest_closed.closed_at if latest_closed else None
-        if not self.current_round.settings.orderbook_chase_mode:
-            self.model = (
-                self.registry.load_model_version(
-                    self.current_round.model_key, self.current_round.model_version
-                )
-                or self.registry.load_model_before(
-                    self.current_round.model_key, self.current_round.start_time
-                )
-            )
         self.last_snapshot_second = None
         self.confirmations.clear()
         self.status = self.last_reason = "collecting_signals"
-        if self.current_round.settings.orderbook_chase_mode:
-            self.registry.discard_raw_buffer()
-        else:
-            self.registry.cleanup_raw_events(self.current_round.settings.raw_retention_hours, now)
+        self.registry.discard_raw_buffer()
         self.events.append(("btc_v8_round", self.current_round))
 
     def add_chainlink_tick(self, tick: PriceTick) -> None:
@@ -1567,6 +1902,79 @@ class BtcV8Engine:
         )
         cutoff = tick.received_at - timedelta(seconds=retention_seconds)
         self.chainlink_ticks = [row for row in self.chainlink_ticks if row[0] >= cutoff]
+
+    def _record_chase_polymarket_price(
+        self, direction: Direction, book: OrderBookSnapshot
+    ) -> None:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        bid = book.best_bid
+        ask = book.best_ask
+        if bid is None or ask is None or bid <= 0 or ask <= 0:
+            return
+        received_at = _ensure_utc(book.received_at)
+        midpoint = (float(bid) + float(ask)) / 2.0
+        history = self.polymarket_price_history[direction]
+        history.append((received_at, float(bid), float(ask), midpoint))
+        cutoff = received_at - timedelta(
+            seconds=settings.polymarket_trend_window_seconds + 2.0
+        )
+        self.polymarket_price_history[direction] = [
+            row for row in history if row[0] >= cutoff
+        ]
+
+    def _chase_polymarket_trend(
+        self, direction: Direction, now: datetime
+    ) -> dict[str, Any]:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        now = _ensure_utc(now)
+        rows = [
+            row
+            for row in self.polymarket_price_history[direction]
+            if (now - row[0]).total_seconds()
+            <= settings.polymarket_trend_window_seconds
+        ]
+        if len(rows) < 2:
+            return {
+                "eligible": False,
+                "reason": "chase_polymarket_trend_waiting",
+                "samples": len(rows),
+            }
+        rows.sort(key=lambda row: row[0])
+        oldest = rows[0]
+        latest = rows[-1]
+        span = (latest[0] - oldest[0]).total_seconds()
+        if span + 1e-12 < settings.polymarket_trend_min_span_seconds:
+            return {
+                "eligible": False,
+                "reason": "chase_polymarket_trend_waiting",
+                "samples": len(rows),
+                "span_seconds": span,
+            }
+        tick_size = (
+            self.polymarket_books.get(direction).tick_size
+            if self.polymarket_books.get(direction)
+            else 0.01
+        )
+        tolerance = max(1e-12, float(tick_size) / 2.0)
+        bid_change = latest[1] - oldest[1]
+        ask_change = latest[2] - oldest[2]
+        midpoint_change = latest[3] - oldest[3]
+        falling = bid_change < -tolerance or midpoint_change < -tolerance
+        return {
+            "eligible": not falling,
+            "reason": "chase_polymarket_falling" if falling else "chase_polymarket_trend_ok",
+            "samples": len(rows),
+            "span_seconds": span,
+            "old_bid": oldest[1],
+            "new_bid": latest[1],
+            "bid_change": bid_change,
+            "old_ask": oldest[2],
+            "new_ask": latest[2],
+            "ask_change": ask_change,
+            "old_midpoint": oldest[3],
+            "new_midpoint": latest[3],
+            "midpoint_change": midpoint_change,
+        }
 
     def add_polymarket_book(self, direction: Direction, book: OrderBookSnapshot) -> None:
         chase_mode = self._orderbook_chase_mode()
@@ -1588,6 +1996,7 @@ class BtcV8Engine:
             )
         previous = self.polymarket_books.get(direction)
         self.polymarket_books[direction] = book
+        self._record_chase_polymarket_price(direction, book)
         if chase_mode:
             return
         value = _top_of_book_ofi(previous, book)
@@ -1648,7 +2057,8 @@ class BtcV8Engine:
             target = self.trades.setdefault(source, [])
             if event.valid and event.price is not None and event.price > 0:
                 target.append(event)
-            cutoff = event.received_at - timedelta(seconds=5 if chase_mode else 65)
+            settings = self.current_round.settings if self.current_round else self.config.btc_v8
+            cutoff = event.received_at - timedelta(seconds=settings.signal_retention_seconds)
             self.trades[source] = [item for item in target if item.received_at >= cutoff]
             return
         if event.kind == "book":
@@ -1716,6 +2126,166 @@ class BtcV8Engine:
             and event.price > 0
         ]
 
+    def _record_spot_twap_basis(
+        self,
+        source: str,
+        observed_at: datetime,
+        basis_return: float,
+    ) -> None:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        if not math.isfinite(basis_return):
+            return
+        observed_at = _ensure_utc(observed_at)
+        history = self.spot_twap_basis_history.setdefault(source, [])
+        if history and history[-1][0] == observed_at:
+            history[-1] = (observed_at, float(basis_return))
+        else:
+            history.append((observed_at, float(basis_return)))
+        cutoff = observed_at - timedelta(
+            seconds=settings.basis_window_seconds
+            + settings.basis_exclusion_seconds
+            + 1.0
+        )
+        self.spot_twap_basis_history[source] = [
+            row for row in history if row[0] >= cutoff
+        ]
+
+    def _spot_twap_basis_calibration(
+        self,
+        source: str,
+        observed_at: datetime,
+        raw_basis_return: float,
+    ) -> dict[str, Any]:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        observed_at = _ensure_utc(observed_at)
+        baseline_end = observed_at - timedelta(seconds=settings.basis_exclusion_seconds)
+        baseline_start = baseline_end - timedelta(seconds=settings.basis_window_seconds)
+        rows = [
+            row
+            for row in self.spot_twap_basis_history.get(source, [])
+            if baseline_start <= row[0] <= baseline_end
+        ]
+        sample_count = len(rows)
+        sample_span_seconds = (
+            (rows[-1][0] - rows[0][0]).total_seconds() if sample_count >= 2 else 0.0
+        )
+        baseline = statistics.median(value for _, value in rows) if rows else None
+        ready = bool(
+            baseline is not None
+            and sample_count >= settings.basis_min_samples
+            and sample_span_seconds + 1e-12 >= settings.basis_min_span_seconds
+        )
+        if not ready:
+            return {
+                "ready": False,
+                "raw_basis_return": raw_basis_return,
+                "baseline_return": baseline,
+                "calibrated_gap_return": 0.0,
+                "unclipped_gap_return": None,
+                "mad_return": None,
+                "clip_limit_return": None,
+                "clipped": False,
+                "sample_count": sample_count,
+                "sample_span_seconds": sample_span_seconds,
+            }
+
+        deviations = [abs(value - baseline) for _, value in rows]
+        mad = statistics.median(deviations)
+        clip_limit_bps = min(
+            settings.basis_max_clip_bps,
+            max(
+                settings.basis_min_clip_bps,
+                settings.basis_mad_multiplier * mad * 10_000.0,
+            ),
+        )
+        clip_limit = clip_limit_bps / 10_000.0
+        unclipped_gap = raw_basis_return - baseline
+        calibrated_gap = clamp(unclipped_gap, -clip_limit, clip_limit)
+        return {
+            "ready": True,
+            "raw_basis_return": raw_basis_return,
+            "baseline_return": baseline,
+            "calibrated_gap_return": calibrated_gap,
+            "unclipped_gap_return": unclipped_gap,
+            "mad_return": mad,
+            "clip_limit_return": clip_limit,
+            "clipped": abs(calibrated_gap - unclipped_gap) > 1e-15,
+            "sample_count": sample_count,
+            "sample_span_seconds": sample_span_seconds,
+        }
+
+    def _record_twap_direction_signal(
+        self,
+        source: str,
+        observed_at: datetime,
+        signal_return: float,
+    ) -> None:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        if not math.isfinite(signal_return):
+            return
+        observed_at = _ensure_utc(observed_at)
+        history = self.twap_direction_signal_history.setdefault(source, [])
+        if history and history[-1][0] == observed_at:
+            history[-1] = (observed_at, float(signal_return))
+        else:
+            history.append((observed_at, float(signal_return)))
+        cutoff = observed_at - timedelta(
+            seconds=settings.direction_average_window_seconds
+            + settings.direction_average_max_sample_gap_seconds
+        )
+        self.twap_direction_signal_history[source] = [
+            row for row in history if row[0] >= cutoff
+        ]
+
+    def _twap_direction_signal_average(
+        self,
+        source: str,
+        observed_at: datetime,
+    ) -> dict[str, Any]:
+        settings = self.current_round.settings if self.current_round else self.config.btc_v8
+        observed_at = _ensure_utc(observed_at)
+        window_start = observed_at - timedelta(
+            seconds=settings.direction_average_window_seconds
+        )
+        rows = [
+            row
+            for row in self.twap_direction_signal_history.get(source, [])
+            if window_start <= row[0] <= observed_at
+        ]
+        contiguous_start = len(rows) - 1
+        for index in range(len(rows) - 1, 0, -1):
+            gap = (rows[index][0] - rows[index - 1][0]).total_seconds()
+            if gap > settings.direction_average_max_sample_gap_seconds:
+                break
+            contiguous_start = index - 1
+        rows = rows[contiguous_start:] if rows else []
+        sample_count = len(rows)
+        sample_span_seconds = (
+            (rows[-1][0] - rows[0][0]).total_seconds() if sample_count >= 2 else 0.0
+        )
+        ready = bool(
+            sample_count >= settings.direction_average_min_samples
+            and sample_span_seconds + 1e-12
+            >= settings.direction_average_min_span_seconds
+        )
+        if not ready:
+            return {
+                "ready": False,
+                "average_return": None,
+                "sample_count": sample_count,
+                "sample_span_seconds": sample_span_seconds,
+            }
+        weighted_total = 0.0
+        for previous, current in zip(rows, rows[1:]):
+            seconds = (current[0] - previous[0]).total_seconds()
+            weighted_total += 0.5 * (previous[1] + current[1]) * seconds
+        return {
+            "ready": True,
+            "average_return": weighted_total / sample_span_seconds,
+            "sample_count": sample_count,
+            "sample_span_seconds": sample_span_seconds,
+        }
+
     def _ofi(self, source: str, now: datetime, seconds: int = 5) -> float:
         rows = _window_values(self.book_ofi.get(source, []), now, seconds)
         return clamp(sum(value for _, value in rows) / len(rows), -1.0, 1.0) if rows else 0.0
@@ -1752,17 +2322,143 @@ class BtcV8Engine:
         fresh_sources = [
             source for source in raw_fresh_sources if source not in anomalous_sources
         ]
+        spot_trade_prices = {
+            source: self._trade_prices(source) for source in fresh_sources
+        }
         spot_returns_1s = {
             source: value
             for source in fresh_sources
-            if (value := _return_for_window(self._trade_prices(source), now, 1)) is not None
+            if (value := _return_for_window(spot_trade_prices[source], now, 1)) is not None
+        }
+        spot_returns_10s = {
+            source: value
+            for source in fresh_sources
+            if (
+                value := _return_for_window(
+                    spot_trade_prices[source],
+                    now,
+                    settings.direction_short_seconds,
+                )
+            )
+            is not None
+        }
+        spot_returns_30s = {
+            source: value
+            for source in fresh_sources
+            if (
+                value := _return_for_window(
+                    spot_trade_prices[source],
+                    now,
+                    settings.direction_long_seconds,
+                )
+            )
+            is not None
         }
         chainlink_return_1s = _return_for_window(self.chainlink_ticks, now, 1)
-        lead_returns_1s = [
-            value - chainlink_return_1s
-            for value in spot_returns_1s.values()
-            if chainlink_return_1s is not None
-        ]
+        chainlink_return_10s = _return_for_window(
+            self.chainlink_ticks,
+            now,
+            settings.direction_short_seconds,
+        )
+        chainlink_return_30s = _return_for_window(
+            self.chainlink_ticks,
+            now,
+            settings.direction_long_seconds,
+        )
+        spot_twap_pair_ages: dict[str, float] = {}
+        spot_twap_basis_calibrations: dict[str, dict[str, Any]] = {}
+        spot_twap_unpaired_sources: list[str] = []
+        if current_price > 0:
+            for source in fresh_sources:
+                midpoint = raw_midpoints.get(source)
+                book = self.books.get(source)
+                if midpoint is None or midpoint <= 0 or book is None:
+                    continue
+                pair_age = abs(
+                    (_ensure_utc(book.received_at) - _ensure_utc(current_at)).total_seconds()
+                )
+                spot_twap_pair_ages[source] = pair_age
+                if pair_age > settings.basis_max_pair_age_seconds:
+                    spot_twap_unpaired_sources.append(source)
+                    continue
+                raw_basis = math.log(midpoint / current_price)
+                self._record_spot_twap_basis(source, current_at, raw_basis)
+                spot_twap_basis_calibrations[source] = self._spot_twap_basis_calibration(
+                    source,
+                    current_at,
+                    raw_basis,
+                )
+        spot_twap_raw_gaps = {
+            source: float(calibration["raw_basis_return"])
+            for source, calibration in spot_twap_basis_calibrations.items()
+        }
+        spot_twap_basis_baselines = {
+            source: float(calibration["baseline_return"])
+            for source, calibration in spot_twap_basis_calibrations.items()
+            if calibration["baseline_return"] is not None
+        }
+        spot_twap_gaps = {
+            source: float(calibration["calibrated_gap_return"])
+            for source, calibration in spot_twap_basis_calibrations.items()
+        }
+        for source in fresh_sources:
+            spot_twap_gaps.setdefault(source, 0.0)
+        twap_direction_components = {
+            source: {
+                "spot_momentum_10s": spot_return_10s,
+                "spot_momentum_30s": spot_returns_30s.get(source, 0.0),
+                "raw_spot_twap_gap": spot_twap_raw_gaps.get(source),
+                "spot_twap_basis_baseline": spot_twap_basis_baselines.get(source),
+                "spot_twap_gap": spot_twap_gaps[source],
+                "calibrated_spot_twap_gap": spot_twap_gaps[source],
+                "spot_twap_calibration_ready": bool(
+                    spot_twap_basis_calibrations.get(source, {}).get("ready")
+                ),
+                "twap_drift_10s": chainlink_return_10s,
+                "twap_drift_30s": chainlink_return_30s or 0.0,
+                "instant_direction_signal_return": (
+                    spot_return_10s
+                    + 0.5 * spot_returns_30s.get(source, 0.0)
+                    + 0.35 * spot_twap_gaps[source]
+                    - chainlink_return_10s
+                    - 0.5 * (chainlink_return_30s or 0.0)
+                ),
+            }
+            for source, spot_return_10s in spot_returns_10s.items()
+            if chainlink_return_10s is not None and source in spot_twap_gaps
+        }
+        twap_direction_instant_signal_returns = {
+            source: float(parts["instant_direction_signal_return"])
+            for source, parts in twap_direction_components.items()
+        }
+        direction_sample_at = _ensure_utc(now).replace(microsecond=0)
+        twap_direction_average_states: dict[str, dict[str, Any]] = {}
+        for source, instant_return in twap_direction_instant_signal_returns.items():
+            self._record_twap_direction_signal(
+                source,
+                direction_sample_at,
+                instant_return,
+            )
+            average_state = self._twap_direction_signal_average(
+                source,
+                direction_sample_at,
+            )
+            twap_direction_average_states[source] = average_state
+            twap_direction_components[source]["direction_signal_return"] = average_state[
+                "average_return"
+            ]
+            twap_direction_components[source][
+                "direction_signal_average_return"
+            ] = average_state["average_return"]
+            twap_direction_components[source]["direction_signal_average_ready"] = (
+                average_state["ready"]
+            )
+        twap_direction_signal_returns = {
+            source: float(state["average_return"])
+            for source, state in twap_direction_average_states.items()
+            if state["ready"] and state["average_return"] is not None
+        }
+        direction_signal_returns = list(twap_direction_signal_returns.values())
         source_health = self._source_health(now)
         for source in anomalous_sources:
             source_health[source]["fresh"] = False
@@ -1777,9 +2473,8 @@ class BtcV8Engine:
             "chainlink_tick_at": current_at.isoformat(),
             "chainlink_age_seconds": age,
             "chase_chainlink_max_age_seconds": min(
-                CHASE_MAX_CHAINLINK_AGE_SECONDS,
+                settings.chainlink_max_age_seconds,
                 settings.spot_stale_seconds,
-                settings.chainlink_stale_seconds,
             ),
             "remaining_seconds": remaining,
             "sigma": sigma,
@@ -1793,9 +2488,82 @@ class BtcV8Engine:
             "required_fresh_spot_count": settings.min_fresh_spot_exchanges,
             "timestamp_basis": "received_at",
             "spot_returns_1s": spot_returns_1s,
+            "spot_returns_10s": spot_returns_10s,
+            "spot_returns_30s": spot_returns_30s,
             "chainlink_return_1s": chainlink_return_1s,
+            "chainlink_return_10s": chainlink_return_10s,
+            "chainlink_return_30s": chainlink_return_30s,
+            "spot_twap_raw_gaps": spot_twap_raw_gaps,
+            "spot_twap_basis_baselines": spot_twap_basis_baselines,
+            "spot_twap_gaps": spot_twap_gaps,
+            "spot_twap_basis_calibrations": spot_twap_basis_calibrations,
+            "spot_twap_calibration_ready_sources": sorted(
+                source
+                for source, calibration in spot_twap_basis_calibrations.items()
+                if calibration["ready"]
+            ),
+            "spot_twap_calibration_warming_sources": sorted(
+                source
+                for source, calibration in spot_twap_basis_calibrations.items()
+                if not calibration["ready"]
+            ),
+            "spot_twap_basis_clipped_sources": sorted(
+                source
+                for source, calibration in spot_twap_basis_calibrations.items()
+                if calibration["clipped"]
+            ),
+            "spot_twap_pair_age_seconds": spot_twap_pair_ages,
+            "spot_twap_unpaired_sources": sorted(spot_twap_unpaired_sources),
+            "spot_twap_basis_window_seconds": settings.basis_window_seconds,
+            "spot_twap_basis_exclusion_seconds": settings.basis_exclusion_seconds,
+            "spot_twap_basis_min_span_seconds": settings.basis_min_span_seconds,
+            "spot_twap_basis_min_samples": settings.basis_min_samples,
+            "spot_lead_components_1s": twap_direction_components,
+            "spot_lead_returns_1s": twap_direction_signal_returns,
+            "twap_direction_components": twap_direction_components,
+            "twap_direction_instant_signal_returns": (
+                twap_direction_instant_signal_returns
+            ),
+            "twap_direction_average_states": twap_direction_average_states,
+            "twap_direction_average_ready_sources": sorted(
+                source
+                for source, state in twap_direction_average_states.items()
+                if state["ready"]
+            ),
+            "twap_direction_average_warming_sources": sorted(
+                source
+                for source, state in twap_direction_average_states.items()
+                if not state["ready"]
+            ),
+            "twap_direction_average_window_seconds": (
+                settings.direction_average_window_seconds
+            ),
+            "twap_direction_average_min_span_seconds": (
+                settings.direction_average_min_span_seconds
+            ),
+            "twap_direction_average_min_samples": settings.direction_average_min_samples,
+            "twap_direction_signal_returns": twap_direction_signal_returns,
+            "twap_direction_signal_return": (
+                statistics.median(direction_signal_returns)
+                if direction_signal_returns
+                else None
+            ),
             "spot_chainlink_lead_return_1s": (
-                statistics.median(lead_returns_1s) if lead_returns_1s else None
+                statistics.median(direction_signal_returns)
+                if direction_signal_returns
+                else None
+            ),
+            "spot_positive_lead_sources_1s": sum(
+                1 for value in twap_direction_signal_returns.values() if value > 0
+            ),
+            "spot_negative_lead_sources_1s": sum(
+                1 for value in twap_direction_signal_returns.values() if value < 0
+            ),
+            "twap_direction_positive_sources": sum(
+                1 for value in twap_direction_signal_returns.values() if value > 0
+            ),
+            "twap_direction_negative_sources": sum(
+                1 for value in twap_direction_signal_returns.values() if value < 0
             ),
             "spot_positive_return_sources_1s": sum(
                 1 for value in spot_returns_1s.values() if value > 0
@@ -1820,8 +2588,19 @@ class BtcV8Engine:
         current_at, current_price = self.chainlink_ticks[-1]
         settings = self.current_round.settings
         age = (now - current_at).total_seconds()
-        if age < 0 or age > settings.chainlink_stale_seconds:
-            self.last_reason = "chainlink_stale"
+        if age < 0 or age > settings.chainlink_max_age_seconds:
+            self.last_reason = "chase_chainlink_stale"
+            self.diagnostics = {
+                "chainlink_tick_at": current_at.isoformat(),
+                "chainlink_age_seconds": age,
+                "chase_chainlink_max_age_seconds": settings.chainlink_max_age_seconds,
+                "orderbook_chase": {
+                    "eligible": False,
+                    "reason": self.last_reason,
+                    "chainlink_age_seconds": age,
+                    "max_chainlink_age_seconds": settings.chainlink_max_age_seconds,
+                },
+            }
             return None
         short_rows = _window_values(
             self.chainlink_ticks, now, settings.short_volatility_window_seconds
@@ -1837,19 +2616,18 @@ class BtcV8Engine:
         log_return = math.log(current_price / market.threshold_price)
         z_score = log_return / (sigma * math.sqrt(remaining))
         formula_up = clamp(normal_cdf(z_score), 0.01, 0.99)
-        if settings.orderbook_chase_mode:
-            return self._chase_probabilities(
-                market,
-                now,
-                settings,
-                current_at,
-                current_price,
-                age,
-                remaining,
-                sigma,
-                z_score,
-                formula_up,
-            )
+        return self._chase_probabilities(
+            market,
+            now,
+            settings,
+            current_at,
+            current_price,
+            age,
+            remaining,
+            sigma,
+            z_score,
+            formula_up,
+        )
         crossings = 0
         prior_side: bool | None = None
         for _, price in long_rows:
@@ -2033,12 +2811,7 @@ class BtcV8Engine:
             )
         features["fresh_spot_fraction"] = len(fresh_sources) / max(1, len(settings.spot_exchanges))
         self._futures_features(features, now, sigma, spot_midpoints)
-        residual_model_enabled = not settings.orderbook_chase_mode
-        if residual_model_enabled:
-            maximum_correction = settings.max_probability_correction_points / 100.0
-            model_up = self.model.probability(formula_up, features, maximum_correction)
-        else:
-            model_up = formula_up
+        model_up = formula_up
         source_health = self._source_health(now)
         for source in anomalous_sources:
             source_health[source]["fresh"] = False
@@ -2049,9 +2822,8 @@ class BtcV8Engine:
             "chainlink_tick_at": current_at.isoformat(),
             "chainlink_age_seconds": age,
             "chase_chainlink_max_age_seconds": min(
-                CHASE_MAX_CHAINLINK_AGE_SECONDS,
+                settings.chainlink_max_age_seconds,
                 settings.spot_stale_seconds,
-                settings.chainlink_stale_seconds,
             ),
             "remaining_seconds": remaining,
             "sigma": sigma,
@@ -2251,87 +3023,21 @@ class BtcV8Engine:
         decision_details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         settings = self.current_round.settings
-        policy = v8_decision_policy(settings)
-        valuation = probability if valuation_probability is None else valuation_probability
-        mode = strategy_mode or ("auto" if policy["auto_decision_mode"] else "manual")
-        estimated_exit_fee_per_share = (
-            taker_fee_usd(1.0, valuation, self.config.strategy.taker_fee_rate)
-            if mode == "orderbook_chase"
-            else 0.0
-        )
         book = books.get(direction)
         reason = self._book_ready(market, direction, book, now)
-        limit = dynamic_max_price(
-            max(0.01, valuation - estimated_exit_fee_per_share),
-            self.config.strategy.taker_fee_rate,
-            settings.slippage_reserve_cents / 100.0,
-            float(policy["buy_edge_cents"]) / 100.0,
-            book.tick_size if book else market.tick_size,
+        return v8_buy_candidate(
+            market=market,
+            direction=direction,
+            probability=probability,
+            formula_probability=formula_probability,
+            settings=settings,
+            book=book,
+            book_reason=reason,
+            taker_fee_rate=self.config.strategy.taker_fee_rate,
+            valuation_probability=valuation_probability,
+            strategy_mode=strategy_mode,
+            decision_details=decision_details,
         )
-        result: dict[str, Any] = {
-            "direction": direction.value,
-            "probability": probability,
-            "formula_probability": formula_probability,
-            "valuation_probability": valuation,
-            "limit": limit,
-            "eligible": False,
-            "reason": reason,
-            "auto_decision_mode": policy["auto_decision_mode"],
-            "orderbook_chase_mode": policy["orderbook_chase_mode"],
-            "strategy_mode": mode,
-            "required_edge_cents": policy["buy_edge_cents"],
-            "estimated_exit_fee_per_share": estimated_exit_fee_per_share,
-            "decision_details": decision_details or {},
-        }
-        if reason is not None or limit is None or book is None:
-            result["reason"] = reason or "model_edge_below_threshold"
-            return result
-        limited = book.model_copy(deep=True)
-        limited.asks = [level for level in limited.asks if level.price <= limit + 1e-12]
-        execution = simulate_buy(
-            limited, settings.quote_amount_usd, self.config.strategy.taker_fee_rate
-        )
-        result.update(execution.model_dump())
-        if not execution.complete:
-            result["reason"] = "depth_below_limit"
-            return result
-        if execution.quantity + 1e-12 < max(market.min_order_size, book.min_order_size):
-            result["reason"] = "quantity_below_market_minimum"
-            return result
-        edge = (
-            valuation
-            - execution.avg_price
-            - execution.fee_usd / execution.quantity
-            - estimated_exit_fee_per_share
-            - settings.slippage_reserve_cents / 100.0
-        )
-        result["edge_per_share"] = edge
-        if edge + 1e-12 < float(policy["buy_edge_cents"]) / 100.0:
-            result["reason"] = "actual_edge_below_threshold"
-            return result
-        if policy["automated_mode"]:
-            liquidation = simulate_sell(
-                book, execution.quantity, self.config.strategy.taker_fee_rate
-            )
-            result["immediate_liquidation_complete"] = liquidation.complete
-            if not liquidation.complete:
-                result["reason"] = "auto_exit_depth_unavailable"
-                return result
-            immediate_pnl = (
-                liquidation.quote
-                - liquidation.fee_usd
-                - execution.quote
-                - execution.fee_usd
-            )
-            loss_limit = max(0.01, execution.quote * AUTO_EXIT_LOSS_FRACTION)
-            result["immediate_liquidation_pnl"] = immediate_pnl
-            result["auto_loss_limit_usd"] = loss_limit
-            if immediate_pnl <= -loss_limit + 1e-12:
-                result["reason"] = "auto_liquidation_risk"
-                return result
-        result["eligible"] = True
-        result["reason"] = "eligible"
-        return result
 
     def _confirmation(
         self,
@@ -2342,17 +3048,14 @@ class BtcV8Engine:
         seconds: float,
         updates: int,
     ) -> bool:
-        if candidate_key is None:
-            self.confirmations.pop(key, None)
-            return False
-        state = self.confirmations.get(key)
-        if state is None or state["candidate"] != candidate_key:
-            state = {"candidate": candidate_key, "started_at": now, "updates": set()}
-            self.confirmations[key] = state
-        state["updates"].add(update_key)
-        return (
-            (now - state["started_at"]).total_seconds() + 1e-12 >= seconds
-            and len(state["updates"]) >= updates
+        return v8_confirmation(
+            self.confirmations,
+            key,
+            candidate_key,
+            update_key,
+            now,
+            seconds,
+            updates,
         )
 
     def _update_key(self, books: dict[Direction, OrderBookSnapshot]) -> str:
@@ -2374,6 +3077,12 @@ class BtcV8Engine:
         formula = float(candidate["formula_probability"])
         strategy_mode = candidate.get("strategy_mode", "manual")
         details = dict(candidate.get("decision_details") or {})
+        details["buy_edge_formula"] = candidate.get("edge_formula")
+        details["buy_fee_per_share"] = candidate.get("buy_fee_per_share")
+        details["unpenalized_edge_per_share"] = candidate.get("unpenalized_edge_per_share")
+        details["low_price_penalty_per_share"] = candidate.get("low_price_penalty_per_share")
+        details["effective_edge_per_share"] = candidate.get("effective_edge_per_share")
+        details["required_edge_cents"] = candidate.get("required_edge_cents")
         position = V8Position(
             market_id=self.current_round.market_id,
             market_slug=self.current_round.market_slug,
@@ -2455,64 +3164,30 @@ class BtcV8Engine:
             return False
         probability = model_up if position.direction == Direction.UP else 1.0 - model_up
         formula = formula_up if position.direction == Direction.UP else 1.0 - formula_up
-        net_value = (
-            execution.avg_price
-            - execution.fee_usd / execution.quantity
-            - settings.slippage_reserve_cents / 100.0
+        net_value, value_edge, pnl = v8_sell_metrics(
+            position,
+            execution,
+            probability,
+            settings.slippage_reserve_cents,
         )
-        value_edge = net_value - probability
-        pnl = execution.quote - execution.fee_usd - position.entry_quote - position.entry_fee_usd
         exit_reason = None
         decision_details: dict[str, Any] = {}
-        if position.strategy_mode == "orderbook_chase":
-            if position.peak_unrealized_pnl is None or pnl > position.peak_unrealized_pnl:
-                position.peak_unrealized_pnl = pnl
-                self.registry.save_position(position)
-            decision_details = v8_orderbook_chase_exit_decision(
-                position=position,
-                net_value=net_value,
-                pnl=pnl,
-                diagnostics=diagnostics,
-                now=now,
-                take_profit_arm_usd=settings.chase_take_profit_arm_usd,
-                take_profit_drawdown_usd=settings.chase_take_profit_drawdown_usd,
-                take_profit_drawdown_fraction=settings.chase_take_profit_drawdown_fraction,
-            )
-            if decision_details["eligible"]:
-                exit_reason = str(decision_details["reason"])
-        elif policy["auto_decision_mode"]:
-            position_changed = False
-            if position.entry_model_probability is None:
-                position.entry_model_probability = probability
-                position_changed = True
-            if position.entry_formula_probability is None:
-                position.entry_formula_probability = formula
-                position_changed = True
-            if position.peak_unrealized_pnl is None or pnl > position.peak_unrealized_pnl:
-                position.peak_unrealized_pnl = pnl
-                position_changed = True
-            if position_changed:
-                self.registry.save_position(position)
-            decision_details = v8_auto_exit_decision(
-                position=position,
-                probability=probability,
-                formula_probability=formula,
-                net_value=net_value,
-                pnl=pnl,
-                features=features,
-                diagnostics=diagnostics,
-                elapsed_seconds=elapsed,
-                sell_end_seconds=settings.sell_end_seconds,
-                trained_markets=self.model.trained_markets,
-                emergency_loss_enabled=settings.auto_emergency_loss_enabled,
-            )
-            if decision_details["eligible"]:
-                exit_reason = str(decision_details["reason"])
-        else:
-            if value_edge + 1e-12 >= float(policy["sell_edge_cents"]) / 100.0:
-                exit_reason = "model_value_sell"
-            elif policy["use_fixed_max_loss"] and pnl <= -settings.max_loss_usd + 1e-12:
-                exit_reason = "max_loss"
+        if position.peak_unrealized_pnl is None or pnl > position.peak_unrealized_pnl:
+            position.peak_unrealized_pnl = pnl
+            self.registry.save_position(position)
+        decision_details = v8_orderbook_chase_exit_decision(
+            position=position,
+            net_value=net_value,
+            pnl=pnl,
+            diagnostics=diagnostics,
+            now=now,
+            take_profit_arm_usd=settings.chase_take_profit_arm_usd,
+            take_profit_drawdown_usd=settings.chase_take_profit_drawdown_usd,
+            take_profit_drawdown_fraction=settings.chase_take_profit_drawdown_fraction,
+            settings=settings,
+        )
+        if decision_details["eligible"]:
+            exit_reason = str(decision_details["reason"])
         self.candidates["SELL"] = {
             "direction": position.direction.value,
             "probability": probability,
@@ -2533,12 +3208,18 @@ class BtcV8Engine:
         }
         confirmation_seconds = float(policy["sell_confirmation_seconds"])
         confirmation_updates = int(policy["sell_confirmation_updates"])
-        if exit_reason == "auto_emergency_loss":
+        if exit_reason in {"auto_emergency_loss", "chase_emergency_stop"}:
             confirmation_seconds = 0.0
             confirmation_updates = 1
-        elif exit_reason == "chase_timeout":
+        elif exit_reason in {
+            "chase_timeout",
+            "chase_hard_stop",
+        }:
             confirmation_seconds = 0.0
             confirmation_updates = 1
+        elif exit_reason == "chase_signal_reversed":
+            confirmation_seconds = settings.reversal_confirmation_seconds
+            confirmation_updates = settings.reversal_confirmation_updates
         confirmed = self._confirmation(
             "sell",
             exit_reason,
@@ -2550,13 +3231,7 @@ class BtcV8Engine:
         if not confirmed:
             self.status = self.last_reason = "confirming_sell" if exit_reason else "holding"
             return False
-        position.status = "CLOSED"
-        position.exit_price = execution.avg_price
-        position.exit_quote = execution.quote
-        position.exit_fee_usd = execution.fee_usd
-        position.realized_pnl = pnl
-        position.closed_at = now
-        position.exit_reason = exit_reason
+        v8_close_position(position, execution, now, exit_reason)
         self.registry.save_position(position)
         trade = self.registry.save_trade(
             V8Trade(
@@ -2613,12 +3288,14 @@ class BtcV8Engine:
         self.last_evaluated_at = now
         probabilities = self._probabilities(market, books, now)
         if probabilities is None:
+            if self.position is None:
+                self.confirmations.pop("buy", None)
             self.status = self.last_reason
             return
         formula_up, model_up, features, diagnostics = probabilities
         decision_policy = v8_decision_policy(self.current_round.settings)
         diagnostics["orderbook_chase"] = v8_orderbook_chase_signal(
-            formula_up, diagnostics
+            formula_up, diagnostics, self.current_round.settings
         )
         self.diagnostics = {
             **diagnostics,
@@ -2626,47 +3303,10 @@ class BtcV8Engine:
             "formula_probability_down": 1.0 - formula_up,
             "decision_policy": decision_policy,
         }
-        if not decision_policy["orderbook_chase_mode"]:
-            self.diagnostics["model"] = self.model.model_dump(mode="json")
-            self.diagnostics["feature_contributions"] = sorted(
-                (
-                    {
-                        "feature": name,
-                        "value": features.get(name, 0.0),
-                        "weight": self.model.weights.get(name, 0.0),
-                        "contribution": features.get(name, 0.0)
-                        * self.model.weights.get(name, 0.0),
-                    }
-                    for name in V8_FEATURE_NAMES
-                ),
-                key=lambda item: abs(item["contribution"]),
-                reverse=True,
-            )[:12]
         elapsed = max(0.0, (now - market.start_time).total_seconds())
-        snapshot_second = int(elapsed // self.current_round.settings.snapshot_interval_seconds) * self.current_round.settings.snapshot_interval_seconds
-        if (
-            not decision_policy["orderbook_chase_mode"]
-            and snapshot_second != self.last_snapshot_second
-            and elapsed <= 300
-        ):
-            if self.registry.save_snapshot(
-                V8Snapshot(
-                    market_id=market.condition_id,
-                    model_key=self.current_round.model_key,
-                    model_version=self.current_round.model_version,
-                    snapshot_second=snapshot_second,
-                    formula_probability=formula_up,
-                    model_probability=model_up,
-                    features=features,
-                    fresh_spot_exchanges=diagnostics["fresh_spot_exchanges"],
-                    source_health=diagnostics["source_health"],
-                    created_at=now,
-                )
-            ):
-                self.last_snapshot_second = snapshot_second
         update_key = self._update_key(books)
         if self.position is not None:
-            if elapsed < self.current_round.settings.sell_end_seconds:
+            if elapsed < 300.0:
                 self._evaluate_sell(
                     market,
                     model_up,
@@ -2682,10 +3322,11 @@ class BtcV8Engine:
                 self.status = self.last_reason = "holding_for_settlement"
             return
         settings = self.current_round.settings
-        if elapsed >= settings.entry_end_seconds:
-            self.status = self.last_reason = "entry_window_closed"
+        if diagnostics["remaining_seconds"] <= settings.min_entry_remaining_seconds:
+            self.status = self.last_reason = "chase_entry_too_late"
             return
-        if self.current_round.entry_count >= settings.max_entries_per_market:
+        max_entries = settings.max_entries_per_market
+        if self.current_round.entry_count >= max_entries:
             self.status = self.last_reason = "market_entry_limit"
             return
         if self.last_exit_at and (now - self.last_exit_at).total_seconds() < settings.reentry_cooldown_seconds:
@@ -2722,19 +3363,29 @@ class BtcV8Engine:
                     )
                     continue
                 target = float(chase["target_probability"])
-                candidates.append(
-                    self._buy_candidate(
-                        market,
-                        direction,
-                        probability,
-                        formula,
-                        books,
-                        now,
-                        valuation_probability=target,
-                        strategy_mode="orderbook_chase",
-                        decision_details=chase,
-                    )
+                candidate = self._buy_candidate(
+                    market,
+                    direction,
+                    probability,
+                    formula,
+                    books,
+                    now,
+                    valuation_probability=target,
+                    strategy_mode="orderbook_chase",
+                    decision_details=chase,
                 )
+                trend = self._chase_polymarket_trend(direction, now)
+                candidate["polymarket_trend"] = trend
+                candidate["decision_details"] = {
+                    **dict(candidate.get("decision_details") or {}),
+                    "polymarket_trend": trend,
+                }
+                if candidate.get("eligible") and not trend.get("eligible"):
+                    candidate["eligible"] = False
+                    candidate["reason"] = str(
+                        trend.get("reason") or "chase_polymarket_falling"
+                    )
+                candidates.append(candidate)
         else:
             candidates = [
                 self._buy_candidate(market, Direction.UP, model_up, formula_up, books, now),
@@ -2744,10 +3395,23 @@ class BtcV8Engine:
             ]
         self.candidates = {candidate["direction"]: candidate for candidate in candidates}
         eligible = [candidate for candidate in candidates if candidate.get("eligible")]
-        choice = max(eligible, key=lambda item: item["edge_per_share"], default=None)
+        choice = max(
+            eligible,
+            key=lambda item: (
+                float(item.get("buy_score") or -math.inf),
+                float(item.get("edge_per_share") or -math.inf),
+            ),
+            default=None,
+        )
+        buy_confirmation_key = choice["direction"] if choice else None
+        if choice is not None and decision_policy["orderbook_chase_mode"]:
+            buy_confirmation_key = (
+                (choice.get("decision_details") or {}).get("confirmation_key")
+                or buy_confirmation_key
+            )
         confirmed = self._confirmation(
             "buy",
-            choice["direction"] if choice else None,
+            buy_confirmation_key,
             update_key,
             now,
             float(decision_policy["buy_confirmation_seconds"]),

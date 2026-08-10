@@ -776,6 +776,31 @@ def test_stopped_recovery_orders_hold_above_initial_stop_and_persist(tmp_path) -
     reopened_registry.close()
 
 
+def test_disabled_recovery_does_not_restore_existing_round(tmp_path) -> None:
+    start = datetime(2026, 7, 25, 9, 0, tzinfo=timezone.utc)
+    strategy, registry, current = engine(tmp_path, start)
+    strategy.evaluate(current, {}, start)
+
+    assert strategy.current_round is not None
+    registry.close()
+
+    config = AppConfig(
+        data_dir=tmp_path,
+        btc_recovery={"enabled": False},
+        risk={"max_data_age_ms": 5000},
+    )
+    reopened_registry = BtcRecoveryRegistry(tmp_path / "recovery.sqlite3")
+    reopened = BtcRecoveryEngine(config, reopened_registry)
+    reopened.set_market(current, start + timedelta(seconds=1))
+    state = reopened.dashboard_state()
+
+    assert reopened.current_round is None
+    assert state["status"] == "disabled"
+    assert state["config"]["enabled"] is False
+    assert state["round"] is None
+    reopened_registry.close()
+
+
 def test_statistics_reset_preserves_history_and_persists(tmp_path) -> None:
     start = datetime(2026, 7, 25, 9, 0, tzinfo=timezone.utc)
     strategy, registry, current = engine(tmp_path, start)

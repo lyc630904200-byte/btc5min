@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from .btc_recovery import RecoveryFill, simulate_buy_quantity_limit
 from .config import AppConfig
 from .models import Direction, MarketState, OrderBookSnapshot
+from .sqlite_common import SqliteControlEventStore
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -142,6 +143,10 @@ class RealTradingAdapter(Protocol):
         self, token_id: str, amount_usd: float, max_price: float
     ) -> Any: ...
 
+    async def build_fok_sell(
+        self, token_id: str, quantity: float, min_price: float
+    ) -> Any: ...
+
     async def post_order(self, signed_order: Any) -> SubmissionResult: ...
 
     async def reconcile(self, order: RealOrderRecord) -> dict[str, Any] | None: ...
@@ -235,12 +240,46 @@ class PolymarketSdkAdapter:
     async def build_fok_buy(
         self, token_id: str, amount_usd: float, max_price: float
     ) -> Any:
-        price = Decimal(str(max_price))
-        return await self.client.create_market_order(
+        return await self._build_fok_market_order(
             token_id=token_id,
             side="BUY",
-            amount=Decimal(str(amount_usd)),
-            max_price=price,
+            size=amount_usd,
+            limit_price=max_price,
+        )
+
+    async def build_fok_sell(
+        self, token_id: str, quantity: float, min_price: float
+    ) -> Any:
+        return await self._build_fok_market_order(
+            token_id=token_id,
+            side="SELL",
+            size=quantity,
+            limit_price=min_price,
+        )
+
+    async def _build_fok_market_order(
+        self,
+        *,
+        token_id: str,
+        side: Literal["BUY", "SELL"],
+        size: float,
+        limit_price: float,
+    ) -> Any:
+        size_decimal = Decimal(str(size))
+        price_decimal = Decimal(str(limit_price))
+        if side == "BUY":
+            return await self.client.create_market_order(
+                token_id=token_id,
+                side=side,
+                amount=size_decimal,
+                max_price=price_decimal,
+                order_type="FOK",
+            )
+        return await self.client.create_market_order(
+            token_id=token_id,
+            side=side,
+            shares=size_decimal,
+            min_price=price_decimal,
             order_type="FOK",
         )
 
@@ -382,6 +421,11 @@ class RealTradingRegistry:
             """
         )
         self.connection.commit()
+        self.common = SqliteControlEventStore(
+            self.connection,
+            controls_table="real_trading_controls",
+            events_table="real_trading_events",
+        )
 
     def close(self) -> None:
         self.connection.close()
@@ -470,39 +514,13 @@ class RealTradingRegistry:
         ]
 
     def set_control(self, key: str, value: Any) -> None:
-        now = utc_now().isoformat()
-        self.connection.execute(
-            """
-            INSERT INTO real_trading_controls (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (key, json.dumps(value, ensure_ascii=False), now),
-        )
-        self.connection.commit()
+        self.common.set_control(key, value)
 
     def get_control(self, key: str, default: Any = None) -> Any:
-        row = self.connection.execute(
-            "SELECT value FROM real_trading_controls WHERE key=?", (key,)
-        ).fetchone()
-        if not row:
-            return default
-        try:
-            return json.loads(row["value"])
-        except json.JSONDecodeError:
-            return default
+        return self.common.get_control(key, default)
 
     def event(self, event_type: str, payload: dict[str, Any]) -> None:
-        self.connection.execute(
-            "INSERT INTO real_trading_events (event_type, created_at, payload_json) "
-            "VALUES (?, ?, ?)",
-            (
-                event_type,
-                utc_now().isoformat(),
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            ),
-        )
-        self.connection.commit()
+        self.common.event(event_type, payload)
 
     def shadow_counts(self) -> tuple[int, int]:
         reset_at = self.get_control("shadow_reset_at")

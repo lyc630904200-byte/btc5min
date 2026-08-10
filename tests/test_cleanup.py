@@ -100,8 +100,8 @@ def test_v8_data_cleanup_loop_uses_configured_retention(tmp_path) -> None:
     journal = RunJournal(active)
     config = AppConfig(
         data_dir=tmp_path,
+        data_retention_hours=12,
         data_cleanup_interval_seconds=1,
-        btc_v8={"orderbook_chase_mode": True, "snapshot_retention_hours": 12},
     )
     registry = RegistrySpy()
 

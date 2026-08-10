@@ -1,6 +1,223 @@
 # polybtc 交接文档
 
+## 最新状态（2026-08-09，BTC动态加权独立影子策略）
+
+- 顶部新增独立分页“BTC动态加权”，不修改、不替代 BTC V8。策略固定为 `SHADOW_ONLY`，默认 `enabled=false`，不会连接签名器或发送真实订单；运行中即使关闭自动入场也持续展示评分，方便先观察再决定参数。
+- UP、DOWN 分别计算 0-100 分：时间、目标方向合约价格、Chainlink TWAP/官方目标价距离、盘口3秒速度、价差3秒速度、盘口加速度、价差加速度。时间和价格按方案锚点线性插值；速度及加速度使用 `t-3/t-6`（允许 `+-1秒`）和最近60秒标准差转正态 CDF 分数，缺少历史时不允许入场。
+- 权重按剩余 `300/180/60秒` 三组基础值线性插值，并根据 Chainlink `10秒/60秒` 波动率比动态偏移，最终使用3秒 EMA 平滑并归一化到100%。页面逐项展示原值、标准分、权重和贡献，并绘制最近5分钟 UP/DOWN 总分及入场阈值曲线。
+- 入场规则为总分 `>=70`、领先 `>=8分`、持续 `>=2秒/3次更新`、每场最多一次。硬保护包括 Chainlink/盘口年龄、深度可信、价差、90美分内完整成交、市场最小数量、固定 `$5`、每跳风险 `$0.50`、买价 `15-90美分` 和剩余10秒停止新买入。手续费、滑点、距离概率和诊断净优势只展示，不参与拦截。
+- 每个信号同时创建 Observed、P95 两条延迟影子 FOK；两条轨道共用现有 CLOB 延迟探针但账本完全独立。退出只使用反向评分：至少持有15秒，对侧 `>=70` 且领先10分，持续 `3秒/3次更新`；卖盘不足等待新盘口重试，越过市场结束时间后停止评分和卖出，等待官方结算。
+- SQLite 独立账本为 `data/btc-weighted-ledger.sqlite3`，记录场次、每秒评分、尝试和仓位。切场、到期、官方结算或进程重启时，未完成延迟尝试会标记为明确的 `UNMEASURABLE` 原因，不会误用下一场盘口；设置通过 `/api/config` 保存，状态通过 `/api/state` 和 WebSocket 顶层 `btc_weighted` 发布，并从下一场 BTC 生效。
+- Dashboard 包含市场/目标/TWAP/剩余时间/波动率/数据年龄、双向总分、七项贡献、确认进度、全部门槛、Observed/P95 统计、持仓/尝试历史和完整参数表单。保存按钮会显示“保存中.../已保存/保存失败”，同时提示下一场 BTC 生效。
+- 验证：完整回归 `366 passed`；Python 编译、前端 JavaScript 语法、509个 HTML ID/脚本引用检查均通过。真实行情浏览器验收覆盖 `1440x1000` 与 `390x844`，无页面横向溢出或脚本错误，曲线画布有有效像素，七项组件和30个双向门槛均已渲染。Dashboard 运行于 `http://127.0.0.1:8765/`，API 确认 `mode=SHADOW_ONLY`、`enabled=false`、零仓位零尝试。
+- 运行切换（2026-08-09 23:50）：用户已正式启用 BTC动态加权，并关闭 `btc_v8`、`orderbook_chase`、`btc_recovery`、`btc_dynamic`、`pair_match` 和 `real_trading`。配置在新场边界生效后已重启，Dashboard Python PID `81612`；共享 CLOB 延迟探针仍由动态加权独立采样。当前场 `btc-updown-5m-1786290300` 已完成一次入场，Observed/P95 各有一条影子仓；上一场两条仓位正在 `HOLD_TO_SETTLEMENT`，均由独立账本继续管理。
+- 桌面 `C:\Users\Administrator\Desktop\BTC程序控制.cmd` 已同步为“BTC Dynamic Weighted Control”：菜单只保留启动、停止、重启、动态加权状态和打开页面；启动会验证 weighted-only 配置，停止会检查 `OPEN/EXIT_PENDING/HOLD_TO_SETTLEMENT` 仓位及未完成延迟尝试并先警告，状态会显示双向分数、领先方向、入场计数、仓位和延迟探针。旧脚本备份为 `BTC程序控制.cmd.bak-20260809-weighted`；`status` 与 `start` 实际执行验证通过。
+
+## 最新状态（2026-08-09，BTC V8 再放宽）
+
+- “停止新买入（剩余秒）”不再要求覆盖最短或最长持有时间，只保留 `最短持有 <= 最长持有`。例如停止买入 `10秒`、最短持有 `30秒`、最长持有 `90秒` 现可正常保存；晚入仓跨过5分钟市场结束线后，主 V8 停止主动卖出，Observed/P95 影子轨道转为 `HOLD_TO_SETTLEMENT`，不发送卖单并等待官方结果，最终以 `official_settlement` 结算。当前活动参数仍保持用户原值 `60/30/90`。
+- 订单稀少的 60 次实时采样中，方向信号通过 `59/60`；主要瓶颈是盘口经济性：旧诊断 `depth_below_limit` 为 `45/60`，`book_depth_untrusted` 为 `14/60`。本次把滑点预留 `1.0 -> 0.5美分`、有效净优势 `1.0 -> 0.5美分`、离场手续费预留比例改为 `0`，动态最高买价约可提高 `3美分`；完整离场手续费估算仍保留在 diagnostics 中。
+- 最晚入场从剩余 `>94秒` 放宽为 `>60秒`，每场增加 `34秒` 可入场时间。价格带仍为 `15-90美分`、每场最多买入2次、每跳风险预算 `$0.50`，盘口深度可信检查和最近3秒同方向盘口趋势保护均未关闭。
+- 买价不足的诊断已细分：当卖一价本身高于动态最高限价时返回 `best_ask_above_limit`，并携带 `book_best_ask`、`limit`、`limit_gap_cents`；其余限价内深度不足继续返回 `depth_below_limit`。Dashboard 已增加对应中文参数展示。
+- `BtcV8Config`、`config.example.yaml`、`data/dashboard-settings.json`、Dashboard 表单和保存接口现严格对应同一组 `59` 个字段。运行时覆盖层曾保留旧的 `1.0/1.0/94`，现已通过下一 BTC 场生效机制修正并清空 pending。
+- 运行核对：Dashboard `http://127.0.0.1:8765/`，Python PID `74328`，启动器 PID `67540`。新场 `btc-updown-5m-1786270500` 的执行引擎和 `/api/config` 均返回 `slippage_reserve_cents=0.5`、`exit_fee_reserve_fraction=0`、`min_effective_edge_cents=0.5`、`min_entry_remaining_seconds=60`，配置状态为 `active`；真实交易关闭。该场直到60秒保护线前未形成合格方向，所以没有订单，这不是新价格门槛未加载。
+- 后续实盘行情验证：下一场 `btc-updown-5m-1786270800` 已按新参数触发1次 DOWN 影子买入，动态限价 `48美分`，Observed 轨成交 `47美分`，P95 延迟轨成交 `45美分`。两条轨道是同一信号的延迟对照，不是主 V8 重复入场。随后盘口转向 UP 时被 `book_depth_untrusted` 拦截，表明深度保护仍在生效。
+- 验证：新增极晚入场跨结束线、禁止卖出和官方结算测试；V8/盘口目标测试 `49 passed`，完整回归 `351 passed`，Python 编译、前端 JavaScript 语法及59字段一致性检查均通过。V8 保存按钮已有“保存中/已保存/保存失败”反馈。
+
+## 当前生效状态（2026-08-09，BTC V8 全量大方向参数版）
+
+BTC V8 已删除旧的自动模型、手动买卖边、训练快照、概率修正和旧时间窗口配置，重新定义为仅使用30秒大方向的一套参数。`BtcV8Config`、`config.example.yaml`、`data/dashboard-settings.json`、Dashboard 表单和保存接口均严格对应同一组58个字段；旧字段提交会被 Dashboard 拒绝，旧配置字段不会再序列化。
+
+- 领先信号公式：`time_weighted_average_30s(spot_momentum_10s + 0.5*spot_momentum_30s + 0.35*calibrated_spot_twap_gap - twap_drift_10s - 0.5*twap_drift_30s)`。
+- 入场门槛：方向幅度 `>=0.03bps`、强度 `>=0.05 sigma`、目标概率变化 `>=0.2pp`、目标方向概率 `>=40%`、至少1所方向支持、至少1所现货新鲜、有效净优势至少1美分、买入确认 `1.0s/2次更新`。
+- 买入限制：价格 `15-90美分`；低价惩罚 `max(0, 0.45-avg_price)*1.5`；高价优先评分 `avg_price*1.0 + effective_edge*0.30`；每跳最大风险预算 `$0.50`；每个5分钟市场最多买入2次；剩余时间必须 `>94s`。
+- 方向与数据窗口：短/长方向窗口 `10s/30s`；方向平均 `30s`、最小跨度 `20s`、最少15样本、最大样本间隔 `2.5s`；盘口趋势 `3s`、最小跨度 `1s`；Chainlink 最大年龄 `5s`；现货过期 `2s`。
+- 持仓退出：卖出确认 `0.5s/1次`，反向确认 `10s/2次`；最短/最长持仓 `30s/90s`；最低止盈 `$0.05`；硬止损 `-$1.50`；任何时刻紧急止损 `-$2.00`；利润回撤参数 `$0.25/$0.15/35%`。
+- 运行状态：Dashboard `http://127.0.0.1:8765/`，Python PID `69988`，启动器 PID `74932`。真实交易关闭，主 V8 与影子跟单核对时均无开放仓位；运行 API 返回58个新字段及 `min_buy_price_cents=15`、`max_buy_price_cents=90`。
+- 验证结果：Python 编译与页面 JavaScript 语法检查通过；V8/Dashboard/runner/跟单定向测试 `114 passed`；完整回归 `349 passed`。
+
+本次全量替换还移除了 V8 页面中的“模型版本、训练市场、Brier、准确率、评估快照”等旧模型展示，运行模式固定显示“30秒大方向”。Chainlink 过期拦截会立即清除未完成买入确认，并携带实际年龄、最大允许年龄和行情时间戳。
+
+Dashboard 的 V8 保存按钮已增加明确反馈：点击后显示“保存中...”，成功时绿色显示“已保存”并在状态栏提示生效时机，失败时红色显示“保存失败”并展示错误；约2.2秒后按钮恢复。状态栏带 `role=status` 与 `aria-live=polite`。前端语法检查、Dashboard `26 passed`、完整回归 `349 passed`。
+
+续接复核（2026-08-09）：已重新读取本文件并核对当前运行 API。Dashboard 仍在 `http://127.0.0.1:8765/`，PID `41676` 存活；`/api/config` 确认 `btc_v8.enabled=true`、`btc_v8.orderbook_chase_mode=true`、`orderbook_chase.enabled=true`、`real_trading.enabled=false`、`pair_match/btc_recovery/btc_dynamic=false`，`max_entries_per_market=2`，`min_fresh_spot_exchanges=2`。`/api/state` 核对时无 open position，追赶状态为 `v8_signal_following`，当前场因剩余时间不足处于 `chase_entry_too_late` 属正常保护。`data/dashboard-live.stderr.log` 尾部仍有旧的 `websockets 15.0.1 recv_messages` 异常记录，但该日志最后写入早于后续 dashboard stdout 重启/输出；代码中主要 WebSocket 源均已走 `connect_websocket()` 的 `ProxySafeClientConnection`。
+
+本次修正：`web/index.html` 的 Chase 页旧文案“0.25秒 / 2次更新”已改为当时规则“买入 2.0秒/2次 · 反向退出 10秒/2次”，并将 V8 每场最多买入输入框初始值从 3 同步为 2。静态前端 ID 检查 `missing_refs=[]`。验证命令均使用 Codex bundled Python：`py_compile` 通过；`tests/test_orderbook_chase.py` 为 `8 passed`；`tests/test_btc_v8.py tests/test_dashboard.py tests/test_runner.py tests/test_real_trading.py` 为 `112 passed`；完整回归 `346 passed`；文案修正后 `tests/test_dashboard.py tests/test_orderbook_chase.py` 为 `34 passed`。
+
+2026-08-09 用户要求买入确认改为1秒：`CHASE_BUY_CONFIRMATION_SECONDS=1.0`，仍要求 `2次更新`；`config.example.yaml`、`data/dashboard-settings.json` 和 Dashboard Chase/V8 前端默认显示已同步。反向退出确认仍为 `10s/2次更新`。验证：`py_compile` 通过，`tests/test_btc_v8.py tests/test_orderbook_chase.py tests/test_dashboard.py` 为 `70 passed`，完整回归 `346 passed`，静态前端 ID 检查 `missing_refs=[]`。空仓重启后监听 PID 为 `48716`，`/api/config` 返回 `buy_confirmation_seconds=1.0`、`buy_confirmation_updates=2`、`real_trading=false`。
+
+2026-08-09 用户要求按 A 方案把买入核心排序改为高价优先：合格门槛仍保留净优势 `>=3¢`，但最终候选选择从单纯 `edge_per_share` 最大改为 `buy_score = avg_price*1.0 + edge_per_share*0.30` 最大；候选诊断新增 `buy_score` 和 `buy_score_formula`。这会让仍有正净优势的高价合约优先于低价高毛优势合约。验证：`py_compile` 通过，`tests/test_btc_v8.py` 为 `38 passed`，完整回归 `348 passed`，静态前端 ID 检查 `missing_refs=[]`。空仓重启后监听 PID 为 `57288`，`/api/config` 仍返回 `buy_confirmation_seconds=1.0`、`buy_confirmation_updates=2`、`real_trading=false`。
+
+2026-08-09 用户要求继续改公式，解决低价票看起来 edge 很大导致“爱买小”的问题：orderbook chase 买入候选现在保留旧公式为 `unpenalized_edge_per_share`，再扣 `low_price_penalty_per_share = max(0, 0.45 - avg_price) * 1.5`，最终 `edge_per_share/effective_edge_per_share` 用于 `>=3¢` 入场判断和 `buy_score` 排序。#002241 类型的 `26¢` 票即使旧净优势约 `19¢`，也会因约 `28.5¢` 低价惩罚被 `actual_edge_below_threshold` 拦截。Dashboard 候选文案会显示“低价惩罚 x¢”。验证：`py_compile` 通过，`tests/test_btc_v8.py` 为 `39 passed`，完整回归 `349 passed`。空仓重启后监听 Python PID 为 `54496`，运行 API 已就绪且无主仓/影子开放仓位。
+
+2026-08-09 用户要求降低“组合方向幅度不足”条件：`CHASE_MIN_DIRECTION_SIGNAL_BPS` 从 `0.10bps` 降为 `0.05bps`，其它信号质量、盘口和经济性门槛保持不变；方向诊断新增 `min_direction_signal_bps`，便于直接看到当前阈值。实时核对时曾出现方向幅度约 `0.409bps`、强度 `0.819 sigma`、概率变化 `1.91pp` 已全部通过，但最终被 `actual_edge_below_threshold` 拦截，说明少下单还会受有效净优势（含低价惩罚）影响。验证：`py_compile` 通过，`tests/test_btc_v8.py` 为 `39 passed`，完整回归 `349 passed`。空仓重启后监听 Python PID 为 `68684`，运行 API 返回 `min_direction_signal_bps=0.05`。
+
+2026-08-09 用户要求将有效净优势门槛改为1美分：orderbook chase 的 `CHASE_MIN_NET_EDGE` 从 `0.03` 降为 `0.01`，即 `effective_edge_per_share >= 0.01` 即可通过该项。低价惩罚公式、高价优先评分和其它入场保护保持不变。验证：`py_compile` 通过，`tests/test_btc_v8.py` 为 `39 passed`，完整回归 `349 passed`。空仓重启后监听 Python PID 为 `73016`，运行 API 返回 `buy_edge_cents=1.0`。
+
+2026-08-09 根据45秒实时拦截采样降低主要频率瓶颈：最小信号强度 `0.20 -> 0.10 sigma`，目标概率变化 `1pp -> 0.3pp`，最少新鲜现货源 `2 -> 1`；方向幅度 `0.05bps`、有效净优势 `1美分`、低价惩罚及其它保护不变。诊断新增 `min_signal_sigma` 和 `min_probability_move`。一路新鲜现货可继续决策、零路仍拦截的测试已覆盖；`py_compile` 通过，V8/Dashboard 目标测试 `65 passed`，完整回归 `349 passed`。空仓重启后监听 Python PID 为 `71128`，新一轮运行 API 已确认 `min_signal_sigma=0.1`、`min_probability_move=0.003`、`required_fresh_spot_count=1`、`buy_edge_cents=1.0`，真实交易保持关闭。
+
+2026-08-09 用户要求再次放宽信号触发：方向幅度 `0.05 -> 0.03bps`、最小信号强度 `0.10 -> 0.05 sigma`、目标概率变化 `0.3pp -> 0.2pp`。最少新鲜现货源继续为1，有效净优势继续为1美分，其余盘口和风险保护不变。`py_compile` 通过，V8目标测试 `39 passed`，完整回归 `349 passed`。空仓重启后监听 Python PID 为 `71772`，运行 API 已确认 `min_direction_signal_bps=0.03`、`min_signal_sigma=0.05`、`min_probability_move=0.002`。
+
+以下章节保留为变更历史。若旧章节中的“两所方向支持”“每场最多1次”或旧 PID 与本节冲突，以本节和最上方最新变更记录为准。
+
+## 2026-08-09 BTC V8 TWAP方向支持改为一所
+
+按用户要求，30秒TWAP组合方向信号的同向支持门槛从至少两所改为至少一所，即 `CHASE_MIN_SUPPORTING_SOURCES=1`。只要任一交易所完成连续30秒方向平均并通过其余幅度、强度和概率门槛，就可以独立确定UP/DOWN；总体数据健康仍要求至少两所现货交易所同时新鲜，未改为单源行情运行。反向退出的方向支持也同步为一所，并继续要求反向信号持续确认 `10s/2次更新`。其他价格带、每场2单、持仓和止损规则不变。
+
+验证：BTC V8/追赶定向测试 `44 passed`，Dashboard/runner/相关策略全回归 `139 passed`。空仓重启后的 Dashboard PID 为 `41676`，仍为 `SHADOW_ONLY`；运行 API 已确认方向 `required_sources=1`、总体新鲜现货 `required_fresh_spot_count=2`、每场买入上限2。
+
+## 2026-08-09 BTC V8 每场买入上限改为2
+
+按用户要求，30秒大方向追赶模式每个5分钟市场的买入硬上限从1次改为2次。代码级 `CHASE_MAX_ENTRIES_PER_MARKET=2`，追赶模式直接使用该硬上限，因此即使恢复的旧场次快照仍记录1也不会错误阻止第2次；配置默认、`config.example.yaml` 和 Dashboard 活动设置均同步为 `max_entries_per_market=2`。其他信号、价格带、动态份数、持仓和退出规则不变。
+
+验证：BTC V8/追赶定向测试 `44 passed`，Dashboard/runner/相关策略全回归 `139 passed`。空仓重启后的 Dashboard PID 为 `40768`，仍为 `SHADOW_ONLY`；运行 API 已确认新场 `btc-updown-5m-1786243200` 的场次快照与活动配置均为2，当前入场计数为0。
+
+## 2026-08-09 BTC V8 30秒大方向持仓版
+
+根据关闭绝对方向过滤后约一小时影子账本的亏损分析，V8 已从“30秒方向入场、几秒追赶止损”统一为较长持仓版本。绝对大方向否决继续关闭，方向仍由每家交易所30秒时间加权组合信号的中位数决定，但新增质量、价格、仓位、重入和退出保护。
+
+- 入场硬门槛：组合方向幅度 `>=0.10bps`、强度 `>=0.20 sigma`、目标概率变化 `>=1pp`、至少两路完成平均的交易所同向、目标方向概率 `>=40%`；Polymarket 同方向最近3秒不下跌、净优势至少3美分、买入确认 `2.0s/2次` 保持不变。
+- 买入价格带固定为 `15-70美分`。盘口每跳最大份数风险预算为 `$0.50`，按 `0.50 / tick_size` 计算份数上限；必要时不再强制花完配置的 `$5`，候选中记录 `risk_sized`、`max_quantity_by_tick` 和实际 quote。
+- 每场代码级硬限制最多1次买入，配置默认、启动基线和 Dashboard 保存值均同步为 `max_entries_per_market=1`，从根源上阻止30秒平均信号未消退时连续追损。
+- 持仓改为最短 `30s`、最长 `90s`，入场要求剩余时间 `>94s`。普通硬止损改为持仓满30秒后 `-$1.50`；任何时刻达到 `-$2.00` 触发 `chase_emergency_stop`。
+- 反向退出要求当前反方向仍通过全部入场信号门槛且至少两路来源支持，并连续确认 `10s/2次更新`；主V8仓位与 Observed/P95 延迟执行仓均执行相同确认规则。普通目标追上、利润回撤和超时规则继续保留。
+- 前端新增“目标方向概率低于40%”“买入价不在15至70美分”“紧急止损”原因，并把超时说明更新为90秒。
+
+验证：`py_compile` 通过；BTC V8/追赶定向测试 `44 passed`，Dashboard/runner/相关策略全回归 `139 passed`。新增覆盖低目标概率、低价合约动态缩量与拒绝、30秒前普通亏损保护、即时紧急止损和两路反向支持。空仓重启后的 Dashboard PID 为 `35204`，仍为 `SHADOW_ONLY`；运行 API 已确认当前场与活动配置均为 `max_entries_per_market=1`、`required_sources=2`、绝对方向过滤关闭。首个运行样本只有 Coinbase 完成30秒平均，因此正确停在 `chase_consensus_insufficient`，新门槛已生效。
+
+## 2026-08-09 BTC V8 关闭绝对大方向否决
+
+按用户要求，`chase_absolute_direction_mismatch` 买入否决已关闭。UP/DOWN 现在完全由每家交易所30秒时间加权组合信号的中位数决定；Chainlink 当前30秒TWAP相对本轮开盘价的方向、幅度和对应公式概率继续写入 diagnostics，但只展示、不再阻止买入。方向幅度 `0.01bps`、强度 `0.02 sigma`、目标概率变化 `0.1pp`、至少一路方向支持、Polymarket 同方向盘口不下跌、净优势3美分和 `2.0s/2次` 确认均保持不变。新增运行诊断 `absolute_direction_filter_enabled=false`。
+
+验证：反向价格与反向公式概率的测试样例仍可得到 `chase_signal`；`py_compile` 通过，BTC V8/追赶定向测试 `42 passed`，Dashboard/runner/相关策略全回归 `137 passed`。空仓重启后的 Dashboard PID 为 `32288`，运行 API 已确认 `absolute_direction_filter_enabled=false` 且方向信号可以返回 `chase_signal`；当前仍为 `SHADOW_ONLY`。
+
+## 2026-08-09 BTC V8 30秒方向信号增频一档
+
+用户反馈下单太少后，运行诊断显示弱信号阶段常被方向幅度/强度拦截，开盘价附近极小反向波动也会触发绝对方向不一致。此次不改30秒组合方向公式，不降低盘口和经济性保护，只放松方向触发一档：组合方向幅度 `0.03bps -> 0.01bps`、最小信号强度 `0.05 sigma -> 0.02 sigma`、目标概率变化 `0.3pp -> 0.1pp`。新增 Chainlink 相对本轮开盘价 `+-0.25bps` 中性区：位于中性区时由30秒平均组合信号决定 UP/DOWN，不因几乎为零的开盘偏移判绝对方向冲突；一旦离开中性区，Chainlink 开盘方向和对应公式概率仍必须严格同向。
+
+保持不变：30秒时间加权平均、至少两路新鲜现货、至少一路方向支持、Polymarket 最近3秒同方向盘口不下跌、净优势至少3美分、买入确认 `2.0s/2次`、最短/最长持仓 `12s/45s`、`$1.00` 硬止损、入场剩余时间 `>55s`，以及 `SHADOW_ONLY`。修改后 `py_compile` 通过，`tests/test_btc_v8.py + tests/test_orderbook_chase.py` 为 `42 passed`，Dashboard/runner/相关策略全回归为 `137 passed`。空仓重启后的 Dashboard PID 为 `32752`；运行 API 已确认两路30秒平均就绪，并返回 `absolute_direction_neutral_bps=0.25`，说明新代码已经加载。
+
 > 最新有效状态以本节为准；后面的 2026-07-28 及更早内容保留为历史记录，其中分支、PID、参数和统计已经过期。
+
+## 2026-08-09 BTC V8 TWAP方向信号30秒平均
+
+V8 的最终方向信号已从“每次评估的瞬时组合信号”改为“每家交易所最近30秒组合信号的时间加权平均”，再对各家平均值取中位数。目标概率、方向支持数、UP/DOWN方向和买入确认key均统一使用平均信号。
+
+- 每家交易所独立记录瞬时组合信号，每个本机接收时间整秒最多一个样本，避免高频盘口更新造成样本权重偏差。
+- 平均窗口 `30s`，至少 `15` 个样本且连续时间跨度至少 `20s`；相邻样本中断超过 `2.5s` 时只保留断点后的连续段并重新预热。
+- 时间加权采用相邻样本的梯形积分除以实际连续跨度；先对每家交易所独立平均，再取平均信号中位数。
+- 新公式标识为 `time_weighted_average_30s(spot_momentum_10s + 0.5*spot_momentum_30s + 0.35*calibrated_spot_twap_gap - twap_drift_10s - 0.5*twap_drift_30s)`；确认key改为 `twap_direction_average_30s`。
+- diagnostics 同时保留 `twap_direction_instant_signal_returns` 和最终的 `twap_direction_signal_returns`，并新增每源平均状态、已就绪/预热来源及窗口参数。
+- 基差校准、方向幅度 `0.03bps`、强度 `0.05 sigma`、目标概率变化 `0.3pp`、盘口、净优势、`2.0s/2次` 确认和退出参数未改变。
+- 前端等待文案已改为“等待30秒方向平均历史”。
+
+验证：目标测试 `42 passed`，Dashboard/runner/相关策略广覆盖 `137 passed`，`py_compile` 通过。空仓后已重启 Dashboard，当前 PID `1492`，仍为 `SHADOW_ONLY`。重启后的当前场次处于 `chainlink_open_unverified`，因此运行API尚未进入方向诊断分支；需等开盘价验证成功的场次才能看到平均预热字段。
+
+## 2026-08-09 BTC V8 现货/TWAP交易所基差校准
+
+V8 TWAP方向信号已从直接使用 `log(现货中间价 / Polymarket 30秒TWAP)` 升级为每家交易所独立校准。最终核对时发现外部启动的旧代码进程，确认空仓后已安全重启加载新实现；当前 Dashboard PID `14976`，仍为 `SHADOW_ONLY`。
+
+- Binance、Coinbase、Kraken 分别维护基差历史，不共享基准；每个 Chainlink TWAP tick、每个来源最多记录一个时间配对样本。
+- 现货盘口与TWAP接收时间差必须不超过 `1s` 才进入基差历史；使用 `received_at`，不使用交易所时钟决定先后。
+- 基准基差取“当前前 `310s` 至前 `10s`”这段完整 `300s` 窗口的滚动中位数，排除最近 `10s`，避免当前领先立即污染基准。
+- 校准至少需要 `30` 个样本且时间跨度至少 `60s`；按约1秒一个TWAP样本计算，冷启动通常约 `70s` 后就绪。预热期间校准缺口固定为0，现货10/30秒动量仍正常参与信号。
+- 校准缺口为 `实时基差 - 基准基差`。滚动MAD用于限制异常值，截断范围为 `max(2bps, 6*MAD)`，并封顶 `10bps`。
+- 新公式为 `spot_momentum_10s + 0.5*spot_momentum_30s + 0.35*calibrated_spot_twap_gap - twap_drift_10s - 0.5*twap_drift_30s`。
+- `/api/state` 的 V8 diagnostics 新增原始基差、各源基准、校准后缺口、完整校准统计、已就绪/预热/截断来源、配对时间差和未配对来源；原 `spot_twap_gaps` 现表示校准后缺口。
+- 基差历史跨5分钟场次保留，但进程重启后重新预热；未修改旧普通策略的 `edge_correction_usd`，V8 不再依赖该Binance单源修正。
+
+验证：`python -m py_compile polybtc\btc_v8.py` 通过；`python -m pytest tests\test_btc_v8.py tests\test_orderbook_chase.py -q` 为 `41 passed`；Dashboard/runner/相关策略广覆盖为 `136 passed`。新增覆盖预热不使用原始价差、固定基差扣除、MAD异常截断和校准缺口进入组合方向信号。
+
+运行API已确认新字段生效：冷启动阶段 `spot_twap_gaps` 为0；与TWAP接收时间差超过1秒的来源进入 `spot_twap_unpaired_sources`，不会写入基差历史。基准样本满足条件后才进入 `spot_twap_calibration_ready_sources`。
+
+## 2026-08-09 BTC V8 TWAP大方向观察型高频档调整
+
+为开始采集足够的影子成交，组合方向幅度调整为 `0.03bps`，最小信号强度调整为 `0.05 sigma`，目标概率变化调整为 `0.3pp`。方向确认改为至少一条现货领先源即可，但现货数据健康度仍要求至少两路交易所同时新鲜；公式绝对方向概率调整为 `UP/DOWN >=50%`，Chainlink 相对开盘的幅度门槛取消、仍必须与方向同向。Polymarket 同方向盘口近 `3s` 不下滑、净优势至少 `3¢`、买入确认 `2.0s/2次`、最短/最长持仓 `12s/45s`、`$1.00` 硬止损与 `>55s` 入场截止保持不变；仍为 `SHADOW_ONLY`，只会产生影子成交。
+
+验证：`python -m py_compile polybtc\btc_v8.py` 通过；`python -m pytest tests\test_btc_v8.py tests\test_orderbook_chase.py -q` 为 `39 passed`。空仓后已重启 Dashboard，当前 PID `149224`。
+
+运行验证：新场 `btc-updown-5m-1786209600` 在剩余约 `229s` 时通过 `2.0s/2次` 确认。V8 于 `2026-08-08T17:21:13Z` 建立 UP 影子仓，`$5.00`、入场价 `$0.46`、数量约 `10.87`；影子执行器的 Observed/P95 测量仓也均已建立，均不提交真实订单。持仓仍在管理中，禁止为修改参数重启。
+
+## 2026-08-09 BTC V8 TWAP大方向可出单强度调整
+
+为使两源共识的中等趋势在入场窗口内能够成交，组合方向幅度从 `1bps` 降至 `0.10bps`，最小信号强度从 `1.25 sigma` 降至 `0.20 sigma`，目标概率变化从 `4pp` 降至 `1pp`，Chainlink 相对本轮开盘的绝对同向幅度从 `1.5bps` 降至 `0.75bps`。公式绝对方向概率仍为 `UP/DOWN >=55%`；两路现货同向共识、同方向 Polymarket 近 `3s` 盘口不下滑、净优势至少 `3¢`、买入确认 `2.0s/2次`、最短/最长持仓 `12s/45s`、`$1.00` 硬止损与 `>55s` 入场截止保持不变，仍为 `SHADOW_ONLY`。
+
+验证：`python -m py_compile polybtc\btc_v8.py` 通过；`python -m pytest tests\test_btc_v8.py tests\test_orderbook_chase.py -q` 为 `39 passed`。空仓后已重启 Dashboard，当前 PID `147400`。
+
+## 2026-08-09 BTC V8 TWAP大方向概率变化第二档调整
+
+为让已通过方向确认的中等趋势能够入场，目标概率变化门槛从 `8pp` 降至 `4pp`。组合方向 `>=1bps`、Chainlink 开盘同向 `>=1.5bps`、公式绝对方向概率 `>=55%`、至少两路现货同向共识、`1.25 sigma`、同方向 Polymarket 近 `3s` 盘口不下滑、净优势至少 `3¢`、买入确认 `2.0s/2次`、最短/最长持仓 `12s/45s` 与 `$1.00` 硬止损保持不变；仍为 `SHADOW_ONLY`。
+
+验证：`python -m py_compile polybtc\btc_v8.py` 通过；`python -m pytest tests\test_btc_v8.py tests\test_orderbook_chase.py -q` 为 `39 passed`。空仓后已重启 Dashboard，当前 PID `141352`。
+
+## 2026-08-09 BTC V8 TWAP大方向入场门槛第一档调整
+
+因 2026-08-08 的首版大方向门槛在连续运行约一小时后未产生新影子单，已将方向确认调到可交易的第一档；仍为 `SHADOW_ONLY`，不提交真实订单。
+
+- 组合方向幅度：`5bps -> 1bps`。
+- Chainlink 相对本轮开盘的绝对同向幅度：`5bps -> 1.5bps`。
+- 公式绝对方向概率：`UP/DOWN >=60% -> >=55%`。
+- 保持不变：至少两路现货同向共识、`1.25 sigma`、目标概率变化 `8pp`、同方向 Polymarket 近 `3s` 盘口不下滑、净优势至少 `3¢`、买入确认 `2.0s/2次`、最短/最长持仓 `12s/45s` 与 `$1.00` 硬止损。
+- 验证：`python -m py_compile polybtc\btc_v8.py` 通过；`python -m pytest tests\test_btc_v8.py tests\test_orderbook_chase.py -q` 为 `39 passed`；空仓后已重启 Dashboard，当前 PID `142080`。
+
+## 2026-08-08 BTC V8 TWAP大方向当前运行状态
+
+本节为当前最新状态。用户要求把 `BTC V8` 的盘口追赶升级为 `30秒TWAP大方向长持仓`，并保持其它分页/策略后台任务停掉；已完成并重启生效。
+
+运行状态（本地时间 `2026-08-08 23:25 +08:00`）：
+
+- Dashboard：`http://127.0.0.1:8765/`；WebSocket：`ws://127.0.0.1:8766/ws`；当前监听 Python PID `142808`。
+- `/api/config`：`sources.enabled_assets=BTC`；`btc_v8.enabled=true`；`btc_v8.orderbook_chase_mode=true`；`orderbook_chase.enabled=true`。
+- 其它策略 active 配置均已关闭：`pair_match=false`、`btc_recovery=false`、`btc_dynamic=false`、`real_trading=false`。
+- `/api/state` 确认：`btc_recovery.status=disabled`、`btc_recovery.config.enabled=false`、`btc_recovery.round=null`；`orderbook_chase.status=v8_signal_following`、`paused=false`、`emergency_stopped=false`。
+- TWAP大方向影子执行仍是 `SHADOW_ONLY`：只构造/签名影子 FOK，不提交真实订单；真实交易模块保持关闭。
+- TWAP大方向硬门槛：买入确认 `2.0s/2次`，卖出确认 `0.50s/1次`，最短持仓 `12s`，最长持仓 `45s`，最小信号强度 `1.25 sigma`，组合方向幅度至少 `5bps`，公式绝对方向概率必须 `UP>=60% / DOWN>=60%`，Chainlink 相对开盘绝对同向至少 `5bps`，目标概率变化 `8pp`，同方向 Polymarket 盘口最近 `3s` 不能下滑，最小净优势 `3¢`，追上盈利退出至少 `$0.05`，可执行亏损达到 `$1.00` 立即硬止损，Chainlink/30秒TWAP 最大年龄 `5s`，入场必须剩余时间 `>55s`。
+
+配置与前端：
+
+- `config.example.yaml` 已作为启动基线切到 V8 盘口追赶：`btc_v8.enabled=true`、`btc_v8.orderbook_chase_mode=true`、`orderbook_chase.enabled=true`。
+- `data/dashboard-settings.json` 的 active 运行时配置已同步，避免重启后被旧 70/40 设置覆盖。
+- `web/index.html` 默认进入 `CHASE`，`<body>` 初始为 `chase-mode`，标题为 `polybtc · BTC TWAP大方向`；顶部资产/策略切换按钮仍保持可见。
+- `scripts/run-dashboard.cmd` 显式使用 Codex bundled Python，并以 `--config config.example.yaml` 启动 Dashboard，避免误用系统 `WindowsApps\python.exe` 占位入口。
+- 桌面 `C:\Users\Administrator\Desktop\BTC程序控制.cmd` 已改为 `BTC V8 Orderbook Chase Control`：`status` 读取 V8/chase，停 Dashboard 前检查 V8 持仓和追赶持仓，并提供 `pause-chase`、`resume-chase`、`emergency-chase`；本次备份为 `C:\Users\Administrator\Desktop\BTC程序控制.cmd.bak-20260808-v8-chase`。
+
+运行时隔离：
+
+- `polybtc/runner.py` 的守卫确保未启用的 pair/dynamic/v8/orderbook_chase/real_trading 不创建对应后台任务、信号采集、配置激活或控制循环；本次补充禁用 70/40 时不启动 `btc_recovery_resolution_loop`。
+- `polybtc/btc_recovery.py` 已修正：`btc_recovery.enabled=false` 时不会从旧账本恢复当前 round，Dashboard 状态也明确返回 `disabled`，避免旧 70/40 round 污染当前状态。
+- V8 TWAP大方向领先信号为 `spot_momentum_10s + 0.5*spot_momentum_30s + 0.35*spot_twap_gap - twap_drift_10s - 0.5*twap_drift_30s`；该组合信号只作为辅助领先信号，入场还必须通过绝对公式方向、Chainlink 开盘方向和 Polymarket 同方向盘口不下滑过滤。目标概率、UP/DOWN 支持交易所数量和买入确认 key 均按该组合领先信号计算。后续若评估历史段落中旧的 `0.25s`、`1¢`、`3s/5s` 等短追赶说明，以本节 TWAP大方向硬门槛为准。
+
+70/40 历史注意：
+
+- 之前已停止 `BTC 70/40策略` 恢复单，并把 `data/btc-recovery-ledger.sqlite3` 的旧 `btc_recovery_rounds` 和 `btc_recovery_fills` 清理后重新开始。
+- 重置前备份位于 `data/btc-recovery-reset-backup-20260808T063935Z`，备份内共 60 个文件，其中 1 个 `.sqlite3` 和 57 个 `.csv`。
+- `btc_recovery_controls` 中的 `recovery_orders_stopped=true` 仍保留；当前 70/40 引擎禁用，不应在未得到明确指令前恢复 70/40 或恢复单。
+
+验证：
+
+- bundled Python `-m py_compile polybtc\config.py polybtc\runner.py polybtc\btc_v8.py polybtc\dashboard.py`：通过。
+- bundled Python `-m pytest tests\test_dashboard.py tests\test_btc_v8.py tests\test_orderbook_chase.py -q`：`64 passed`。
+- bundled Python `-m pytest tests\test_btc_recovery.py tests\test_runner.py tests\test_dashboard.py tests\test_btc_v8.py tests\test_orderbook_chase.py -q`：`134 passed`。
+- 本次 TWAP大方向长持仓变更后，bundled Python `-m pytest tests\test_btc_v8.py tests\test_orderbook_chase.py -q`：`39 passed`。
+- 服务端 HTML 校验：默认 `body_chase_mode=true`、`selectedAsset='CHASE'`、`assetCHASE aria-selected=true`。
+
+## 2026-08-08 盘口追赶高真实度影子交易
+
+已新增独立 `BTC盘口追赶` 分页和影子执行层。现有 BTC V8 是唯一信号计算实例：追赶执行器直接消费 V8 已确认的 BUY 结果，不再创建第二个 `BtcV8Engine`，也不再重复接收或计算 Chainlink、现货和 Polymarket 盘口信号。
+
+- 模式固定为 `SHADOW_ONLY`。每次启动生成仅驻留内存的无资金 EOA，只允许调用 `connect`、`build_fok_buy` 和 `build_fok_sell`；影子引擎没有 `post_order` 接口，API 当前明确返回 `post_order_available=false`。
+- BUY/SELL 共用 `PolymarketSdkAdapter._build_fok_market_order()`，实际完成 SDK 订单构造和 EIP-712 签名，但不提交订单。私钥、API 凭证和签名原文不进入 SQLite、日志、API 或页面。
+- BUY 的方向、目标概率、限价、金额、手续费和确认结果直接取现有 V8 成交事件。卖出继续读取现有 V8 的追上/反向市场诊断，但 Observed/P95 按各自延迟成交时间、价格、数量、5 秒持仓时间和浮盈回撤独立执行，避免复制 V8 instant 仓位的错误卖出时点。
+- 持久连接每 2 秒测量一次 CLOB `/time` RTT，滚动保留 15 分钟。订单同时记录零延迟 `instant` 基准、当次 `observed` RTT 和滚动 `p95` RTT；P95 至少 30 个新鲜样本后才参与有效测试。
+- RTT 持久连接在连接池超时后会自动重建，避免单次 `PoolTimeout` 让测速永久停滞；超过 5 秒没有新样本时仍按规则暂停有效测试。
+- 延迟后只使用更新且不超过 1 秒的可信盘口。BUY 必须在限价内花完整笔金额，SELL 必须卖完整仓，否则 FOK 拒绝；卖出拒绝后必须等下一条盘口才重新构造和签名，298 秒仍未卖出则等待官方结算。
+- 独立账本为 `data/orderbook-chase-ledger.sqlite3`，订单显示为 `CHASE#...`。未完成尝试在重启后标记为 `UNMEASURABLE_RESTART`；不可测量样本单独统计，不占 200 个有效测速回合。
+- 页面显示单一 V8 信号源、RTT、构造签名耗时、总耗时、零延迟/Observed/P95 成交结果、FOK 存活率、延迟后盈亏和持仓。没有钱包、余额、allowance、武装或实盘控件。
+- 统计使用 SQLite 聚合，不会在每次页面刷新时反序列化全部历史记录。专用账本中旧的 V8 场次表仅作为历史保留，当前运行不再写入。
+
+运行状态（本地时间 `2026-08-08 08:09 +08:00`）：Dashboard 已在全部空仓、真实交易未武装的条件下重启为 Python PID `81304`，地址仍为 `http://127.0.0.1:8765/`。影子执行器状态为 `v8_signal_following`，API 返回 `shared_instance=true`、`duplicate_v8_engine=false`；临时 EOA 已连接，`post_order_available=false`。RTT 持续新鲜采样，200 回合速度统计继续运行，不会自动开放真实交易。
+
+完整测试：`338 passed in 8.61s`。新增覆盖单一 V8 对象复用且追赶执行器不再次调用 V8 `evaluate()`、BUY/SELL FOK 共用构造、延迟后盘口移动、完整成交拒绝、卖出新盘口重试、重启恢复、RTT 连接池自愈、专用账本、Dashboard 下一场配置、仅允许 `GET /time` 的 HTTP 拦截及无 `post_order` 调用守卫。前端内联脚本语法和配置解析通过。
 
 ## 2026-08-03 BTC V8 多交易所自主模型
 
