@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
+  <link rel="icon" href="data:,">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>polybtc 实时面板</title>
@@ -67,8 +68,10 @@
     .real-only { display: none; }
     .dynamic-only { display: none; }
     .weighted-only { display: none; }
+    .lead-only { display: none; }
     .v8-only { display: none; }
     .chase-only { display: none; }
+    .maker-only { display: none; }
     body.pair-mode .pair-only { display: block; }
     body.pair-mode .single-only,
     body.pair-mode .single-only-section { display: none; }
@@ -109,6 +112,19 @@
     body.weighted-mode .single-only-section,
     body.weighted-mode .eth-trade-market { display: none; }
     body.weighted-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(560px, 1fr) minmax(330px, 430px); }
+    body.lead-mode .lead-only { display: block; }
+    body.lead-mode section.lead-only { display: grid; }
+    body.lead-mode .single-only,
+    body.lead-mode .pair-only,
+    body.lead-mode .recovery-only,
+    body.lead-mode .real-only,
+    body.lead-mode .dynamic-only,
+    body.lead-mode .weighted-only,
+    body.lead-mode .v8-only,
+    body.lead-mode .chase-only,
+    body.lead-mode .single-only-section,
+    body.lead-mode .eth-trade-market { display: none; }
+    body.lead-mode .shell { grid-template-columns: minmax(290px, 340px) minmax(600px, 1fr) minmax(350px, 440px); }
     body.v8-mode .v8-only { display: block; }
     body.v8-mode section.v8-only { display: grid; }
     body.v8-mode .single-only,
@@ -130,6 +146,20 @@
     body.chase-mode .single-only-section,
     body.chase-mode .eth-trade-market { display: none; }
     body.chase-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr) minmax(330px, 430px); }
+    body.maker-mode .maker-only { display: block; }
+    body.maker-mode section.maker-only { display: grid; }
+    body.maker-mode .single-only,
+    body.maker-mode .pair-only,
+    body.maker-mode .recovery-only,
+    body.maker-mode .real-only,
+    body.maker-mode .dynamic-only,
+    body.maker-mode .weighted-only,
+    body.maker-mode .lead-only,
+    body.maker-mode .v8-only,
+    body.maker-mode .chase-only,
+    body.maker-mode .single-only-section,
+    body.maker-mode .eth-trade-market { display: none; }
+    body.maker-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(560px, 1fr) minmax(350px, 430px); }
 
     .pill {
       display: inline-flex;
@@ -291,6 +321,16 @@
     .weighted-key.up::before { background: var(--green); }
     .weighted-key.down::before { background: var(--red); }
     .weighted-key.threshold::before { background: var(--amber); }
+    .lead-source-list { display: grid; gap: 8px; }
+    .lead-source-row { display: grid; grid-template-columns: 90px minmax(110px, 1fr) 72px; gap: 8px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+    .lead-source-row:last-child { border-bottom: 0; }
+    .lead-source-name { font-weight: 800; }
+    .lead-source-price { font-variant-numeric: tabular-nums; text-align: right; }
+    .lead-direction-up { color: var(--green); font-weight: 800; }
+    .lead-direction-down { color: var(--red); font-weight: 800; }
+    .lead-gate-pass { color: var(--green); font-weight: 750; }
+    .lead-gate-fail { color: var(--red); font-weight: 750; }
+    .lead-config-sources { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
     @media (max-width: 1180px) {
       .shell { grid-template-columns: 320px 1fr; }
@@ -298,6 +338,7 @@
       body.real-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
       body.dynamic-mode .shell,
       body.weighted-mode .shell,
+      body.lead-mode .shell,
       body.v8-mode .shell,
       body.chase-mode .shell { grid-template-columns: minmax(280px, 330px) minmax(520px, 1fr); }
       .right { grid-column: 1 / -1; }
@@ -315,8 +356,10 @@
       body.real-mode .shell { grid-template-columns: 1fr; }
       body.dynamic-mode .shell,
       body.weighted-mode .shell,
+      body.lead-mode .shell,
       body.v8-mode .shell,
-      body.chase-mode .shell { grid-template-columns: 1fr; }
+      body.chase-mode .shell,
+      body.maker-mode .shell { grid-template-columns: 1fr; }
       .book-grid, .signal, .metrics, .settings-grid, .pair-grid, .scenario-grid, .weighted-score-grid { grid-template-columns: 1fr; }
       .metric-value { font-size: 21px; }
     }
@@ -341,8 +384,10 @@
           <button class="asset-tab" id="assetREAL" type="button" role="tab" aria-selected="false">真实交易</button>
           <button class="asset-tab" id="assetDYNAMIC" type="button" role="tab" aria-selected="false">BTC动态胜率</button>
           <button class="asset-tab" id="assetWEIGHTED" type="button" role="tab" aria-selected="false">BTC动态加权</button>
+          <button class="asset-tab" id="assetLEAD" type="button" role="tab" aria-selected="false">BTC领先预测</button>
           <button class="asset-tab" id="assetV8" type="button" role="tab" aria-selected="false">BTC V8</button>
           <button class="asset-tab active" id="assetCHASE" type="button" role="tab" aria-selected="true">BTC TWAP大方向</button>
+          <button class="asset-tab" id="assetMAKER" type="button" role="tab" aria-selected="false">BTC Maker套利</button>
         </div>
         <div class="pill"><span class="dot" id="connDot"></span><span id="connText">连接中</span></div>
         <div class="pill"><span id="wsText">WebSocket</span></div>
@@ -508,11 +553,18 @@
             <div class="kv-row"><div class="kv-label">官方目标价</div><div class="kv-value" id="weightedTargetPrice">--</div></div>
             <div class="kv-row"><div class="kv-label">Chainlink TWAP</div><div class="kv-value" id="weightedCurrentPrice">--</div></div>
             <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="weightedTimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">当前时段 / 金额</div><div class="kv-value" id="weightedCurrentSegment">--</div></div>
+            <div class="kv-row"><div class="kv-label">入场模式 / 状态</div><div class="kv-value" id="weightedReversalState">--</div></div>
+            <div class="kv-row"><div class="kv-label">领先 / 上笔 / 识别</div><div class="kv-value" id="weightedReversalDirections">--</div></div>
+            <div class="kv-row"><div class="kv-label">下一档金额</div><div class="kv-value" id="weightedReversalNext">--</div></div>
+            <div class="kv-row"><div class="kv-label">三段状态</div><div class="kv-value" id="weightedSegmentStates">--</div></div>
             <div class="kv-row"><div class="kv-label">短/长波动</div><div class="kv-value" id="weightedVolatility">--</div></div>
             <div class="kv-row"><div class="kv-label">波动率比</div><div class="kv-value" id="weightedVolatilityRatio">--</div></div>
             <div class="kv-row"><div class="kv-label">Chainlink年龄</div><div class="kv-value" id="weightedChainlinkAge">--</div></div>
             <div class="kv-row"><div class="kv-label">UP / DOWN盘口年龄</div><div class="kv-value" id="weightedBookAges">--</div></div>
-            <div class="kv-row"><div class="kv-label">本场入场</div><div class="kv-value" id="weightedEntryCount">0 / 1</div></div>
+            <div class="kv-row"><div class="kv-label">本场入场</div><div class="kv-value" id="weightedEntryCount">0 / 3</div></div>
+            <div class="kv-row"><div class="kv-label">参数版本</div><div class="kv-value" id="weightedConfigVersion">--</div></div>
+            <div class="kv-row"><div class="kv-label">P95资金保护</div><div class="kv-value" id="weightedRiskState">--</div></div>
           </div>
         </div>
 
@@ -521,9 +573,48 @@
           <div class="panel-body metrics">
             <div class="metric"><div class="metric-name">Observed成交率</div><div class="metric-value" id="weightedObservedRate">--</div></div>
             <div class="metric"><div class="metric-name">P95成交率</div><div class="metric-value" id="weightedP95Rate">--</div></div>
-            <div class="metric"><div class="metric-name">Observed盈亏</div><div class="metric-value" id="weightedObservedPnl">0.00</div></div>
-            <div class="metric"><div class="metric-name">P95盈亏</div><div class="metric-value" id="weightedP95Pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">累计Observed盈亏</div><div class="metric-value" id="weightedObservedPnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">累计P95盈亏</div><div class="metric-value" id="weightedP95Pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">当前版Observed盈亏</div><div class="metric-value" id="weightedCurrentObservedPnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">当前版P95盈亏</div><div class="metric-value" id="weightedCurrentP95Pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">当前版P95近10单</div><div class="metric-value" id="weightedCurrentLast10Pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">当前版完成 O / P95</div><div class="metric-value" id="weightedCurrentCompleted">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">P95当前连亏</div><div class="metric-value" id="weightedLossStreak">0</div></div>
+            <div class="metric"><div class="metric-name">P95最大回撤</div><div class="metric-value" id="weightedMaxDrawdown">0.00</div></div>
             <div class="metric metric-wide"><div class="metric-name">当前影子持仓</div><div class="metric-value" id="weightedOpenPositions">0</div></div>
+          </div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">领先预测市场</div><div class="tag blue" id="leadState">等待</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="leadMarketSlug">--</div></div>
+            <div class="kv-row"><div class="kv-label">运行原因</div><div class="kv-value" id="leadReason">--</div></div>
+            <div class="kv-row"><div class="kv-label">官方目标价</div><div class="kv-value" id="leadTargetPrice">--</div></div>
+            <div class="kv-row"><div class="kv-label">Chainlink TWAP</div><div class="kv-value" id="leadChainlinkPrice">--</div></div>
+            <div class="kv-row"><div class="kv-label">外部综合价</div><div class="kv-value" id="leadExternalIndex">--</div></div>
+            <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="leadTimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">活跃冲击</div><div class="kv-value" id="leadShock">--</div></div>
+            <div class="kv-row"><div class="kv-label">确认进度</div><div class="kv-value" id="leadConfirmation">--</div></div>
+            <div class="kv-row"><div class="kv-label">冷却 / 风控</div><div class="kv-value" id="leadRisk">--</div></div>
+            <div class="kv-row"><div class="kv-label">本场决策</div><div class="kv-value" id="leadTradeCount">0 / 3</div></div>
+          </div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">来源状态</div><div class="tag amber" id="leadHealthyCount">0 / 3</div></div>
+          <div class="panel-body lead-source-list" id="leadSources"></div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">双轨绩效</div><div class="tag amber">shadow</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">Observed成交</div><div class="metric-value" id="leadObservedFills">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">P95成交</div><div class="metric-value" id="leadP95Fills">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">Observed盈亏</div><div class="metric-value" id="leadObservedPnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">P95盈亏</div><div class="metric-value" id="leadP95Pnl">0.00</div></div>
+            <div class="metric"><div class="metric-name">主周期RMSE</div><div class="metric-value" id="leadPredictionRmse">--</div></div>
+            <div class="metric"><div class="metric-name">当前影子持仓</div><div class="metric-value" id="leadOpenPositions">0</div></div>
           </div>
         </div>
 
@@ -569,6 +660,43 @@
           </div>
         </div>
 
+        <div class="panel maker-only">
+          <div class="panel-head"><div class="panel-title">Maker套利市场</div><div class="tag blue" id="makerState">等待</div></div>
+          <div class="panel-body kv">
+            <div class="kv-row"><div class="kv-label">模式</div><div class="kv-value">SHADOW_ONLY</div></div>
+            <div class="kv-row"><div class="kv-label">场次</div><div class="kv-value" id="makerMarketSlug">--</div></div>
+            <div class="kv-row"><div class="kv-label">剩余时间</div><div class="kv-value" id="makerTimeLeft">--</div></div>
+            <div class="kv-row"><div class="kv-label">运行原因</div><div class="kv-value" id="makerReason">--</div></div>
+            <div class="kv-row"><div class="kv-label">盘口健康</div><div class="kv-value" id="makerBookHealth">--</div></div>
+            <div class="kv-row"><div class="kv-label">成交流</div><div class="kv-value" id="makerTradeHealth">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel maker-only">
+          <div class="panel-head"><div class="panel-title">实时套利机会</div><div class="tag amber" id="makerOpportunityState">等待</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">UP 买一 / 卖一</div><div class="metric-value" id="makerUpBook">--</div></div>
+            <div class="metric"><div class="metric-name">DOWN 买一 / 卖一</div><div class="metric-value" id="makerDownBook">--</div></div>
+            <div class="metric"><div class="metric-name">建议 UP / DOWN</div><div class="metric-value" id="makerQuotePair">--</div></div>
+            <div class="metric"><div class="metric-name">组合成本 / 上限</div><div class="metric-value" id="makerPairCost">--</div></div>
+            <div class="metric metric-wide"><div class="metric-name">预计净利（美分/组）</div><div class="metric-value" id="makerExpectedProfit">--</div></div>
+          </div>
+        </div>
+
+        <div class="panel maker-only">
+          <div class="panel-head"><div class="panel-title">Maker统计</div><div class="tag amber">shadow</div></div>
+          <div class="panel-body metrics">
+            <div class="metric"><div class="metric-name">报价 / 完成组</div><div class="metric-value" id="makerQuoteStats">0 / 0</div></div>
+            <div class="metric"><div class="metric-name">双腿完成率</div><div class="metric-value" id="makerDualRate">--</div></div>
+            <div class="metric"><div class="metric-name">偏腿率</div><div class="metric-value" id="makerSingleRate">--</div></div>
+            <div class="metric"><div class="metric-name">补腿成功率</div><div class="metric-value" id="makerHedgeRate">--</div></div>
+            <div class="metric"><div class="metric-name">平均排队</div><div class="metric-value" id="makerQueueTime">--</div></div>
+            <div class="metric"><div class="metric-name">Maker收益</div><div class="metric-value" id="makerProfit">0.00</div></div>
+            <div class="metric"><div class="metric-name">退出损失</div><div class="metric-value" id="makerExitLoss">0.00</div></div>
+            <div class="metric"><div class="metric-name">净收益</div><div class="metric-value" id="makerNetPnl">0.00</div></div>
+          </div>
+        </div>
+
         <div class="panel chase-only">
           <div class="panel-head"><div class="panel-title">CLOB 网络延迟</div><div class="tag amber" id="chaseLatencyState">预热</div></div>
           <div class="panel-body metrics">
@@ -582,6 +710,21 @@
       </section>
 
       <section class="stack">
+        <div class="panel maker-only">
+          <div class="panel-head"><div class="panel-title">当前影子挂单</div><div class="tag blue" id="makerOpenQuoteCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>方向</th><th>用途</th><th>价格</th><th>前方队列</th><th>成交 / 剩余</th><th>挂单年龄</th></tr></thead><tbody id="makerOpenQuotes"></tbody></table></div></div>
+        </div>
+
+        <div class="panel maker-only">
+          <div class="panel-head"><div class="panel-title">当前套利组</div><div class="tag blue" id="makerGroupState">空闲</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>组</th><th>状态</th><th>UP均价 / 数量</th><th>DOWN均价 / 数量</th><th>锁定 / 裸露</th><th>裸露时间</th><th>盈亏</th></tr></thead><tbody id="makerCurrentGroup"></tbody></table></div></div>
+        </div>
+
+        <div class="panel maker-only">
+          <div class="panel-head"><div class="panel-title">Maker套利历史</div><div class="tag amber" id="makerHistoryCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>序号</th><th>时间</th><th>组</th><th>场次</th><th>状态</th><th>UP</th><th>DOWN</th><th>锁定量</th><th>净盈亏</th></tr></thead><tbody id="makerHistory"></tbody></table></div></div>
+        </div>
+
         <div class="panel">
           <div class="panel-head"><div class="panel-title">盘口</div><div class="tag blue" id="bookAge">BTC</div></div>
           <div class="panel-body trade-book">
@@ -834,12 +977,33 @@
 
         <div class="panel weighted-only">
           <div class="panel-head"><div class="panel-title">影子持仓历史</div><div class="tag blue" id="weightedPositionCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>信号时间</th><th>订单组</th><th>场次</th><th>方向</th><th class="weighted-lane-column">Observed 对照</th><th class="weighted-lane-column">P95 对照</th></tr></thead><tbody id="weightedPositions"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>信号时间</th><th>订单组</th><th>场次</th><th>方向</th><th>时段</th><th class="weighted-lane-column">Observed 对照</th><th class="weighted-lane-column">P95 对照</th></tr></thead><tbody id="weightedPositions"></tbody></table></div></div>
         </div>
 
         <div class="panel weighted-only">
           <div class="panel-head"><div class="panel-title">最近影子订单</div><div class="tag amber" id="weightedAttemptCount">0</div></div>
-          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>信号时间</th><th>订单组</th><th>买/卖</th><th>方向</th><th class="weighted-lane-column">Observed 对照</th><th class="weighted-lane-column">P95 对照</th></tr></thead><tbody id="weightedAttempts"></tbody></table></div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>信号时间</th><th>订单组</th><th>买/卖</th><th>方向</th><th>时段</th><th class="weighted-lane-column">Observed 对照</th><th class="weighted-lane-column">P95 对照</th></tr></thead><tbody id="weightedAttempts"></tbody></table></div></div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">未来TWAP路径</div><div class="tag blue" id="leadProjectionState">预测预热</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>周期</th><th>中心预测</th><th>90%区间</th><th>替换压力</th><th>目标距离</th><th>UP概率</th><th>概率变化</th><th>有效期</th></tr></thead><tbody id="leadProjections"></tbody></table></div></div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">盘口重定价与成本</div><div class="tag blue" id="leadGateState">等待冲击</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>方向</th><th>买一 / 卖一</th><th>预测买一</th><th>预计上涨</th><th>成本后预期净收益</th><th>P95净收益</th><th>模拟份数 / 最小份数</th><th>结果</th></tr></thead><tbody id="leadBookProjection"></tbody></table></div></div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">最近预测事件</div><div class="tag amber" id="leadPredictionCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>外部综合价</th><th>1秒</th><th>3秒</th><th>5秒</th><th>8秒</th><th>已到期</th></tr></thead><tbody id="leadPredictionHistory"></tbody></table></div></div>
+        </div>
+
+        <div class="panel lead-only">
+          <div class="panel-head"><div class="panel-title">影子订单与仓位</div><div class="tag amber" id="leadAttemptCount">0</div></div>
+          <div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>订单组</th><th>场次</th><th>买/卖</th><th>方向</th><th class="weighted-lane-column">Observed 对照</th><th class="weighted-lane-column">P95 对照</th></tr></thead><tbody id="leadAttempts"></tbody></table></div></div>
+          <div class="panel-body"><div class="subhead">仓位历史 · <span id="leadPositionCount">0</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>仓位组</th><th>场次</th><th>方向</th><th class="weighted-lane-column">Observed 对照</th><th class="weighted-lane-column">P95 对照</th></tr></thead><tbody id="leadPositions"></tbody></table></div></div>
         </div>
 
         <div class="panel v8-only">
@@ -1043,18 +1207,32 @@
           <form class="panel-body" id="weightedForm">
             <div class="settings-grid">
               <label class="setting"><span class="setting-label">影子策略</span><span class="setting-toggle"><input id="weightedEnabled" type="checkbox">启用自动影子买入</span></label>
-              <label class="setting"><span class="setting-label">固定金额（USD）</span><input class="setting-input" id="weightedQuote" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">反转递进模式</span><span class="setting-toggle"><input id="weightedReversalSequence" type="checkbox">按评分反转依次使用三档金额</span></label>
+              <label class="setting"><span class="setting-label">前段开关</span><span class="setting-toggle"><input id="weightedEarlyEnabled" type="checkbox">启用前段</span></label>
+              <label class="setting"><span class="setting-label">前段时长（秒）</span><input class="setting-input" id="weightedEarlyDuration" type="number" min="1" max="298" step="1" required></label>
+              <label class="setting"><span class="setting-label">前段金额（USD）</span><input class="setting-input" id="weightedEarlyQuote" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">中段开关</span><span class="setting-toggle"><input id="weightedMiddleEnabled" type="checkbox">启用中段</span></label>
+              <label class="setting"><span class="setting-label">中段时长（秒）</span><input class="setting-input" id="weightedMiddleDuration" type="number" min="1" max="298" step="1" required></label>
+              <label class="setting"><span class="setting-label">中段金额（USD）</span><input class="setting-input" id="weightedMiddleQuote" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">后段开关</span><span class="setting-toggle"><input id="weightedLateEnabled" type="checkbox">启用后段</span></label>
+              <label class="setting"><span class="setting-label">后段时长（秒）</span><input class="setting-input" id="weightedLateDuration" type="number" min="1" max="298" step="1" required></label>
+              <label class="setting"><span class="setting-label">后段金额（USD）</span><input class="setting-input" id="weightedLateQuote" type="number" min="0.01" step="0.01" required></label>
               <label class="setting"><span class="setting-label">入场最低总分</span><input class="setting-input" id="weightedEntryScore" type="number" min="0" max="100" step="0.1" required></label>
               <label class="setting"><span class="setting-label">入场领先分</span><input class="setting-input" id="weightedEntryLead" type="number" min="0" max="100" step="0.1" required></label>
               <label class="setting"><span class="setting-label">入场确认（秒）</span><input class="setting-input" id="weightedEntryConfirmSeconds" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">入场确认更新数</span><input class="setting-input" id="weightedEntryConfirmUpdates" type="number" min="1" step="1" required></label>
-              <label class="setting"><span class="setting-label">每场最多入场</span><input class="setting-input" id="weightedMaxEntries" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">开场后开始入场（秒）</span><input class="setting-input" id="weightedEntryStart" type="number" min="0.1" max="299" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">指标预热时长（秒）</span><input class="setting-input" id="weightedWarmupSeconds" type="number" min="0.1" max="299" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">指标预热最少样本</span><input class="setting-input" id="weightedWarmupSamples" type="number" min="1" step="1" required></label>
               <label class="setting"><span class="setting-label">停止新买入（剩余秒）</span><input class="setting-input" id="weightedStopRemaining" type="number" min="0.1" max="300" step="0.1" required></label>
               <label class="setting"><span class="setting-label">最短持仓（秒）</span><input class="setting-input" id="weightedMinHold" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">反向退出最低分</span><input class="setting-input" id="weightedExitScore" type="number" min="0" max="100" step="0.1" required></label>
               <label class="setting"><span class="setting-label">反向退出领先分</span><input class="setting-input" id="weightedExitLead" type="number" min="0" max="100" step="0.1" required></label>
               <label class="setting"><span class="setting-label">退出确认（秒）</span><input class="setting-input" id="weightedExitConfirmSeconds" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">退出确认更新数</span><input class="setting-input" id="weightedExitConfirmUpdates" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">评分退出截止（开场后秒）</span><input class="setting-input" id="weightedExitEnd" type="number" min="0.1" max="300" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">评分退出最低价（美分）</span><input class="setting-input" id="weightedMinExitPrice" type="number" min="0" max="100" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">退出意图有效期（秒）</span><input class="setting-input" id="weightedExitIntentTtl" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">最低买入价（美分）</span><input class="setting-input" id="weightedMinBuyPrice" type="number" min="0" max="100" step="0.1" required></label>
               <label class="setting"><span class="setting-label">最高买入价（美分）</span><input class="setting-input" id="weightedMaxBuyPrice" type="number" min="0" max="100" step="0.1" required></label>
               <label class="setting"><span class="setting-label">最大盘口价差（美分）</span><input class="setting-input" id="weightedMaxSpread" type="number" min="0.1" step="0.1" required></label>
@@ -1069,8 +1247,55 @@
               <label class="setting"><span class="setting-label">历史点允许误差（秒）</span><input class="setting-input" id="weightedSampleTolerance" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">权重EMA（秒）</span><input class="setting-input" id="weightedWeightEma" type="number" min="0.1" step="0.1" required></label>
               <label class="setting"><span class="setting-label">评分历史（秒）</span><input class="setting-input" id="weightedHistorySeconds" type="number" min="60" step="1" required></label>
+              <label class="setting"><span class="setting-label">P95资金保护</span><span class="setting-toggle"><input id="weightedRiskPause" type="checkbox">触发后暂停新入场</span></label>
+              <label class="setting"><span class="setting-label">滚动亏损窗口（分钟）</span><input class="setting-input" id="weightedRollingWindow" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">滚动亏损上限（USD）</span><input class="setting-input" id="weightedRollingLoss" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">连续亏损暂停（次）</span><input class="setting-input" id="weightedLossStreakLimit" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">连续亏损暂停（分钟）</span><input class="setting-input" id="weightedLossPauseMinutes" type="number" min="0.1" step="0.1" required></label>
             </div>
-            <div class="settings-actions"><span class="settings-note">仅影子成交；手续费、滑点和诊断优势不参与拦截。参数保存后从下一场BTC开始使用。</span><button class="settings-save" id="saveWeighted" type="submit">保存动态加权参数</button></div>
+            <div class="settings-actions"><span class="settings-note">三段时长必须合计300秒，每段最多提交一次Observed/P95影子决策。P95保护只暂停新入场；参数保存后从下一场BTC开始使用。</span><button class="settings-save" id="saveWeighted" type="submit">保存动态加权参数</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="stack right lead-only">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">BTC领先预测参数</div><div class="tag blue" id="leadConfigStatus" role="status" aria-live="polite">保存后下一场BTC生效</div></div>
+          <form class="panel-body" id="leadForm">
+            <div class="settings-grid">
+              <label class="setting"><span class="setting-label">领先预测策略</span><span class="setting-toggle"><input id="leadEnabled" type="checkbox">启用影子交易</span></label>
+              <label class="setting"><span class="setting-label">现货来源</span><span class="lead-config-sources"><span class="setting-toggle"><input id="leadUseBinance" type="checkbox">Binance</span><span class="setting-toggle"><input id="leadUseCoinbase" type="checkbox">Coinbase</span><span class="setting-toggle"><input id="leadUseKraken" type="checkbox">Kraken</span></span></label>
+              <label class="setting"><span class="setting-label">永续诊断</span><span class="setting-toggle"><input id="leadFuturesDiagnostics" type="checkbox">仅展示</span></label>
+      <label class="setting"><span class="setting-label">每单金额（USD）</span><input class="setting-input" id="leadQuoteAmount" type="number" min="0.01" step="0.01" required></label>
+      <label class="setting"><span class="setting-label">买入限价缓冲（美分）</span><input class="setting-input" id="leadBuyLimitBuffer" type="number" min="0" max="10" step="0.1" required></label>
+      <label class="setting"><span class="setting-label">跳动阈值（bps/500ms）</span><input class="setting-input" id="leadShockThreshold" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">确认持续（秒）</span><input class="setting-input" id="leadConfirmSeconds" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">确认更新（次）</span><input class="setting-input" id="leadConfirmUpdates" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">最少健康来源</span><input class="setting-input" id="leadMinHealthy" type="number" min="1" max="3" step="1" required></label>
+              <label class="setting"><span class="setting-label">最大来源离散（bps）</span><input class="setting-input" id="leadMaxDispersion" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">预计买一上涨（美分）</span><input class="setting-input" id="leadMinReprice" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">P95净收益（美分/份）</span><input class="setting-input" id="leadMinP95Edge" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">最低买入价（美分）</span><input class="setting-input" id="leadMinBuy" type="number" min="0" max="100" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">最高买入价（美分）</span><input class="setting-input" id="leadMaxBuy" type="number" min="0" max="100" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">最大盘口价差（美分）</span><input class="setting-input" id="leadMaxSpread" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">Chainlink最大年龄（秒）</span><input class="setting-input" id="leadChainlinkAge" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">外部最大年龄（秒）</span><input class="setting-input" id="leadExternalAge" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">盘口最大年龄（秒）</span><input class="setting-input" id="leadBookAge" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">最长持仓（秒）</span><input class="setting-input" id="leadMaxHold" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">止盈（美分/份）</span><input class="setting-input" id="leadProfitTarget" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">不利移动（美分）</span><input class="setting-input" id="leadAdverseMove" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">退出深度重试（秒）</span><input class="setting-input" id="leadExitRetry" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">退出后冷却（秒）</span><input class="setting-input" id="leadCooldown" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">每场最多决策</span><input class="setting-input" id="leadMaxTrades" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">停止入场（剩余秒）</span><input class="setting-input" id="leadStopEntry" type="number" min="1" max="300" step="1" required></label>
+              <label class="setting"><span class="setting-label">强制退出（剩余秒）</span><input class="setting-input" id="leadForceExit" type="number" min="1" max="299" step="1" required></label>
+              <label class="setting"><span class="setting-label">校准最少样本</span><input class="setting-input" id="leadCalibrationSamples" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">P95资金保护</span><span class="setting-toggle"><input id="leadRiskPause" type="checkbox">触发后暂停</span></label>
+              <label class="setting"><span class="setting-label">连续亏损（次）</span><input class="setting-input" id="leadLossStreak" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">连亏暂停（分钟）</span><input class="setting-input" id="leadLossPause" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">每日P95亏损上限（USD）</span><input class="setting-input" id="leadDailyLoss" type="number" min="0.01" step="0.01" required></label>
+            </div>
+            <div class="settings-actions"><span class="settings-note">固定预测周期1/3/5/8秒，主周期5秒。页面只进行Observed/P95影子成交；参数保存后从下一场BTC使用。</span><button class="settings-save" id="saveLead" type="submit">保存领先预测参数</button></div>
           </form>
         </div>
       </section>
@@ -1173,6 +1398,41 @@
           </div></div>
         </div>
       </section>
+      <section class="stack right maker-only">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">BTC Maker套利参数</div><div class="tag blue" id="makerConfigStatus" role="status">保存后下一场BTC生效</div></div>
+          <form class="panel-body" id="makerForm">
+            <div class="settings-grid">
+              <label class="setting"><span class="setting-label">Maker影子策略</span><span class="setting-toggle"><input id="makerEnabled" type="checkbox">启用影子报价</span></label>
+              <label class="setting"><span class="setting-label">运行模式</span><input class="setting-input" value="SHADOW_ONLY" disabled></label>
+              <label class="setting"><span class="setting-label">仓位模式</span><select class="setting-input" id="makerSizingMode"><option value="quantity">固定每腿股数</option><option value="budget">每组总预算（美元）</option></select></label>
+              <label class="setting"><span class="setting-label">每腿数量（股）</span><input class="setting-input" id="makerQuantity" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">每组总预算（USD）</span><input class="setting-input" id="makerPairBudget" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">最低锁定净利（美分/组）</span><input class="setting-input" id="makerMinProfit" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">Maker费用预留（美分）</span><input class="setting-input" id="makerFeeReserve" type="number" min="0" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">挂单寿命（秒）</span><input class="setting-input" id="makerQuoteTtl" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">重报价冷却（ms）</span><input class="setting-input" id="makerRepriceCooldown" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">最大偏腿时间（秒）</span><input class="setting-input" id="makerMaxUnhedged" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">停止新报价（剩余秒）</span><input class="setting-input" id="makerStopNew" type="number" min="1" max="300" step="1" required></label>
+              <label class="setting"><span class="setting-label">紧急退出（剩余秒）</span><input class="setting-input" id="makerEmergencyExit" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">每场完成组上限</span><input class="setting-input" id="makerMaxPairs" type="number" min="1" step="1" required></label>
+              <label class="setting"><span class="setting-label">盘口最大年龄（秒）</span><input class="setting-input" id="makerBookAge" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">成交事件最大年龄（秒）</span><input class="setting-input" id="makerTradeAge" type="number" min="0.1" step="0.1" required></label>
+              <label class="setting"><span class="setting-label">单腿止损阈值（USD）</span><input class="setting-input" id="makerSingleLoss" type="number" min="0.01" step="0.01" required></label>
+              <label class="setting"><span class="setting-label">当日影子亏损上限（USD）</span><input class="setting-input" id="makerDailyLoss" type="number" min="0.01" step="0.01" required></label>
+            </div>
+            <div class="settings-actions"><span class="settings-note">仅模拟Post-only排队成交；盘口撤单不算成交。单腿浮亏达到止损阈值时，立即按买盘模拟影子 Taker 退出；参数下一场BTC生效。</span><button class="settings-save" id="saveMaker" type="submit">保存Maker参数</button></div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">影子报价控制</div><div class="tag blue" id="makerControlState">待命</div></div>
+          <div class="panel-body"><div class="settings-actions">
+            <button class="control-button" id="makerPause" type="button">暂停报价</button>
+            <button class="control-button resume" id="makerResume" type="button">恢复报价</button>
+            <button class="control-button" id="makerCancelQuotes" type="button">撤销当前影子挂单</button>
+          </div></div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -1183,8 +1443,14 @@
     let activeSocket = null;
     let lastSocketMessageAt = 0;
     let renderScheduled = false;
+    let marketRenderScheduled = false;
+    let lastMarketDataSequence = 0;
+    let lastStateDataSequence = 0;
     let bookSide = 'BUY';
-    let selectedAsset = 'CHASE';
+    let selectedAsset = 'LEAD';
+    const btcMarketPages = new Set([
+      'PAIR', 'RECOVERY', 'REAL', 'DYNAMIC', 'WEIGHTED', 'LEAD', 'V8', 'CHASE', 'MAKER',
+    ]);
     let configFormInitialized = false;
     let configFormDirty = false;
     let renderedConfigKey = '';
@@ -1207,6 +1473,10 @@
     let weightedFormDirty = false;
     let renderedWeightedConfigKey = '';
     let weightedSaveFeedbackTimer = null;
+    let leadFormInitialized = false;
+    let leadFormDirty = false;
+    let renderedLeadConfigKey = '';
+    let leadSaveFeedbackTimer = null;
     let v8FormInitialized = false;
     let v8FormDirty = false;
     let renderedV8ConfigKey = '';
@@ -1215,6 +1485,10 @@
     let chaseFormDirty = false;
     let renderedChaseConfigKey = '';
     let chaseControlBusy = false;
+    let makerFormInitialized = false;
+    let makerFormDirty = false;
+    let renderedMakerConfigKey = '';
+    let makerControlBusy = false;
     const configInputs = {
       min_entry_edge_usd: 'minEntryEdge',
       stop_edge_usd: 'stopEdge',
@@ -1272,19 +1546,28 @@
       volatility_floor_bps: 'dynamicVolFloor',
       max_probability_correction_points: 'dynamicMaxCorrection',
     };
+    const weightedSegmentInputs = {
+      early: { enabled: 'weightedEarlyEnabled', duration: 'weightedEarlyDuration', quote: 'weightedEarlyQuote' },
+      middle: { enabled: 'weightedMiddleEnabled', duration: 'weightedMiddleDuration', quote: 'weightedMiddleQuote' },
+      late: { enabled: 'weightedLateEnabled', duration: 'weightedLateDuration', quote: 'weightedLateQuote' },
+    };
     const weightedInputs = {
-      quote_amount_usd: 'weightedQuote',
       entry_score_threshold: 'weightedEntryScore',
       entry_lead_points: 'weightedEntryLead',
       entry_confirmation_seconds: 'weightedEntryConfirmSeconds',
       entry_confirmation_updates: 'weightedEntryConfirmUpdates',
-      max_entries_per_market: 'weightedMaxEntries',
+      entry_start_seconds_after_open: 'weightedEntryStart',
+      metric_warmup_seconds: 'weightedWarmupSeconds',
+      metric_min_samples: 'weightedWarmupSamples',
       min_entry_remaining_seconds: 'weightedStopRemaining',
       min_hold_seconds: 'weightedMinHold',
       exit_score_threshold: 'weightedExitScore',
       exit_lead_points: 'weightedExitLead',
       exit_confirmation_seconds: 'weightedExitConfirmSeconds',
       exit_confirmation_updates: 'weightedExitConfirmUpdates',
+      score_exit_end_seconds_after_open: 'weightedExitEnd',
+      min_score_exit_price_cents: 'weightedMinExitPrice',
+      exit_intent_ttl_seconds: 'weightedExitIntentTtl',
       min_buy_price_cents: 'weightedMinBuyPrice',
       max_buy_price_cents: 'weightedMaxBuyPrice',
       max_spread_cents: 'weightedMaxSpread',
@@ -1299,6 +1582,39 @@
       sample_tolerance_seconds: 'weightedSampleTolerance',
       weight_ema_seconds: 'weightedWeightEma',
       score_history_seconds: 'weightedHistorySeconds',
+      rolling_loss_window_minutes: 'weightedRollingWindow',
+      rolling_loss_limit_usd: 'weightedRollingLoss',
+      loss_streak_pause_count: 'weightedLossStreakLimit',
+      loss_streak_pause_minutes: 'weightedLossPauseMinutes',
+    };
+const leadInputs = {
+  quote_amount_usd: 'leadQuoteAmount',
+  buy_limit_buffer_cents: 'leadBuyLimitBuffer',
+      shock_threshold_bps: 'leadShockThreshold',
+      confirmation_seconds: 'leadConfirmSeconds',
+      confirmation_updates: 'leadConfirmUpdates',
+      min_healthy_sources: 'leadMinHealthy',
+      max_source_dispersion_bps: 'leadMaxDispersion',
+      min_expected_reprice_cents: 'leadMinReprice',
+      min_p95_net_edge_cents: 'leadMinP95Edge',
+      min_buy_price_cents: 'leadMinBuy',
+      max_buy_price_cents: 'leadMaxBuy',
+      max_spread_cents: 'leadMaxSpread',
+      chainlink_max_age_seconds: 'leadChainlinkAge',
+      external_max_age_seconds: 'leadExternalAge',
+      book_max_age_seconds: 'leadBookAge',
+      max_hold_seconds: 'leadMaxHold',
+      target_net_profit_cents: 'leadProfitTarget',
+      adverse_move_cents: 'leadAdverseMove',
+      exit_liquidity_retry_seconds: 'leadExitRetry',
+      cooldown_seconds: 'leadCooldown',
+      max_trades_per_market: 'leadMaxTrades',
+      stop_entry_remaining_seconds: 'leadStopEntry',
+      force_exit_remaining_seconds: 'leadForceExit',
+      calibration_min_samples: 'leadCalibrationSamples',
+      loss_streak_pause_count: 'leadLossStreak',
+      loss_streak_pause_minutes: 'leadLossPause',
+      daily_p95_loss_limit_usd: 'leadDailyLoss',
     };
     const v8Inputs = {
       quote_amount_usd: 'v8QuoteAmount',
@@ -1368,6 +1684,22 @@
       observed_survival_threshold: 'chaseObservedThreshold',
       p95_survival_threshold: 'chaseP95Threshold',
     };
+    const makerInputs = {
+      quantity_per_leg: 'makerQuantity',
+      pair_budget_usd: 'makerPairBudget',
+      min_locked_profit_cents: 'makerMinProfit',
+      maker_fee_reserve_cents: 'makerFeeReserve',
+      quote_ttl_seconds: 'makerQuoteTtl',
+      reprice_cooldown_ms: 'makerRepriceCooldown',
+      max_unhedged_seconds: 'makerMaxUnhedged',
+      stop_new_quotes_remaining_seconds: 'makerStopNew',
+      emergency_exit_remaining_seconds: 'makerEmergencyExit',
+      max_pairs_per_market: 'makerMaxPairs',
+      book_max_age_seconds: 'makerBookAge',
+      trade_print_max_age_seconds: 'makerTradeAge',
+      max_single_leg_loss_usd: 'makerSingleLoss',
+      daily_shadow_loss_limit_usd: 'makerDailyLoss',
+    };
     const realInputs = {
       enabled: 'realEnabled',
       order_quantity: 'realQuantity',
@@ -1388,6 +1720,15 @@
       weightedGates: '',
       weightedPositions: '',
       weightedAttempts: '',
+      leadSources: '',
+      leadProjections: '',
+      leadBookProjection: '',
+      leadPredictionHistory: '',
+      leadAttempts: '',
+      leadPositions: '',
+      makerOpenQuotes: '',
+      makerCurrentGroup: '',
+      makerHistory: '',
     };
 
     function setText(id, value) {
@@ -1440,11 +1781,101 @@
 
     function scheduleRender(snapshot) {
       latest = snapshot;
+      const sequence = Number(snapshot?.market_data_sequence);
+      if (Number.isFinite(sequence)) lastMarketDataSequence = sequence;
+      const stateSequence = Number(snapshot?.state_data_sequence);
+      if (Number.isFinite(stateSequence)) lastStateDataSequence = stateSequence;
       if (renderScheduled) return;
       renderScheduled = true;
       requestAnimationFrame(() => {
         renderScheduled = false;
         if (latest) render(latest);
+      });
+    }
+
+    function applyStateDataMessage(message) {
+      const sequence = Number(message?.sequence);
+      if (!Number.isFinite(sequence) || sequence <= lastStateDataSequence) return false;
+      const asset = String(message.asset || '').toUpperCase();
+      if (!asset || !message.data || typeof message.data !== 'object') return false;
+      const aggregate = latest || {};
+      const assets = { ...(aggregate.assets || {}) };
+      const existing = assets[asset]
+        || (String(aggregate.asset || '').toUpperCase() === asset ? aggregate : {});
+      const assetSnapshot = {
+        ...existing,
+        ...message.data,
+        type: 'snapshot',
+        asset,
+      };
+      assets[asset] = assetSnapshot;
+      const primaryAsset = String(
+        aggregate.asset || Object.keys(assets)[0] || asset,
+      ).toUpperCase();
+      const next = {
+        ...aggregate,
+        ...(message.globals || {}),
+        assets,
+        state_data_sequence: sequence,
+        state_data_server_enqueued_at: message.server_enqueued_at,
+      };
+      if (primaryAsset === asset) {
+        Object.assign(next, message.data, message.globals || {}, {
+          type: 'snapshot',
+          asset,
+          assets,
+          state_data_sequence: sequence,
+        });
+      }
+      latest = next;
+      lastStateDataSequence = sequence;
+      return true;
+    }
+
+    function applyMarketDataMessage(message) {
+      const sequence = Number(message?.sequence);
+      if (!Number.isFinite(sequence) || sequence <= lastMarketDataSequence) return false;
+      const asset = String(message.asset || '').toUpperCase();
+      if (!asset || !message.data || typeof message.data !== 'object') return false;
+      const aggregate = latest || {};
+      const assets = { ...(aggregate.assets || {}) };
+      const existing = assets[asset]
+        || (String(aggregate.asset || '').toUpperCase() === asset ? aggregate : {});
+      const assetSnapshot = {
+        ...existing,
+        ...message.data,
+        type: 'snapshot',
+        asset,
+      };
+      assets[asset] = assetSnapshot;
+      const primaryAsset = String(
+        aggregate.asset || Object.keys(assets)[0] || asset,
+      ).toUpperCase();
+      const next = {
+        ...aggregate,
+        assets,
+        market_data_sequence: sequence,
+        market_data_server_enqueued_at: message.server_enqueued_at,
+      };
+      if (primaryAsset === asset) {
+        Object.assign(next, message.data, {
+          type: 'snapshot',
+          asset,
+          assets,
+          market_data_sequence: sequence,
+        });
+      }
+      latest = next;
+      lastMarketDataSequence = sequence;
+      return true;
+    }
+
+    function scheduleMarketRender() {
+      if (renderScheduled || marketRenderScheduled) return;
+      marketRenderScheduled = true;
+      requestAnimationFrame(() => {
+        marketRenderScheduled = false;
+        if (!renderScheduled && latest) renderFastMarketData(latest);
       });
     }
 
@@ -1615,11 +2046,30 @@
       }
     }
 
+    function syncWeightedSegmentInputs() {
+      const reversalSequenceEnabled = $('weightedReversalSequence').checked;
+      Object.values(weightedSegmentInputs).forEach((inputs) => {
+        const enabled = $(inputs.enabled).checked;
+        $(inputs.duration).disabled = reversalSequenceEnabled || !enabled;
+        $(inputs.quote).disabled = !enabled;
+      });
+    }
+
     function renderWeightedConfig(snapshot, force = false) {
       const active = snapshot.btc_weighted?.config || {};
       const weighted = snapshot.pending_btc_weighted || active;
+      const segments = Array.isArray(weighted.entry_segments) && weighted.entry_segments.length === 3
+        ? weighted.entry_segments
+        : [
+            { id: 'early', enabled: true, duration_seconds: 80, quote_amount_usd: 1 },
+            { id: 'middle', enabled: true, duration_seconds: 140, quote_amount_usd: 3 },
+            { id: 'late', enabled: true, duration_seconds: 80, quote_amount_usd: 5 },
+          ];
       const configKey = JSON.stringify({
         enabled: weighted.enabled,
+        reversal_sequence_enabled: weighted.reversal_sequence_enabled,
+        risk_pause_enabled: weighted.risk_pause_enabled,
+        entry_segments: segments,
         values: Object.fromEntries(Object.keys(weightedInputs).map((field) => [field, weighted[field]])),
       });
       if (
@@ -1628,12 +2078,102 @@
         || (!weightedFormDirty && configKey !== renderedWeightedConfigKey)
       ) {
         Object.entries(weightedInputs).forEach(([field, id]) => setRuntimeInput(id, weighted[field]));
+        segments.forEach((segment) => {
+          const inputs = weightedSegmentInputs[segment.id];
+          if (!inputs) return;
+          $(inputs.enabled).checked = segment.enabled !== false;
+          setRuntimeInput(inputs.duration, segment.duration_seconds);
+          setRuntimeInput(inputs.quote, segment.quote_amount_usd);
+        });
         $('weightedEnabled').checked = Boolean(weighted.enabled);
+        $('weightedReversalSequence').checked = Boolean(weighted.reversal_sequence_enabled);
+        $('weightedRiskPause').checked = Boolean(weighted.risk_pause_enabled);
+        syncWeightedSegmentInputs();
         renderedWeightedConfigKey = configKey;
         weightedFormInitialized = true;
       }
+      if (weightedSaveFeedbackTimer) return;
       const status = $('weightedConfigStatus');
       if (weightedFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+      } else if (snapshot.config_status === 'pending_next_btc_market') {
+        status.textContent = '已保存，下一场BTC生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
+    }
+
+    function showLeadSaveFeedback(label, state = '', duration = 2200) {
+      const button = $('saveLead');
+      if (leadSaveFeedbackTimer) clearTimeout(leadSaveFeedbackTimer);
+      button.textContent = label;
+      button.classList.toggle('save-success', state === 'success');
+      button.classList.toggle('save-error', state === 'error');
+      if (duration > 0) {
+        leadSaveFeedbackTimer = setTimeout(() => {
+          button.textContent = '保存领先预测参数';
+          button.classList.remove('save-success', 'save-error');
+          leadSaveFeedbackTimer = null;
+        }, duration);
+      }
+    }
+
+    function renderLeadConfig(snapshot, force = false) {
+      const active = snapshot.btc_lead_prediction?.config || {};
+      const lead = snapshot.pending_btc_lead_prediction || active;
+      const configKey = JSON.stringify({
+        enabled: lead.enabled,
+        spot_sources: lead.spot_sources,
+        futures_diagnostics_enabled: lead.futures_diagnostics_enabled,
+        risk_pause_enabled: lead.risk_pause_enabled,
+        values: Object.fromEntries(Object.keys(leadInputs).map((field) => [field, lead[field]])),
+      });
+      if (
+        force
+        || !leadFormInitialized
+        || (!leadFormDirty && configKey !== renderedLeadConfigKey)
+      ) {
+        Object.entries(leadInputs).forEach(([field, id]) => setRuntimeInput(id, lead[field]));
+        $('leadEnabled').checked = Boolean(lead.enabled);
+        $('leadFuturesDiagnostics').checked = lead.futures_diagnostics_enabled !== false;
+        $('leadRiskPause').checked = lead.risk_pause_enabled !== false;
+        const sources = new Set(lead.spot_sources || ['binance', 'coinbase', 'kraken']);
+        $('leadUseBinance').checked = sources.has('binance');
+        $('leadUseCoinbase').checked = sources.has('coinbase');
+        $('leadUseKraken').checked = sources.has('kraken');
+        renderedLeadConfigKey = configKey;
+        leadFormInitialized = true;
+      }
+      if (leadSaveFeedbackTimer) return;
+      const status = $('leadConfigStatus');
+      if (leadFormDirty) {
+        status.textContent = '有修改，尚未保存';
+        status.className = 'tag amber';
+      } else if (snapshot.config_status === 'pending_next_btc_market') {
+        status.textContent = '已保存，下一场BTC生效';
+        status.className = 'tag amber';
+      } else {
+        status.textContent = '当前生效';
+        status.className = 'tag green';
+      }
+    }
+
+    function renderMakerConfig(snapshot, force = false) {
+      const active = snapshot.btc_maker_arbitrage?.config || {};
+      const maker = snapshot.pending_btc_maker_arbitrage || active;
+      const configKey = JSON.stringify({ enabled: maker.enabled, sizing_mode: maker.sizing_mode, values: Object.fromEntries(Object.keys(makerInputs).map((field) => [field, maker[field]])) });
+      if (force || !makerFormInitialized || (!makerFormDirty && configKey !== renderedMakerConfigKey)) {
+        Object.entries(makerInputs).forEach(([field, id]) => setRuntimeInput(id, maker[field]));
+        $('makerEnabled').checked = Boolean(maker.enabled);
+        $('makerSizingMode').value = maker.sizing_mode || 'quantity';
+        renderedMakerConfigKey = configKey;
+        makerFormInitialized = true;
+      }
+      const status = $('makerConfigStatus');
+      if (makerFormDirty) {
         status.textContent = '有修改，尚未保存';
         status.className = 'tag amber';
       } else if (snapshot.config_status === 'pending_next_btc_market') {
@@ -2463,6 +3003,33 @@
       return `${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
     }
 
+    function weightedSegmentLabel(segment, quote = null) {
+      const labels = { early: '前段', middle: '中段', late: '后段' };
+      const label = labels[segment] || segment || '--';
+      return quote == null ? label : `${label} · $${fmtNumber(quote, 2)}`;
+    }
+
+    function weightedSegmentStatusLabel(status) {
+      const labels = {
+        pending: '未开始', active: '可确认', confirming: '确认中',
+        submitted: '已提交', missed: '已错过', disabled: '已关闭',
+      };
+      return labels[status] || status || '--';
+    }
+
+    function weightedReversalStateLabel(state) {
+      const labels = {
+        time_segments: '按时间三段',
+        waiting_first_entry_conditions: '等待首笔条件',
+        waiting_for_score_reversal: '等待评分反转',
+        reversal_recognized: '反向识别中',
+        conditions_confirming: '条件确认中',
+        complete: '三档完成',
+        no_enabled_segments: '无可用档位',
+      };
+      return labels[state] || state || '--';
+    }
+
     function weightedAttemptStableKey(attempt) {
       const key = String(attempt?.idempotency_key || '');
       const buy = key.match(/^(.*:BUY):(observed|p95)$/i);
@@ -2520,6 +3087,8 @@
             marketSlug: attempt.market_slug,
             side: attempt.side,
             direction: attempt.direction,
+            entrySegment: attempt.entry_segment,
+            segmentQuote: attempt.segment_quote_amount_usd,
             retry,
             observed: null,
             p95: null,
@@ -2531,6 +3100,8 @@
           if (stableKey) stableGroups.set(stableKey, group);
         }
         group[lane] = attempt;
+        group.entrySegment = group.entrySegment || attempt.entry_segment;
+        group.segmentQuote = group.segmentQuote ?? attempt.segment_quote_amount_usd;
         group.attempts.push(attempt);
         group.firstAt = Math.min(group.firstAt || requestedAt, requestedAt);
         group.latestAt = Math.max(group.latestAt, requestedAt);
@@ -2572,6 +3143,8 @@
             marketId: position.market_id,
             marketSlug: position.market_slug,
             direction: position.direction,
+            entrySegment: position.entry_segment,
+            segmentQuote: position.segment_quote_amount_usd,
             observed: null,
             p95: null,
             entryAttemptGroup,
@@ -2582,6 +3155,8 @@
           if (stableKey) keyedGroups.set(stableKey, group);
         }
         group[lane] = position;
+        group.entrySegment = group.entrySegment || position.entry_segment;
+        group.segmentQuote = group.segmentQuote ?? position.segment_quote_amount_usd;
         group.firstAt = Math.min(group.firstAt || openedAt, entryAttemptGroup?.firstAt || openedAt);
         group.latestAt = Math.max(group.latestAt, entryAttemptGroup?.latestAt || openedAt);
       });
@@ -2592,36 +3167,84 @@
       if (!attempt) return '<span class="weighted-lane-meta">--</span>';
       const quantity = attempt.filled_quantity ?? attempt.expected_quantity;
       const rtt = attempt.latency_ms == null ? '--' : `${fmtNumber(attempt.latency_ms, 1)}ms`;
+      const decision = attempt.decision_details || {};
+      const segmentLine = attempt.entry_segment
+        ? `<div class="weighted-lane-meta">${escapeHtml(weightedSegmentLabel(attempt.entry_segment, attempt.segment_quote_amount_usd))} · 请求 ${attempt.requested_quote == null ? `${fmtNumber(attempt.requested_quantity, 2)}份` : `$${fmtNumber(attempt.requested_quote, 2)}`}</div>`
+        : '';
+      const exitSnapshot = attempt.side === 'SELL'
+        ? `<div class="weighted-lane-meta">对侧 ${fmtNumber(decision.opposite_score, 1)} · 持仓侧 ${fmtNumber(decision.held_score, 1)} · 领先 ${fmtNumber(decision.opposite_lead, 1)} · 可卖 ${fmtNumber(decision.effective_exit_price_cents, 1)}¢ · 开场后 ${fmtNumber(decision.elapsed_since_open, 1)}s</div>`
+        : '';
       return `<div class="weighted-lane-primary">#${attempt.attempt_number || '--'} · ${escapeHtml(attempt.status || '--')} · 限价 ${fmtCents(attempt.limit_price)}</div>`
         + `<div class="weighted-lane-meta">零延迟 ${fmtCents(attempt.expected_avg_price)} → 延迟后 ${fmtCents(attempt.filled_avg_price)} · 数量 ${fmtNumber(quantity, 2)}</div>`
+        + segmentLine
         + `<div class="weighted-lane-meta">完成 ${fmtWeightedDateTime(attempt.resolved_at)} · RTT ${rtt}</div>`
+        + exitSnapshot
         + `<div class="weighted-lane-meta">${escapeHtml(weightedReasonText(attempt.reason))}</div>`;
     }
 
     function weightedPositionLaneHtml(position) {
       if (!position) return '<span class="weighted-lane-meta">--</span>';
       const pnl = position.realized_pnl == null ? '--' : `$${fmtSigned(position.realized_pnl, 3)}`;
+      const intent = position.exit_intent_details || {};
+      const intentLine = position.exit_intent_active
+        ? `<div class="weighted-lane-meta">退出意图至 ${fmtWeightedDateTime(position.exit_intent_expires_at)} · 可卖 ${fmtNumber(intent.effective_exit_price_cents, 1)}¢ · ${escapeHtml(weightedReasonText(intent.reason))}</div>`
+        : position.last_exit_intent_reason
+        ? `<div class="weighted-lane-meta">最近退出判断：${escapeHtml(weightedReasonText(position.last_exit_intent_reason))}</div>`
+        : '';
       return `<div class="weighted-lane-primary">${escapeHtml(position.status || '--')} · ${fmtCents(position.entry_price)} → ${fmtCents(position.exit_price)} · 盈亏 ${pnl}</div>`
         + `<div class="weighted-lane-meta">买入 ${fmtWeightedDateTime(position.opened_at)} · 数量 ${fmtNumber(position.quantity, 2)} · 成本 $${fmtNumber(position.entry_quote, 2)}</div>`
+        + (position.entry_segment ? `<div class="weighted-lane-meta">${escapeHtml(weightedSegmentLabel(position.entry_segment, position.segment_quote_amount_usd))}</div>` : '')
+        + intentLine
         + `<div class="weighted-lane-meta">结束 ${fmtWeightedDateTime(position.closed_at)} · ${escapeHtml(weightedReasonText(position.exit_reason))}</div>`;
     }
 
+    function weightedGateValue(value) {
+      if (value == null) return '--';
+      if (Array.isArray(value)) return value.join('-');
+      if (typeof value === 'object') {
+        if ('samples' in value || 'span_seconds' in value) {
+          return `${value.samples ?? '--'}样本 · ${fmtNumber(value.span_seconds, 1)}s`;
+        }
+        return JSON.stringify(value);
+      }
+      return String(value);
+    }
+
     function weightedReasonText(reason) {
+      if (String(reason || '').startsWith('exit_signal_cancelled:')) {
+        const detail = String(reason).slice('exit_signal_cancelled:'.length);
+        return `退出意图已取消：${weightedReasonText(detail)}`;
+      }
       const labels = {
         starting: '启动中', scoring: '评分中', disabled: '策略关闭', waiting_for_btc_market: '等待BTC市场',
         market_start_unavailable: '等待市场起点', score_history_warming: '等待t-3/t-6历史',
+        entry_start_wait: '等待开场入场时间', metric_history_warming: '指标样本预热中',
         entry_score_below_threshold: '总分不足', entry_lead_below_threshold: '领先分不足',
-        entry_window_closed: '已停止新买入', chainlink_stale: 'Chainlink过期', book_stale: '盘口过期',
+        entry_window_closed: '已停止新买入', entry_segment_used: '当前时段已提交',
+        entry_segment_disabled: '当前时段已关闭',
+        entry_segment_unavailable: '当前没有可用时段', chainlink_stale: 'Chainlink过期', book_stale: '盘口过期',
+        waiting_first_entry_conditions: '等待首笔条件', waiting_for_score_reversal: '等待评分反转',
+        no_enabled_segments: '无可用档位', reversal_sequence_complete: '三档反转递进已完成',
+        no_enabled_entry_segment: '无可用档位', score_leader_unavailable: '等待明确评分方向',
+        reversal_direction_only: '只允许反转后的方向',
         book_depth_untrusted: '盘口深度不可信', spread_too_wide: '盘口价差过大',
         depth_below_fixed_limit: '90美分内深度不足', buy_price_out_of_range: '买入价超出范围',
-        minimum_quantity_unavailable: '不满足最小数量', one_tick_risk_exceeded: '单跳风险过高',
+        below_book_min_order_size_diagnostic: '低于盘口最小份数，仅诊断',
+        book_min_order_size_met: '达到盘口最小份数，仅诊断', one_tick_risk_exceeded: '单跳风险过高',
         official_target_unverified: '官方目标价未核验', market_not_accepting_orders: '市场停止接单',
-        strategy_disabled: '策略关闭', entry_ready: '可以确认入场', entry_shadow_submitted: '双轨影子订单已创建',
-        market_entry_limit: '本场已达到入场上限', sell_depth_unavailable: '卖出深度不足，等待新盘口',
+        strategy_disabled: '策略关闭', risk_ready: '资金保护正常', risk_disabled: '资金保护关闭',
+        loss_streak_pause: 'P95连续亏损暂停', rolling_loss_limit: 'P95滚动亏损暂停',
+        entry_ready: '可以确认入场', entry_shadow_submitted: '双轨影子订单已创建',
+        sell_depth_unavailable: '卖出深度不足，等待新盘口',
         official_settlement: '官方结算', shadow_latency_scheduled: '等待延迟后盘口',
         shadow_fok_matched: '影子FOK成交', fok_depth_or_limit_unavailable: '延迟后FOK未成交',
         latency_probe_warming: 'P95延迟预热中', latency_probe_stale: 'Observed延迟过期',
         no_post_intent_book_update: '等待订单后的新盘口', process_restarted_before_shadow_result: '重启前订单无法测量',
+        minimum_hold_wait: '未到最短持仓时间', score_exit_window_closed: '已过评分退出窗口',
+        exit_score_below_threshold: '对侧退出分不足', exit_lead_below_threshold: '对侧退出领先分不足',
+        score_exit_price_below_floor: '可卖价低于评分退出下限', sell_price_unavailable: '暂无可卖价格',
+        score_reversal_ready: '反向退出条件成立', score_reversal_confirmed: '反向退出已确认',
+        score_reversal_filled: '反向退出已成交', exit_intent_expired: '退出意图已过期',
         score_reversal: '反向评分退出', market_ended: '市场结束，等待结算', market_changed_before_exit: '换场后等待结算',
       };
       return labels[reason] || reason || '--';
@@ -2700,7 +3323,12 @@
       const scores = weighted.scores || {};
       const components = weighted.components || {};
       const candidates = weighted.candidates || {};
+      const entrySegmentState = weighted.entry_segments || {};
+      const reversalSequence = weighted.reversal_sequence || {};
       const summary = weighted.summary?.lanes || {};
+      const currentVersion = weighted.summary?.current_version || {};
+      const currentLanes = currentVersion.lanes || {};
+      const risk = weighted.risk || currentVersion.risk || {};
       const enabled = Boolean(weighted.enabled);
       setText('weightedState', enabled ? weightedReasonText(weighted.status) : '仅评分');
       setClass('weightedState', `tag ${enabled ? 'green' : 'amber'}`);
@@ -2719,11 +3347,57 @@
         return `${Math.max(0, (snapshotAt - new Date(received).getTime()) / 1000).toFixed(2)}s`;
       };
       setText('weightedBookAges', `${bookAge('UP')} / ${bookAge('DOWN')}`);
-      setText('weightedEntryCount', `${round.entry_count || 0} / ${round.settings?.max_entries_per_market ?? config.max_entries_per_market ?? 1}`);
+      const segmentRows = entrySegmentState.segments || [];
+      const currentSegment = entrySegmentState.current;
+      const reversalMode = Boolean(reversalSequence.enabled);
+      setText(
+        'weightedCurrentSegment',
+        currentSegment
+          ? reversalMode
+            ? `${weightedSegmentLabel(currentSegment.id, currentSegment.quote_amount_usd)} · 顺序档位`
+            : `${weightedSegmentLabel(currentSegment.id, currentSegment.quote_amount_usd)} · ${fmtNumber(currentSegment.start_seconds_after_open, 0)}-${fmtNumber(currentSegment.end_seconds_after_open, 0)}s`
+          : '--',
+      );
+      setText(
+        'weightedReversalState',
+        reversalMode
+          ? `反转递进 · ${weightedReversalStateLabel(reversalSequence.state)}`
+          : '按时间三段',
+      );
+      setText(
+        'weightedReversalDirections',
+        `${reversalSequence.current_leader || '--'} / ${reversalSequence.last_entry_direction || '--'} / ${reversalSequence.recognized_direction || '--'}`,
+      );
+      setText(
+        'weightedReversalNext',
+        reversalMode && reversalSequence.next_segment_id
+          ? `${weightedSegmentLabel(reversalSequence.next_segment_id)} · $${fmtNumber(reversalSequence.next_quote_amount_usd, 2)}`
+          : '--',
+      );
+      setText(
+        'weightedSegmentStates',
+        segmentRows.length
+          ? segmentRows.map((segment) => `${weightedSegmentLabel(segment.id)} ${weightedSegmentStatusLabel(segment.status)}`).join(' · ')
+          : '--',
+      );
+      setText('weightedEntryCount', `${round.entry_count || 0} / 3`);
+      setText('weightedConfigVersion', currentVersion.config_version || round.config_version || '--');
+      const riskDetail = risk.paused
+        ? `${weightedReasonText(risk.reason)}${risk.pause_until ? ` · 至 ${fmtWeightedDateTime(risk.pause_until)}` : ''}`
+        : risk.enabled === false
+        ? '已关闭'
+        : `正常 · 滚动盈亏 $${fmtSigned(risk.rolling_pnl || 0, 2)}`;
+      setText('weightedRiskState', riskDetail);
       setText('weightedObservedRate', summary.observed ? `${fmtNumber(summary.observed.fill_rate * 100, 1)}%` : '--');
       setText('weightedP95Rate', summary.p95 ? `${fmtNumber(summary.p95.fill_rate * 100, 1)}%` : '--');
       setPnl('weightedObservedPnl', summary.observed?.realized_pnl ?? 0, 2);
       setPnl('weightedP95Pnl', summary.p95?.realized_pnl ?? 0, 2);
+      setPnl('weightedCurrentObservedPnl', currentLanes.observed?.realized_pnl ?? 0, 2);
+      setPnl('weightedCurrentP95Pnl', currentLanes.p95?.realized_pnl ?? 0, 2);
+      setPnl('weightedCurrentLast10Pnl', currentLanes.p95?.last_10_pnl ?? 0, 2);
+      setText('weightedCurrentCompleted', `${currentLanes.observed?.completed || 0} / ${currentLanes.p95?.completed || 0}`);
+      setText('weightedLossStreak', currentLanes.p95?.loss_streak || 0);
+      setText('weightedMaxDrawdown', `$${fmtNumber(currentLanes.p95?.max_drawdown || 0, 2)}`);
       setText('weightedOpenPositions', (weighted.positions || []).length);
 
       const upScore = Number(scores.UP);
@@ -2742,14 +3416,18 @@
         setText(`weighted${direction === 'UP' ? 'Up' : 'Down'}Status`, weightedReasonText(candidate.reason));
         setClass(`weighted${direction === 'UP' ? 'Up' : 'Down'}Status`, `tag ${candidate.eligible ? 'green' : 'amber'}`);
       });
-      const leader = scoreReady ? (upScore >= downScore ? 'UP' : 'DOWN') : null;
+      const leader = scoreReady && upScore !== downScore ? (upScore > downScore ? 'UP' : 'DOWN') : null;
       setText('weightedDecision', leader ? `${leader}领先 ${fmtNumber(Math.abs(upScore - downScore), 1)}分` : '等待历史');
       setClass('weightedDecision', `tag ${leader ? 'green' : 'blue'}`);
       const confirmationRows = Object.entries(weighted.confirmations || {});
-      const confirmation = confirmationRows.find(([key]) => key === `entry:${leader}`)?.[1];
+      const activeSegmentId = entrySegmentState.active_id;
+      const confirmationDirection = reversalSequence.allowed_direction || leader;
+      const confirmation = confirmationRows.find(
+        ([key]) => key === `entry:${activeSegmentId}:${confirmationDirection}`,
+      )?.[1];
       const exits = confirmationRows.filter(([key]) => key.startsWith('exit:')).length;
       setText('weightedConfirmation', confirmation
-        ? `${leader} ${fmtNumber(confirmation.elapsed_seconds, 1)}/${fmtNumber(confirmation.required_seconds, 1)}s · ${confirmation.updates}/${confirmation.required_updates}次`
+        ? `${confirmationDirection} ${fmtNumber(confirmation.elapsed_seconds, 1)}/${fmtNumber(confirmation.required_seconds, 1)}s · ${confirmation.updates}/${confirmation.required_updates}次`
         : exits ? `${exits}个反向退出确认中` : '--');
 
       const componentLabels = {
@@ -2771,9 +3449,12 @@
       const gateRows = [];
       ['UP', 'DOWN'].forEach((direction) => {
         Object.entries(candidates[direction]?.gates || {}).forEach(([name, gate]) => {
-          const value = Array.isArray(gate.value) ? gate.value.join('-') : gate.value;
-          const limit = Array.isArray(gate.limit) ? gate.limit.join('-') : gate.limit;
-          gateRows.push(`<tr><td>${direction} · ${escapeHtml(name)}</td><td>${escapeHtml(value ?? '--')}</td><td>${escapeHtml(limit ?? '--')}</td><td style="color:${gate.passed ? 'var(--green)' : 'var(--red)'}">${gate.passed ? '通过' : '拦截'}</td><td>${escapeHtml(weightedReasonText(gate.reason))}</td></tr>`);
+          const value = weightedGateValue(gate.value);
+          const limit = weightedGateValue(gate.limit);
+          const diagnostic = gate.blocking === false;
+          const status = diagnostic ? '诊断' : gate.passed ? '通过' : '拦截';
+          const color = diagnostic ? 'var(--blue)' : gate.passed ? 'var(--green)' : 'var(--red)';
+          gateRows.push(`<tr><td>${direction} · ${escapeHtml(name)}</td><td>${escapeHtml(value ?? '--')}</td><td>${escapeHtml(limit ?? '--')}</td><td style="color:${color}">${status}</td><td>${escapeHtml(weightedReasonText(gate.reason))}</td></tr>`);
         });
       });
       updateHtmlWhenChanged('weightedGates', 'weightedGates', gateRows.join('|'), gateRows.join(''));
@@ -2789,16 +3470,387 @@
       const positions = weighted.recent_positions || [];
       const positionGroups = groupWeightedPositions(positions, attemptGroups);
       setText('weightedPositionCount', `${positionGroups.length}组 / ${positions.length}轨`);
-      const positionHtml = positionGroups.map((group) => `<tr><td>${fmtWeightedDateTime(group.firstAt)}</td><td>${escapeHtml(weightedGroupNumber(group.entryAttemptGroup))}</td><td>${escapeHtml(group.marketSlug || '--')}</td><td>${escapeHtml(group.direction || '--')}</td><td class="weighted-lane-cell">${weightedPositionLaneHtml(group.observed)}</td><td class="weighted-lane-cell">${weightedPositionLaneHtml(group.p95)}</td></tr>`).join('');
+      const positionHtml = positionGroups.map((group) => `<tr><td>${fmtWeightedDateTime(group.firstAt)}</td><td>${escapeHtml(weightedGroupNumber(group.entryAttemptGroup))}</td><td>${escapeHtml(group.marketSlug || '--')}</td><td>${escapeHtml(group.direction || '--')}</td><td>${escapeHtml(weightedSegmentLabel(group.entrySegment, group.segmentQuote))}</td><td class="weighted-lane-cell">${weightedPositionLaneHtml(group.observed)}</td><td class="weighted-lane-cell">${weightedPositionLaneHtml(group.p95)}</td></tr>`).join('');
       updateHtmlWhenChanged('weightedPositions', 'weightedPositions', JSON.stringify([positions, attempts]), positionHtml);
       setText('weightedAttemptCount', `${attemptGroups.length}组 / ${attempts.length}轨`);
-      const attemptHtml = attemptGroups.map((group) => `<tr><td>${fmtWeightedDateTime(group.firstAt)}</td><td>${escapeHtml(weightedGroupNumber(group))}</td><td>${escapeHtml(group.side || '--')}</td><td>${escapeHtml(group.direction || '--')}</td><td class="weighted-lane-cell">${weightedAttemptLaneHtml(group.observed)}</td><td class="weighted-lane-cell">${weightedAttemptLaneHtml(group.p95)}</td></tr>`).join('');
+      const attemptHtml = attemptGroups.map((group) => `<tr><td>${fmtWeightedDateTime(group.firstAt)}</td><td>${escapeHtml(weightedGroupNumber(group))}</td><td>${escapeHtml(group.side || '--')}</td><td>${escapeHtml(group.direction || '--')}</td><td>${escapeHtml(weightedSegmentLabel(group.entrySegment, group.segmentQuote))}</td><td class="weighted-lane-cell">${weightedAttemptLaneHtml(group.observed)}</td><td class="weighted-lane-cell">${weightedAttemptLaneHtml(group.p95)}</td></tr>`).join('');
       updateHtmlWhenChanged('weightedAttempts', 'weightedAttempts', JSON.stringify(attempts), attemptHtml);
       renderWeightedConfig({
         btc_weighted: weighted,
         pending_btc_weighted: pendingWeighted,
         config_status: configStatus,
       });
+    }
+
+    function leadReasonText(value) {
+      const labels = {
+        disabled: '策略关闭', starting: '启动中', waiting_for_market: '等待市场',
+        waiting_for_sources: '等待健康来源', insufficient_healthy_sources: '健康来源不足',
+        source_dispersion_too_wide: '来源离散过大', prediction_warmup: '预测预热',
+        waiting_for_shock: '等待跳动', shock_history_warming: '跳动历史预热',
+        shock_below_threshold: '跳动幅度不足', insufficient_direction_sources: '同向来源不足',
+        source_agreement_below_67pct: '来源一致率不足', waiting_for_lagging_book: '等待盘口落后',
+        entry_submitted: '入场已提交', shock_entry_submitted: '冲击入场已提交',
+        shock_already_used: '冲击已使用', holding: '持仓中', position_open: '已有持仓',
+        cooldown: '退出后冷却', post_exit_cooldown: '退出后冷却', risk_paused: '风险暂停',
+        waiting_for_official_settlement: '等待官方结算', strategy_enabled: '策略未启用',
+        target_verified: '目标价未核验', remaining_time: '已停止新入场',
+        market_trade_limit: '本场次数已满', no_open_position: '已有仓位',
+        chainlink_fresh: 'Chainlink过期', book_fresh: '盘口过期', book_trusted: '盘口不可信',
+        spread: '盘口价差过大', buy_range: '买价超出范围', buy_depth: '买入深度不足',
+        horizon_direction: '3秒和5秒方向不一致', adverse_interval_direction: '悲观预测未同向',
+        response_warmed: '盘口响应预热', expected_reprice: '预计上涨不足', expected_net_edge: '成本后预期净收益不足',
+        p95_net_edge: 'P95净收益不足', risk: '风险暂停',
+      };
+      const text = String(value || '--');
+      if (text.startsWith('book_response_samples_')) {
+        const parts = text.match(/book_response_samples_(\d+)_of_(\d+)/);
+        return parts ? `盘口响应预热 ${parts[1]}/${parts[2]}` : text;
+      }
+      return labels[text] || text;
+    }
+
+    function leadAttemptRetry(attempt) {
+      const key = String(attempt?.idempotency_key || '');
+      const match = key.match(/:SELL:(?:observed|p95):([^:]+)$/i);
+      return match ? match[1] : attempt?.side === 'SELL' ? '1' : 'entry';
+    }
+
+    function leadAttemptStableKey(attempt) {
+      if (!attempt?.shock_id) return null;
+      return [
+        attempt.market_id || attempt.market_slug || '--',
+        attempt.shock_id,
+        attempt.side || '--',
+        attempt.direction || '--',
+        leadAttemptRetry(attempt),
+      ].join(':');
+    }
+
+    function groupLeadAttempts(attempts) {
+      const groups = [];
+      const stableGroups = new Map();
+      const ordered = [...(attempts || [])].sort((left, right) => (
+        weightedTimestamp(left.requested_at) - weightedTimestamp(right.requested_at)
+        || Number(left.attempt_number || 0) - Number(right.attempt_number || 0)
+      ));
+      ordered.forEach((attempt, index) => {
+        const lane = attempt.lane === 'p95' ? 'p95' : 'observed';
+        const requestedAt = weightedTimestamp(attempt.requested_at);
+        const stableKey = leadAttemptStableKey(attempt);
+        const retry = leadAttemptRetry(attempt);
+        let group = stableKey ? stableGroups.get(stableKey) : null;
+        if (group?.[lane]) group = null;
+        if (!group && !stableKey) {
+          group = [...groups].reverse().find((candidate) => (
+            candidate.marketId === attempt.market_id
+            && candidate.side === attempt.side
+            && candidate.direction === attempt.direction
+            && candidate.retry === retry
+            && !candidate[lane]
+            && Math.abs(candidate.latestAt - requestedAt) <= 2500
+          ));
+        }
+        if (!group) {
+          group = {
+            key: stableKey || `lead-attempt-${attempt.attempt_id || index}`,
+            marketId: attempt.market_id,
+            marketSlug: attempt.market_slug,
+            shockId: attempt.shock_id,
+            side: attempt.side,
+            direction: attempt.direction,
+            retry,
+            observed: null,
+            p95: null,
+            attempts: [],
+            firstAt: requestedAt,
+            latestAt: requestedAt,
+          };
+          groups.push(group);
+          if (stableKey) stableGroups.set(stableKey, group);
+        }
+        group[lane] = attempt;
+        group.attempts.push(attempt);
+        group.firstAt = Math.min(group.firstAt || requestedAt, requestedAt);
+        group.latestAt = Math.max(group.latestAt, requestedAt);
+      });
+      return groups.sort((left, right) => (
+        right.latestAt - left.latestAt
+        || Number(right.attempts[0]?.attempt_number || 0) - Number(left.attempts[0]?.attempt_number || 0)
+      ));
+    }
+
+    function groupLeadPositions(positions, attemptGroups) {
+      const buyGroupByShock = new Map();
+      (attemptGroups || []).filter((group) => group.side === 'BUY').forEach((group) => {
+        if (group.shockId) {
+          buyGroupByShock.set(`${group.marketId || group.marketSlug}:${group.shockId}:${group.direction}`, group);
+        }
+      });
+      const groups = [];
+      const stableGroups = new Map();
+      const ordered = [...(positions || [])].sort((left, right) => (
+        weightedTimestamp(left.opened_at) - weightedTimestamp(right.opened_at)
+      ));
+      ordered.forEach((position, index) => {
+        const lane = position.lane === 'p95' ? 'p95' : 'observed';
+        const openedAt = weightedTimestamp(position.opened_at);
+        const stableKey = position.shock_id
+          ? `${position.market_id || position.market_slug}:${position.shock_id}:${position.direction}`
+          : null;
+        let group = stableKey ? stableGroups.get(stableKey) : null;
+        if (group?.[lane]) group = null;
+        if (!group && !stableKey) {
+          group = [...groups].reverse().find((candidate) => (
+            candidate.marketId === position.market_id
+            && candidate.direction === position.direction
+            && !candidate[lane]
+            && Math.abs(candidate.latestAt - openedAt) <= 3000
+          ));
+        }
+        if (!group) {
+          group = {
+            key: stableKey || `lead-position-${position.position_id || index}`,
+            marketId: position.market_id,
+            marketSlug: position.market_slug,
+            shockId: position.shock_id,
+            direction: position.direction,
+            observed: null,
+            p95: null,
+            buyAttemptGroup: stableKey ? buyGroupByShock.get(stableKey) : null,
+            firstAt: openedAt,
+            latestAt: openedAt,
+          };
+          groups.push(group);
+          if (stableKey) stableGroups.set(stableKey, group);
+        }
+        group[lane] = position;
+        group.firstAt = Math.min(group.firstAt || openedAt, openedAt);
+        group.latestAt = Math.max(group.latestAt, openedAt);
+      });
+      return groups.sort((left, right) => right.latestAt - left.latestAt);
+    }
+
+    function leadAttemptLaneHtml(attempt) {
+      if (!attempt) return '<span class="weighted-lane-meta">--</span>';
+      const quantity = attempt.filled_quantity ?? attempt.expected_quantity;
+      const requested = attempt.side === 'BUY'
+        ? `$${fmtNumber(attempt.requested_quote, 2)}`
+        : `${fmtNumber(attempt.requested_quantity, 3)}份`;
+      const rtt = attempt.latency_ms == null ? '--' : `${fmtNumber(attempt.latency_ms, 1)}ms`;
+      return `<div class="weighted-lane-primary">#${attempt.attempt_number || '--'} · ${escapeHtml(attempt.status || '--')} · ${escapeHtml(leadReasonText(attempt.reason))}</div>`
+        + `<div class="weighted-lane-meta">请求 ${requested} · 限价 ${fmtCents(attempt.limit_price)} · 均价 ${fmtCents(attempt.filled_avg_price ?? attempt.expected_avg_price)}</div>`
+        + `<div class="weighted-lane-meta">数量 ${fmtNumber(quantity, 3)} · RTT ${rtt} · 完成 ${fmtWeightedDateTime(attempt.resolved_at)}</div>`;
+    }
+
+    function leadPositionLaneHtml(position) {
+      if (!position) return '<span class="weighted-lane-meta">--</span>';
+      const pnl = position.realized_pnl == null ? '--' : `$${fmtSigned(position.realized_pnl, 3)}`;
+      const pnlClass = Number(position.realized_pnl || 0) >= 0 ? 'lead-gate-pass' : 'lead-gate-fail';
+      return `<div class="weighted-lane-primary">${escapeHtml(position.status || '--')} · ${fmtCents(position.entry_price)} → ${fmtCents(position.exit_price)} · <span class="${pnlClass}">${pnl}</span></div>`
+        + `<div class="weighted-lane-meta">数量 ${fmtNumber(position.quantity, 3)} · 目标 ${fmtCents(position.predicted_target_bid)} · 开仓 ${fmtWeightedDateTime(position.opened_at)}</div>`
+        + `<div class="weighted-lane-meta">结束 ${fmtWeightedDateTime(position.closed_at)} · ${escapeHtml(leadReasonText(position.exit_reason))}</div>`;
+    }
+
+    function renderLead(lead, btcSnapshot, configStatus, pendingLead) {
+      lead = lead || {};
+      const round = lead.round || {};
+      const settings = lead.config || {};
+      const sources = lead.sources || {};
+      const projection = lead.twap_projection || {};
+      const bookProjection = lead.book_projection || {};
+      const summary = lead.summary?.lanes || {};
+      const predictionSummary = lead.summary?.prediction || {};
+      const shock = lead.active_shock;
+      const confirmation = lead.confirmation || {};
+      const risk = lead.risk_status || {};
+      const enabled = Boolean(lead.enabled);
+      setText('leadState', enabled ? leadReasonText(lead.status) : '关闭');
+      setClass('leadState', `tag ${enabled ? (risk.paused ? 'red' : 'green') : 'amber'}`);
+      setText('leadMarketSlug', round.market_slug || btcSnapshot.market?.slug || '--');
+      setText('leadReason', leadReasonText(lead.last_reason));
+      setText('leadTargetPrice', fmtPrice(round.settings?.target_price || btcSnapshot.market?.threshold_price));
+      setText('leadChainlinkPrice', fmtPrice(btcSnapshot.settlement_tick?.price));
+      setText('leadExternalIndex', fmtPrice(lead.external_index));
+      setText('leadTimeLeft', Number.isFinite(Number(lead.remaining_seconds)) ? `${fmtNumber(lead.remaining_seconds, 1)}s` : '--');
+      setText(
+        'leadShock',
+        shock
+          ? `${shock.direction} · ${fmtNumber(shock.amplitude_bps, 2)} bps · ${shock.submitted ? '已提交' : '待入场'}`
+          : '--',
+      );
+      const confirmElapsed = confirmation.started_at
+        ? Math.max(0, (new Date(confirmation.last_seen_at || Date.now()).getTime() - new Date(confirmation.started_at).getTime()) / 1000)
+        : null;
+      setText(
+        'leadConfirmation',
+        confirmation.direction
+          ? `${confirmation.direction} · ${fmtNumber(confirmElapsed, 1)}/${fmtNumber(settings.confirmation_seconds, 1)}s · ${confirmation.updates || 0}/${settings.confirmation_updates || 3}次`
+          : '--',
+      );
+      setText(
+        'leadRisk',
+        risk.paused
+          ? `${leadReasonText(risk.reason)}${risk.pause_until ? ` · 至 ${fmtWeightedDateTime(risk.pause_until)}` : ''}`
+          : lead.cooldown_until ? `冷却至 ${fmtWeightedDateTime(lead.cooldown_until)}` : '正常',
+      );
+      setText('leadTradeCount', `${round.trade_count || 0} / ${settings.max_trades_per_market || 3}`);
+
+      const sourceRows = Object.entries(sources);
+      const healthyCount = sourceRows.filter(([, row]) => row.healthy).length;
+      setText('leadHealthyCount', `${healthyCount} / ${sourceRows.length || 3}`);
+      setClass('leadHealthyCount', `tag ${healthyCount >= (settings.min_healthy_sources || 2) ? 'green' : 'amber'}`);
+      const sourceHtml = sourceRows.map(([name, row]) => `
+        <div class="lead-source-row">
+          <div><div class="lead-source-name">${escapeHtml(name)}</div><div class="weighted-lane-meta">${escapeHtml(row.taker_side || '无成交方向')}</div></div>
+          <div class="lead-source-price"><strong>${escapeHtml(fmtPrice(row.calibrated_price))}</strong><div class="weighted-lane-meta">${fmtNumber(row.velocity_bps_per_second, 2)} bps/s · 加速 ${fmtNumber(row.acceleration_bps_per_second2, 2)}</div></div>
+          <div><span class="tag ${row.healthy ? 'green' : 'red'}">${row.healthy ? '健康' : leadReasonText(row.reason)}</span><div class="weighted-lane-meta">${fmtNumber(row.weight, 1)}% · ${fmtNumber(row.age_seconds, 2)}s</div></div>
+        </div>`).join('');
+      updateHtmlWhenChanged('leadSources', 'leadSources', JSON.stringify(sources), sourceHtml || '<div class="empty">等待外部行情</div>');
+
+      const horizons = projection.horizons || {};
+      const projectionHtml = [1, 3, 5, 8].map((horizon) => {
+        const row = horizons[String(horizon)] || {};
+        return `<tr><td>${horizon}s</td><td>${fmtPrice(row.predicted_twap)}</td><td>${fmtPrice(row.lower_90)} - ${fmtPrice(row.upper_90)}</td><td>${fmtNumber(row.replacement_pressure, 3)}</td><td>${fmtNumber(row.target_distance_bps, 2)} bps</td><td>${row.up_probability == null ? '--' : fmtProb(row.up_probability)}</td><td>${row.up_probability_change_points == null ? '--' : `${fmtSigned(row.up_probability_change_points, 2)}pt`}</td><td>${fmtTime(row.valid_until)}</td></tr>`;
+      }).join('');
+      updateHtmlWhenChanged('leadProjections', 'leadProjections', JSON.stringify(horizons), projectionHtml);
+      const readyHorizons = Object.values(horizons).filter((row) => row.ready).length;
+      setText('leadProjectionState', readyHorizons ? `${readyHorizons}/4就绪${projection.crossing_time_seconds == null ? '' : ` · 跨线${fmtNumber(projection.crossing_time_seconds, 1)}s`}` : '预测预热');
+      setClass('leadProjectionState', `tag ${readyHorizons >= 3 ? 'green' : 'amber'}`);
+
+      const candidateRows = ['UP', 'DOWN'].map((direction) => {
+        const row = bookProjection[direction] || {};
+        const candidate = row.candidate || {};
+        const result = candidate.eligible ? '可入场' : leadReasonText(candidate.failed_gate || '等待冲击');
+        return `<tr><td class="lead-direction-${direction.toLowerCase()}">${direction}</td><td>${fmtProb(candidate.best_bid ?? row.current_bid)} / ${fmtProb(candidate.best_ask)}</td><td>${fmtProb(candidate.predicted_bid ?? row.predicted_bid)}</td><td>${fmtNumber(candidate.expected_reprice_cents ?? row.expected_reprice_cents, 2)}¢</td><td>${fmtNumber(candidate.expected_net_edge_cents, 2)}¢</td><td>${fmtNumber(candidate.p95_net_edge_cents, 2)}¢</td><td>${fmtNumber(candidate.simulated_quantity, 3)} / ${fmtNumber(candidate.book_min_order_size, 2)}${candidate.below_book_min_order_size ? ' · 仅诊断' : ''}</td><td class="${candidate.eligible ? 'lead-gate-pass' : 'lead-gate-fail'}">${escapeHtml(result)}</td></tr>`;
+      }).join('');
+      updateHtmlWhenChanged('leadBookProjection', 'leadBookProjection', JSON.stringify(bookProjection), candidateRows);
+      const eligible = ['UP', 'DOWN'].some((direction) => bookProjection[direction]?.candidate?.eligible);
+      setText('leadGateState', eligible ? '存在可执行方向' : leadReasonText(lead.last_reason));
+      setClass('leadGateState', `tag ${eligible ? 'green' : 'amber'}`);
+
+      const history = [...(lead.prediction_history || [])].reverse();
+      setText('leadPredictionCount', history.length);
+      const historyHtml = history.slice(0, 100).map((item) => {
+        const value = (horizon) => fmtPrice(item.projections?.[String(horizon)]?.predicted_twap);
+        return `<tr><td>${fmtWeightedDateTime(item.created_at)}</td><td>${fmtPrice(item.external_index)}</td><td>${value(1)}</td><td>${value(3)}</td><td>${value(5)}</td><td>${value(8)}</td><td>${item.matured_horizons?.length || 0}/4</td></tr>`;
+      }).join('');
+      updateHtmlWhenChanged('leadPredictionHistory', 'leadPredictionHistory', JSON.stringify(history), historyHtml);
+
+      const attempts = lead.recent_attempts || [];
+      const attemptGroups = groupLeadAttempts(attempts);
+      setText('leadAttemptCount', `${attemptGroups.length}组 / ${attempts.length}轨`);
+      const attemptsHtml = attemptGroups.map((group) => `<tr><td>${fmtWeightedDateTime(group.firstAt)}</td><td>${escapeHtml(weightedGroupNumber(group))}</td><td>${escapeHtml(group.marketSlug || '--')}</td><td>${escapeHtml(group.side || '--')}${group.side === 'SELL' ? ` · 第${escapeHtml(group.retry)}次` : ''}</td><td>${escapeHtml(group.direction || '--')}</td><td class="weighted-lane-cell">${leadAttemptLaneHtml(group.observed)}</td><td class="weighted-lane-cell">${leadAttemptLaneHtml(group.p95)}</td></tr>`).join('');
+      updateHtmlWhenChanged('leadAttempts', 'leadAttempts', JSON.stringify(attempts), attemptsHtml);
+      const positions = lead.recent_positions || [];
+      const positionGroups = groupLeadPositions(positions, attemptGroups);
+      setText('leadOpenPositions', (lead.positions || []).length);
+      setText('leadPositionCount', `${positionGroups.length}组 / ${positions.length}轨`);
+      const positionsHtml = positionGroups.map((group) => `<tr><td>${fmtWeightedDateTime(group.firstAt)}</td><td>${escapeHtml(weightedGroupNumber(group.buyAttemptGroup))}</td><td>${escapeHtml(group.marketSlug || '--')}</td><td>${escapeHtml(group.direction || '--')}</td><td class="weighted-lane-cell">${leadPositionLaneHtml(group.observed)}</td><td class="weighted-lane-cell">${leadPositionLaneHtml(group.p95)}</td></tr>`).join('');
+      updateHtmlWhenChanged('leadPositions', 'leadPositions', JSON.stringify([positions, attempts]), positionsHtml);
+
+      const observed = summary.observed || {};
+      const p95 = summary.p95 || {};
+      setText('leadObservedFills', `${observed.fills || 0} / ${observed.trials || 0}`);
+      setText('leadP95Fills', `${p95.fills || 0} / ${p95.trials || 0}`);
+      setPnl('leadObservedPnl', observed.realized_pnl || 0, 3);
+      setPnl('leadP95Pnl', p95.realized_pnl || 0, 3);
+      setText('leadPredictionRmse', predictionSummary.primary_rmse_bps == null ? '--' : `${fmtNumber(predictionSummary.primary_rmse_bps, 3)} bps`);
+      renderLeadConfig({
+        btc_lead_prediction: lead,
+        pending_btc_lead_prediction: pendingLead,
+        config_status: configStatus,
+      });
+    }
+
+    function makerAverage(group, direction) {
+      const quantity = Number(direction === 'UP' ? group?.up_bought_quantity : group?.down_bought_quantity) || 0;
+      const cost = Number(direction === 'UP' ? group?.up_buy_cost_usd : group?.down_buy_cost_usd) || 0;
+      return quantity > 0 ? cost / quantity : null;
+    }
+
+    function renderMaker(maker, btcSnapshot, configStatus, pendingMaker) {
+      maker = maker || {};
+      const settings = maker.config || {};
+      const summary = maker.summary || {};
+      const books = maker.books || {};
+      const opportunity = maker.opportunity || {};
+      const enabled = Boolean(maker.enabled);
+      const reasonMap = {
+        disabled: '策略关闭', paused: '已暂停', pair_quoted: '双边挂单中', quotes_open: '挂单排队中',
+        pair_locked: '套利已锁定', hedge_quoted: '偏腿补单中', exit_quoted: '偏腿退出中',
+        no_profitable_post_only_pair: '暂无满足利润的Post-only报价', book_unavailable_or_stale: '盘口不完整或过期',
+        stop_new_quotes_window: '已进入停止新报价时段', market_pair_limit: '本场完成组数已达上限',
+        reprice_cooldown: '重报价冷却', trade_stream_unmeasurable: '成交流暂不可测量',
+        daily_shadow_loss_limit: '达到当日影子亏损上限', market_unavailable: '等待BTC场次',
+        market_not_accepting: '市场停止接单', resumed: '已恢复', starting: '启动中', waiting_books: '等待盘口',
+      };
+      const reason = reasonMap[maker.last_reason] || maker.last_reason || '--';
+      setText('makerState', enabled ? (maker.paused ? '暂停' : maker.status || '运行') : '关闭');
+      setClass('makerState', `tag ${!enabled ? 'amber' : maker.paused ? 'red' : 'green'}`);
+      setText('makerMarketSlug', maker.market?.slug || btcSnapshot?.market?.slug || '--');
+      setText('makerTimeLeft', maker.time_left_seconds == null ? '--' : `${fmtNumber(maker.time_left_seconds, 1)}s`);
+      setText('makerReason', reason);
+      const up = books.UP || {};
+      const down = books.DOWN || {};
+      setText('makerBookHealth', `UP ${up.depth_trusted ? '完整' : '不可用'} ${fmtNumber(up.age_seconds, 2)}s · DOWN ${down.depth_trusted ? '完整' : '不可用'} ${fmtNumber(down.age_seconds, 2)}s`);
+      setText('makerTradeHealth', `${maker.trade_stream?.measurable === false ? '不可测量' : '可测量'} · ${maker.trade_stream?.age_seconds == null ? '等待成交打印' : `${fmtNumber(maker.trade_stream.age_seconds, 2)}s`}`);
+      setText('makerUpBook', `${fmtCents(up.best_bid)} / ${fmtCents(up.best_ask)}`);
+      setText('makerDownBook', `${fmtCents(down.best_bid)} / ${fmtCents(down.best_ask)}`);
+      setText('makerQuotePair', opportunity.up_quote == null ? '--' : `${fmtCents(opportunity.up_quote)} / ${fmtCents(opportunity.down_quote)}`);
+      const totalCost = opportunity.up_quote == null ? null : (Number(opportunity.up_quote) + Number(opportunity.down_quote)) * 100;
+      setText('makerPairCost', totalCost == null ? `-- / ${fmtNumber(opportunity.max_total_cost_cents, 2)}¢` : `${fmtNumber(totalCost, 2)}¢ / ${fmtNumber(opportunity.max_total_cost_cents, 2)}¢`);
+      setText('makerExpectedProfit', opportunity.expected_profit_cents == null ? '--' : `${fmtNumber(opportunity.expected_profit_cents, 2)}¢`);
+      setText('makerOpportunityState', opportunity.up_quote == null ? '等待机会' : '可挂双边');
+      setClass('makerOpportunityState', `tag ${opportunity.up_quote == null ? 'amber' : 'green'}`);
+      setText('makerQuoteStats', `${summary.quotes || 0} / ${summary.completed_groups || 0}`);
+      setText('makerDualRate', `${fmtNumber((summary.dual_fill_rate || 0) * 100, 1)}%`);
+      setText('makerSingleRate', `${fmtNumber((summary.single_leg_rate || 0) * 100, 1)}%`);
+      setText('makerHedgeRate', `${fmtNumber((summary.hedge_success_rate || 0) * 100, 1)}%`);
+      setText('makerQueueTime', `${fmtNumber(summary.average_queue_seconds || 0, 2)}s`);
+      setPnl('makerProfit', summary.maker_profit_usd || 0, 3);
+      setPnl('makerExitLoss', summary.exit_loss_usd || 0, 3);
+      setPnl('makerNetPnl', summary.net_pnl_usd || 0, 3);
+
+      const currentQuotes = maker.current_quotes || [];
+      setText('makerOpenQuoteCount', currentQuotes.length);
+      const quoteHtml = currentQuotes.map((quote) => {
+        const age = Math.max(0, (Date.now() - new Date(quote.created_at).getTime()) / 1000);
+        const remaining = Math.max(0, Number(quote.quantity || 0) - Number(quote.filled_quantity || 0));
+        return `<tr><td>${escapeHtml(quote.side)} ${escapeHtml(quote.direction)}</td><td>${escapeHtml(quote.purpose)}</td><td>${fmtCents(quote.price)}</td><td>${fmtNumber(quote.queue_ahead, 2)}</td><td>${fmtNumber(quote.filled_quantity, 2)} / ${fmtNumber(remaining, 2)}</td><td>${fmtNumber(age, 1)}s</td></tr>`;
+      }).join('');
+      updateHtmlWhenChanged('makerOpenQuotes', 'makerOpenQuotes', JSON.stringify(currentQuotes), quoteHtml || '<tr><td colspan="6" class="empty">当前没有影子挂单</td></tr>');
+
+      const group = maker.current_group;
+      setText('makerGroupState', group?.status || '空闲');
+      const unhedgedSeconds = group?.unhedged_since ? Math.max(0, (Date.now() - new Date(group.unhedged_since).getTime()) / 1000) : 0;
+      const upNet = Math.max(0, Number(group?.up_bought_quantity || 0) - Number(group?.up_sold_quantity || 0));
+      const downNet = Math.max(0, Number(group?.down_bought_quantity || 0) - Number(group?.down_sold_quantity || 0));
+      const groupHtml = group ? `<tr><td>${escapeHtml(group.group_id.slice(0, 8))}</td><td>${escapeHtml(group.status)}</td><td>${fmtCents(makerAverage(group, 'UP'))} / ${fmtNumber(upNet, 2)}</td><td>${fmtCents(makerAverage(group, 'DOWN'))} / ${fmtNumber(downNet, 2)}</td><td>${fmtNumber(group.locked_quantity, 2)} / ${escapeHtml(group.unhedged_direction || '--')} ${fmtNumber(Math.abs(upNet - downNet), 2)}</td><td>${fmtNumber(unhedgedSeconds, 1)}s</td><td>$${fmtSigned(group.realized_pnl_usd || 0, 3)}</td></tr>` : '<tr><td colspan="7" class="empty">当前没有套利组</td></tr>';
+      updateHtmlWhenChanged('makerCurrentGroup', 'makerCurrentGroup', JSON.stringify(group), groupHtml);
+
+      // The ledger can return records in arrival/flush order.  Keep the history
+      // deterministic and put the most recently opened arbitrage group first.
+      const groups = (maker.recent_groups || [])
+        .map((item, originalIndex) => ({ item, originalIndex, createdAt: Date.parse(item?.created_at || '') }))
+        .sort((left, right) => {
+          const leftTime = Number.isFinite(left.createdAt) ? left.createdAt : -Infinity;
+          const rightTime = Number.isFinite(right.createdAt) ? right.createdAt : -Infinity;
+          return rightTime - leftTime || left.originalIndex - right.originalIndex;
+        })
+        .map(({ item }) => item);
+      const unfilledGroups = groups.filter((item) => item.status === 'UNFILLED');
+      const executedGroups = groups.filter((item) => item.status !== 'UNFILLED');
+      setText('makerHistoryCount', `已成交 ${executedGroups.length} / 未成交撤单 ${unfilledGroups.length}`);
+      const historyHtml = groups.map((item, index) => {
+        const isUnfilled = item.status === 'UNFILLED';
+        const statusText = isUnfilled ? '未成交撤单' : item.status;
+        const pnlText = isUnfilled ? '--（未产生仓位）' : `$${fmtSigned(item.realized_pnl_usd || 0, 3)}`;
+        return `<tr><td>${index + 1}</td><td>${escapeHtml(fmtTime(item.created_at))}</td><td>${escapeHtml(item.group_id.slice(0, 8))}</td><td>${escapeHtml(item.slug || '--')}</td><td>${escapeHtml(statusText)}</td><td>${fmtCents(makerAverage(item, 'UP'))} / ${fmtNumber(item.up_bought_quantity, 2)}</td><td>${fmtCents(makerAverage(item, 'DOWN'))} / ${fmtNumber(item.down_bought_quantity, 2)}</td><td>${fmtNumber(item.locked_quantity, 2)}</td><td>${pnlText}</td></tr>`;
+      }).join('');
+      updateHtmlWhenChanged('makerHistory', 'makerHistory', JSON.stringify(groups), historyHtml || '<tr><td colspan="9" class="empty">暂无Maker套利历史</td></tr>');
+      setText('makerControlState', maker.paused ? '已暂停' : '待命');
+      renderMakerConfig({ btc_maker_arbitrage: maker, pending_btc_maker_arbitrage: pendingMaker, config_status: configStatus });
     }
 
     function renderV8(v8, btcSnapshot, configStatus, pendingV8) {
@@ -3159,10 +4211,16 @@
       const upPrice = buying ? bestAsk(upBook) : bestBid(upBook);
       const downPrice = buying ? bestAsk(downBook) : bestBid(downBook);
       const prefix = asset.toLowerCase();
-      $(`${prefix}UpTradeQuote`).textContent = `Up ${fmtCents(upPrice)}`;
-      $(`${prefix}DownTradeQuote`).textContent = `Down ${fmtCents(downPrice)}`;
-      const updatedAt = upBook?.received_at || upBook?.timestamp;
-      $(`${prefix}BookAge`).textContent = updatedAt ? `更新 ${fmtTime(updatedAt)}` : '--';
+      setText(`${prefix}UpTradeQuote`, `Up ${fmtCents(upPrice)}`);
+      setText(`${prefix}DownTradeQuote`, `Down ${fmtCents(downPrice)}`);
+      const timestamps = [
+        upBook?.received_at || upBook?.timestamp,
+        downBook?.received_at || downBook?.timestamp,
+      ].filter(Boolean);
+      const updatedAt = timestamps.sort(
+        (left, right) => new Date(right).getTime() - new Date(left).getTime(),
+      )[0];
+      setText(`${prefix}BookAge`, updatedAt ? `更新 ${fmtTime(updatedAt)}` : '--');
     }
 
     function renderTradeBooks(assets) {
@@ -3176,6 +4234,45 @@
       $('tradeBookNote').textContent = buying
         ? 'BTC、ETH 同时展示 · 买入按卖一价格'
         : 'BTC、ETH 同时展示 · 卖出按买一价格';
+    }
+
+    function renderFastMarketData(aggregate) {
+      const assetName = btcMarketPages.has(selectedAsset) ? 'BTC' : selectedAsset;
+      const snapshot = aggregate.assets?.[assetName] || aggregate;
+      const assets = aggregate.assets || { [assetName]: snapshot };
+      renderTradeBooks(assets);
+
+      const upBook = snapshot.books?.UP;
+      const downBook = snapshot.books?.DOWN;
+      if (selectedAsset === 'MAKER') {
+        setText('makerUpBook', `${fmtCents(bestBid(upBook))} / ${fmtCents(bestAsk(upBook))}`);
+        setText('makerDownBook', `${fmtCents(bestBid(downBook))} / ${fmtCents(bestAsk(downBook))}`);
+      }
+      if (btcMarketPages.has(selectedAsset)) return;
+
+      const market = snapshot.market;
+      const tick = snapshot.tick;
+      const settlementTick = snapshot.settlement_tick || snapshot.polymarket_tick;
+      const threshold = market?.threshold_price ? Number(market.threshold_price) : null;
+      const price = tick?.price ? Number(tick.price) : null;
+      const polymarketPrice = settlementTick?.price ? Number(settlementTick.price) : null;
+      const correction = dynamicCorrection(snapshot, price, polymarketPrice);
+      const rawEdge = threshold !== null && price !== null ? price - threshold : null;
+      const marketEdge = rawEdge !== null ? rawEdge - correction : null;
+      const position = snapshot.open_position;
+      const reversePositionOpen = position?.reverse_entry === true;
+      const effectiveEdge = reversePositionOpen && marketEdge !== null ? -marketEdge : marketEdge;
+      setText('updatedAt', fmtTime(snapshot.created_at));
+      setText('btcPrice', fmtPrice(price));
+      setText('polymarketPrice', fmtPrice(polymarketPrice));
+      setText('edgeCorrection', fmtSigned(correction, 2));
+      setColor('edgeCorrection', correction >= 0 ? 'var(--green)' : 'var(--red)');
+      setText('edgeValue', fmtSigned(marketEdge, 2));
+      setText('effectiveEdgeValue', fmtSigned(effectiveEdge, 2));
+      setText('edgeTag', marketEdge === null ? '--' : `${fmtSigned(marketEdge, 0)} USD`);
+      setClass('edgeTag', `tag ${classForEdge(marketEdge)}`);
+      setText('upAsk', fmtProb(bestAsk(upBook)));
+      setText('downAsk', fmtProb(bestAsk(downBook)));
     }
 
     function renderPairMarkets(assets) {
@@ -3227,9 +4324,11 @@
       const realPage = selectedAsset === 'REAL';
       const dynamicPage = selectedAsset === 'DYNAMIC';
       const weightedPage = selectedAsset === 'WEIGHTED';
+      const leadPage = selectedAsset === 'LEAD';
       const v8Page = selectedAsset === 'V8';
       const chasePage = selectedAsset === 'CHASE';
-      const assetSnapshot = pairPage || recoveryPage || realPage || dynamicPage || weightedPage || v8Page || chasePage
+      const makerPage = selectedAsset === 'MAKER';
+      const assetSnapshot = pairPage || recoveryPage || realPage || dynamicPage || weightedPage || leadPage || v8Page || chasePage || makerPage
         ? (aggregate.assets?.BTC || aggregate)
         : (aggregate.assets?.[selectedAsset] || aggregate);
       snapshot = {
@@ -3242,6 +4341,8 @@
         pending_btc_recovery: aggregate.pending_btc_recovery,
         pending_btc_dynamic: aggregate.pending_btc_dynamic,
         pending_btc_weighted: aggregate.pending_btc_weighted,
+        pending_btc_lead_prediction: aggregate.pending_btc_lead_prediction,
+        pending_btc_maker_arbitrage: aggregate.pending_btc_maker_arbitrage,
         pending_btc_v8: aggregate.pending_btc_v8,
         pending_orderbook_chase: aggregate.pending_orderbook_chase,
         pending_real_trading: aggregate.pending_real_trading,
@@ -3249,6 +4350,8 @@
         btc_recovery: aggregate.btc_recovery || assetSnapshot.btc_recovery,
         btc_dynamic: aggregate.btc_dynamic || assetSnapshot.btc_dynamic,
         btc_weighted: aggregate.btc_weighted || assetSnapshot.btc_weighted,
+        btc_lead_prediction: aggregate.btc_lead_prediction || assetSnapshot.btc_lead_prediction,
+        btc_maker_arbitrage: aggregate.btc_maker_arbitrage || assetSnapshot.btc_maker_arbitrage,
         btc_v8: aggregate.btc_v8 || assetSnapshot.btc_v8,
         orderbook_chase: aggregate.orderbook_chase || assetSnapshot.orderbook_chase,
         real_trading: aggregate.real_trading || assetSnapshot.real_trading,
@@ -3262,8 +4365,10 @@
       document.body.classList.toggle('real-mode', realPage);
       document.body.classList.toggle('dynamic-mode', dynamicPage);
       document.body.classList.toggle('weighted-mode', weightedPage);
+      document.body.classList.toggle('lead-mode', leadPage);
       document.body.classList.toggle('v8-mode', v8Page);
       document.body.classList.toggle('chase-mode', chasePage);
+      document.body.classList.toggle('maker-mode', makerPage);
       $('assetBTC').classList.toggle('active', selectedAsset === 'BTC');
       $('assetETH').classList.toggle('active', selectedAsset === 'ETH');
       $('assetPAIR').classList.toggle('active', pairPage);
@@ -3271,8 +4376,10 @@
       $('assetREAL').classList.toggle('active', realPage);
       $('assetDYNAMIC').classList.toggle('active', dynamicPage);
       $('assetWEIGHTED').classList.toggle('active', weightedPage);
+      $('assetLEAD').classList.toggle('active', leadPage);
       $('assetV8').classList.toggle('active', v8Page);
       $('assetCHASE').classList.toggle('active', chasePage);
+      $('assetMAKER').classList.toggle('active', makerPage);
       $('assetBTC').setAttribute('aria-selected', String(selectedAsset === 'BTC'));
       $('assetETH').setAttribute('aria-selected', String(selectedAsset === 'ETH'));
       $('assetPAIR').setAttribute('aria-selected', String(pairPage));
@@ -3280,8 +4387,10 @@
       $('assetREAL').setAttribute('aria-selected', String(realPage));
       $('assetDYNAMIC').setAttribute('aria-selected', String(dynamicPage));
       $('assetWEIGHTED').setAttribute('aria-selected', String(weightedPage));
+      $('assetLEAD').setAttribute('aria-selected', String(leadPage));
       $('assetV8').setAttribute('aria-selected', String(v8Page));
       $('assetCHASE').setAttribute('aria-selected', String(chasePage));
+      $('assetMAKER').setAttribute('aria-selected', String(makerPage));
       $('brandTitle').textContent = pairPage
         ? 'polybtc · BTC/ETH 自动匹配'
         : recoveryPage
@@ -3292,10 +4401,14 @@
         ? 'polybtc · BTC动态胜率'
         : weightedPage
         ? 'polybtc · BTC动态加权'
+        : leadPage
+        ? 'polybtc · BTC领先预测'
         : v8Page
         ? 'polybtc · BTC V8 30秒大方向'
         : chasePage
         ? 'polybtc · BTC TWAP大方向影子交易'
+        : makerPage
+        ? 'polybtc · BTC Maker双腿套利'
         : `polybtc · ${asset} 实时面板`;
       $('binanceAssetLabel').textContent = `Binance ${asset}`;
       $('polymarketAssetLabel').textContent = `Polymarket ${asset}`;
@@ -3360,6 +4473,30 @@
         renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
         setText('bookAge', 'BTC');
         setText('tradeBookNote', 'BTC公共完整盘口 · 动态加权仅进行Observed/P95双轨影子成交');
+        return;
+      }
+      if (leadPage) {
+        renderLead(
+          snapshot.btc_lead_prediction,
+          assetSnapshot,
+          snapshot.config_status,
+          snapshot.pending_btc_lead_prediction,
+        );
+        renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
+        setText('bookAge', 'BTC');
+        setText('tradeBookNote', 'BTC公共完整盘口 · 外部领先预测仅进行Observed/P95短线影子成交');
+        return;
+      }
+      if (makerPage) {
+        renderMaker(
+          snapshot.btc_maker_arbitrage,
+          assetSnapshot,
+          snapshot.config_status,
+          snapshot.pending_btc_maker_arbitrage,
+        );
+        renderTradeBooks(aggregate.assets || { BTC: assetSnapshot });
+        setText('bookAge', 'BTC');
+        setText('tradeBookNote', 'BTC公共完整盘口 · Maker页仅进行保守队列影子成交，不发送真实订单');
         return;
       }
       if (v8Page) {
@@ -3550,6 +4687,14 @@
         if (activeSocket !== ws) return;
         lastSocketMessageAt = Date.now();
         const state = JSON.parse(event.data);
+        if (state?.type === 'market_data') {
+          if (applyMarketDataMessage(state)) scheduleMarketRender();
+          return;
+        }
+        if (state?.type === 'state_data') {
+          if (applyStateDataMessage(state)) scheduleRender(latest);
+          return;
+        }
         scheduleRender(state);
       };
       ws.onclose = () => {
@@ -3621,6 +4766,12 @@
         setText('bookAge', left == null ? 'BTC' : `BTC · ${left}s`);
         return;
       }
+      if (selectedAsset === 'MAKER') {
+        const market = latest.assets?.BTC?.market || latest.market;
+        const left = secondsLeft(market);
+        setText('makerTimeLeft', left == null ? '--' : `${left}s`);
+        return;
+      }
       const market = latest.assets?.[selectedAsset]?.market || latest.market;
       const left = secondsLeft(market);
       setText('timeLeft', left == null ? '--' : `${left}s`);
@@ -3637,8 +4788,10 @@
     $('assetREAL').addEventListener('click', () => selectAsset('REAL'));
     $('assetDYNAMIC').addEventListener('click', () => selectAsset('DYNAMIC'));
     $('assetWEIGHTED').addEventListener('click', () => selectAsset('WEIGHTED'));
+    $('assetLEAD').addEventListener('click', () => selectAsset('LEAD'));
     $('assetV8').addEventListener('click', () => selectAsset('V8'));
     $('assetCHASE').addEventListener('click', () => selectAsset('CHASE'));
+    $('assetMAKER').addEventListener('click', () => selectAsset('MAKER'));
     $('bookBuyTab').addEventListener('click', () => { bookSide = 'BUY'; if (latest) scheduleRender(latest); });
     $('bookSellTab').addEventListener('click', () => { bookSide = 'SELL'; if (latest) scheduleRender(latest); });
     $('strategyForm').addEventListener('input', () => {
@@ -3941,6 +5094,10 @@
       $('weightedConfigStatus').textContent = '有修改，尚未保存';
       $('weightedConfigStatus').className = 'tag amber';
     });
+    Object.values(weightedSegmentInputs).forEach((inputs) => {
+      $(inputs.enabled).addEventListener('change', syncWeightedSegmentInputs);
+    });
+    $('weightedReversalSequence').addEventListener('change', syncWeightedSegmentInputs);
     $('weightedForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const button = $('saveWeighted');
@@ -3950,9 +5107,25 @@
         showWeightedSaveFeedback('保存中...', '', 0);
         status.textContent = '保存中';
         status.className = 'tag amber';
+        const entrySegments = Object.entries(weightedSegmentInputs).map(([id, inputs]) => ({
+          id,
+          enabled: $(inputs.enabled).checked,
+          duration_seconds: runtimeNumber(inputs.duration),
+          quote_amount_usd: runtimeNumber(inputs.quote),
+        }));
+        const segmentSeconds = entrySegments.reduce(
+          (total, segment) => total + segment.duration_seconds,
+          0,
+        );
+        if (segmentSeconds !== 300) {
+          throw new Error(`三段时长当前合计${segmentSeconds}秒，必须等于300秒`);
+        }
         const payload = {
           btc_weighted: {
             enabled: $('weightedEnabled').checked,
+            reversal_sequence_enabled: $('weightedReversalSequence').checked,
+            risk_pause_enabled: $('weightedRiskPause').checked,
+            entry_segments: entrySegments,
             ...Object.fromEntries(
               Object.entries(weightedInputs).map(([field, id]) => [field, runtimeNumber(id)]),
             ),
@@ -3984,6 +5157,69 @@
         status.textContent = `保存失败：${String(error.message || error).slice(0, 28)}`;
         status.className = 'tag red';
         showWeightedSaveFeedback('保存失败', 'error');
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $('leadForm').addEventListener('input', () => {
+      leadFormDirty = true;
+      $('leadConfigStatus').textContent = '有修改，尚未保存';
+      $('leadConfigStatus').className = 'tag amber';
+    });
+    $('leadForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('saveLead');
+      const status = $('leadConfigStatus');
+      try {
+        button.disabled = true;
+        showLeadSaveFeedback('保存中...', '', 0);
+        status.textContent = '保存中';
+        status.className = 'tag amber';
+        const spotSources = [
+          ['binance', 'leadUseBinance'],
+          ['coinbase', 'leadUseCoinbase'],
+          ['kraken', 'leadUseKraken'],
+        ].filter(([, id]) => $(id).checked).map(([source]) => source);
+        if (!spotSources.length) throw new Error('至少选择一个现货来源');
+        const payload = {
+          btc_lead_prediction: {
+            enabled: $('leadEnabled').checked,
+            spot_sources: spotSources,
+            futures_diagnostics_enabled: $('leadFuturesDiagnostics').checked,
+            risk_pause_enabled: $('leadRiskPause').checked,
+            prediction_horizons_seconds: [1, 3, 5, 8],
+            primary_horizon_seconds: 5,
+            ...Object.fromEntries(
+              Object.entries(leadInputs).map(([field, id]) => [field, runtimeNumber(id)]),
+            ),
+          },
+        };
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = {
+          ...(latest || {}),
+          pending_btc_lead_prediction: config.pending_btc_lead_prediction,
+          config_status: config.config_status,
+        };
+        leadFormDirty = false;
+        renderLeadConfig({
+          btc_lead_prediction: latest?.btc_lead_prediction,
+          pending_btc_lead_prediction: config.pending_btc_lead_prediction,
+          config_status: config.config_status,
+        }, true);
+        const appliesNext = config.config_status === 'pending_next_btc_market';
+        status.textContent = appliesNext ? '保存成功，下一场BTC生效' : '保存成功，已生效';
+        status.className = `tag ${appliesNext ? 'amber' : 'green'}`;
+        showLeadSaveFeedback('已保存', 'success');
+      } catch (error) {
+        status.textContent = `保存失败：${String(error.message || error).slice(0, 28)}`;
+        status.className = 'tag red';
+        showLeadSaveFeedback('保存失败', 'error');
       } finally {
         button.disabled = false;
       }
@@ -4125,6 +5361,65 @@
     $('chasePause').addEventListener('click', () => requestChaseControl('pause'));
     $('chaseResume').addEventListener('click', () => requestChaseControl('resume'));
     $('chaseEmergencyStop').addEventListener('click', () => requestChaseControl('emergency-stop'));
+    $('makerForm').addEventListener('input', () => {
+      makerFormDirty = true;
+      $('makerConfigStatus').textContent = '有修改，尚未保存';
+      $('makerConfigStatus').className = 'tag amber';
+    });
+    $('makerForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = $('saveMaker');
+      const status = $('makerConfigStatus');
+      try {
+        button.disabled = true;
+        status.textContent = '保存中';
+        status.className = 'tag amber';
+        const maker = {
+          enabled: $('makerEnabled').checked,
+          mode: 'SHADOW_ONLY',
+          sizing_mode: $('makerSizingMode').value,
+        };
+        Object.entries(makerInputs).forEach(([field, id]) => { maker[field] = runtimeNumber(id); });
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ btc_maker_arbitrage: maker }),
+        });
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || '保存失败');
+        latest = { ...(latest || {}), pending_btc_maker_arbitrage: config.pending_btc_maker_arbitrage, config_status: config.config_status };
+        makerFormDirty = false;
+        renderMakerConfig({ btc_maker_arbitrage: latest?.btc_maker_arbitrage, pending_btc_maker_arbitrage: config.pending_btc_maker_arbitrage, config_status: config.config_status }, true);
+      } catch (error) {
+        status.textContent = String(error.message || error).slice(0, 32);
+        status.className = 'tag red';
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    async function requestMakerControl(action) {
+      if (makerControlBusy) return;
+      makerControlBusy = true;
+      const buttons = ['makerPause', 'makerResume', 'makerCancelQuotes'];
+      buttons.forEach((id) => { $(id).disabled = true; });
+      try {
+        const response = await fetch(`/api/btc-maker-arbitrage/${action}`, { method: 'POST' });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '操作失败');
+        setText('makerControlState', '命令已接收');
+        setClass('makerControlState', 'tag green');
+      } catch (error) {
+        setText('makerControlState', String(error.message || error).slice(0, 24));
+        setClass('makerControlState', 'tag red');
+      } finally {
+        makerControlBusy = false;
+        buttons.forEach((id) => { $(id).disabled = false; });
+      }
+    }
+    $('makerPause').addEventListener('click', () => requestMakerControl('pause'));
+    $('makerResume').addEventListener('click', () => requestMakerControl('resume'));
+    $('makerCancelQuotes').addEventListener('click', () => requestMakerControl('cancel-quotes'));
     $('realForm').addEventListener('input', () => {
       realFormDirty = true;
       $('realConfigStatus').textContent = '有修改，尚未保存';

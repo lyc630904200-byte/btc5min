@@ -120,21 +120,39 @@ btc_dynamic:
 btc_weighted:
   # Independent score-driven shadow strategy. It never submits a real order.
   enabled: true
-  quote_amount_usd: 5
-  entry_score_threshold: 70
+  reversal_sequence_enabled: false
+  entry_segments:
+    - id: early
+      enabled: true
+      duration_seconds: 80
+      quote_amount_usd: 1
+    - id: middle
+      enabled: true
+      duration_seconds: 140
+      quote_amount_usd: 3
+    - id: late
+      enabled: true
+      duration_seconds: 80
+      quote_amount_usd: 5
+  entry_score_threshold: 65
   entry_lead_points: 8
-  entry_confirmation_seconds: 2
+  entry_confirmation_seconds: 1
   entry_confirmation_updates: 3
-  max_entries_per_market: 1
+  entry_start_seconds_after_open: 10
+  metric_warmup_seconds: 10
+  metric_min_samples: 8
   min_entry_remaining_seconds: 10
   min_hold_seconds: 15
-  exit_score_threshold: 70
-  exit_lead_points: 10
+  exit_score_threshold: 68
+  exit_lead_points: 8
   exit_confirmation_seconds: 3
-  exit_confirmation_updates: 3
-  min_buy_price_cents: 15
-  max_buy_price_cents: 90
-  max_spread_cents: 5
+  exit_confirmation_updates: 4
+  score_exit_end_seconds_after_open: 60
+  min_score_exit_price_cents: 25
+  exit_intent_ttl_seconds: 3
+  min_buy_price_cents: 40
+  max_buy_price_cents: 74
+  max_spread_cents: 4
   chainlink_max_age_seconds: 2
   book_max_age_seconds: 1
   max_one_tick_loss_usd: 0.50
@@ -146,6 +164,51 @@ btc_weighted:
   sample_tolerance_seconds: 1
   weight_ema_seconds: 3
   score_history_seconds: 300
+  risk_pause_enabled: true
+  rolling_loss_window_minutes: 1440
+  rolling_loss_limit_usd: 25
+  loss_streak_pause_count: 3
+  loss_streak_pause_minutes: 30
+
+btc_lead_prediction:
+  # Independent external-lead shadow strategy. It never submits a real order.
+  enabled: false
+  spot_sources: [binance, coinbase, kraken]
+  futures_diagnostics_enabled: true
+  prediction_horizons_seconds: [1, 3, 5, 8]
+  primary_horizon_seconds: 5
+  quote_amount_usd: 1
+  buy_limit_buffer_cents: 0
+  shock_threshold_bps: 1.5
+  confirmation_seconds: 0.8
+  confirmation_updates: 3
+  min_healthy_sources: 2
+  max_source_dispersion_bps: 2
+  min_expected_reprice_cents: 6
+  min_p95_net_edge_cents: 2
+  min_buy_price_cents: 40
+  max_buy_price_cents: 85
+  max_spread_cents: 2
+  chainlink_max_age_seconds: 1
+  external_max_age_seconds: 0.5
+  book_max_age_seconds: 0.5
+  max_hold_seconds: 8
+  exit_liquidity_retry_seconds: 3
+  target_net_profit_cents: 3
+  adverse_move_cents: 4
+  cooldown_seconds: 5
+  max_trades_per_market: 3
+  stop_entry_remaining_seconds: 30
+  force_exit_remaining_seconds: 20
+  source_basis_window_seconds: 60
+  calibration_window_minutes: 60
+  calibration_min_samples: 30
+  calibration_update_seconds: 5
+  velocity_half_life_seconds: 2
+  risk_pause_enabled: true
+  loss_streak_pause_count: 3
+  loss_streak_pause_minutes: 30
+  daily_p95_loss_limit_usd: 10
 
 btc_v8:
   enabled: false
@@ -221,6 +284,27 @@ orderbook_chase:
   readiness_required_roundtrips: 200
   observed_survival_threshold: 0.90
   p95_survival_threshold: 0.80
+
+btc_maker_arbitrage:
+  # Conservative queue-based UP/DOWN maker simulation. Never submits a real order.
+  enabled: false
+  mode: SHADOW_ONLY
+  sizing_mode: quantity  # quantity: fixed shares per leg; budget: total USD across both legs
+  quantity_per_leg: 5
+  pair_budget_usd: 5
+  min_locked_profit_cents: 2
+  maker_fee_reserve_cents: 0
+  quote_ttl_seconds: 30
+  reprice_cooldown_ms: 500
+  max_unhedged_seconds: 5
+  stop_new_quotes_remaining_seconds: 60
+  emergency_exit_remaining_seconds: 30
+  max_pairs_per_market: 3
+  # WebSocket is primary; REST reconciles quiet books before this expires.
+  book_max_age_seconds: 1.5
+  trade_print_max_age_seconds: 1
+  max_single_leg_loss_usd: 0.50
+  daily_shadow_loss_limit_usd: 5
 
 real_trading:
   # Real execution follows only the BTC recovery initial-order signal.

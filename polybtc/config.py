@@ -377,20 +377,60 @@ class BtcDynamicConfig(BaseModel):
         return self
 
 
+class BtcWeightedEntrySegment(BaseModel):
+    id: Literal["early", "middle", "late"]
+    enabled: bool = True
+    duration_seconds: int
+    quote_amount_usd: float
+
+    @field_validator("duration_seconds")
+    @classmethod
+    def positive_segment_duration(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("BTC weighted segment durations must be positive")
+        return value
+
+    @field_validator("quote_amount_usd")
+    @classmethod
+    def valid_segment_quote(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC weighted segment quote amounts must be positive")
+        rounded = round(value, 2)
+        if abs(value - rounded) > 1e-9:
+            raise ValueError("BTC weighted segment quote amounts support at most two decimals")
+        return rounded
+
+
+def default_btc_weighted_entry_segments() -> list[BtcWeightedEntrySegment]:
+    return [
+        BtcWeightedEntrySegment(id="early", enabled=True, duration_seconds=80, quote_amount_usd=1.0),
+        BtcWeightedEntrySegment(id="middle", enabled=True, duration_seconds=140, quote_amount_usd=3.0),
+        BtcWeightedEntrySegment(id="late", enabled=True, duration_seconds=80, quote_amount_usd=5.0),
+    ]
+
+
 class BtcWeightedConfig(BaseModel):
     enabled: bool = False
-    quote_amount_usd: float = 5.0
+    reversal_sequence_enabled: bool = False
+    entry_segments: list[BtcWeightedEntrySegment] = Field(
+        default_factory=default_btc_weighted_entry_segments
+    )
     entry_score_threshold: float = 70.0
     entry_lead_points: float = 8.0
     entry_confirmation_seconds: float = 2.0
     entry_confirmation_updates: int = 3
-    max_entries_per_market: int = 1
+    entry_start_seconds_after_open: float = 10.0
+    metric_warmup_seconds: float = 10.0
+    metric_min_samples: int = 8
     min_entry_remaining_seconds: float = 10.0
     min_hold_seconds: float = 15.0
     exit_score_threshold: float = 70.0
     exit_lead_points: float = 10.0
     exit_confirmation_seconds: float = 3.0
     exit_confirmation_updates: int = 3
+    score_exit_end_seconds_after_open: float = 60.0
+    min_score_exit_price_cents: float = 25.0
+    exit_intent_ttl_seconds: float = 3.0
     min_buy_price_cents: float = 15.0
     max_buy_price_cents: float = 90.0
     max_spread_cents: float = 5.0
@@ -405,13 +445,21 @@ class BtcWeightedConfig(BaseModel):
     sample_tolerance_seconds: float = 1.0
     weight_ema_seconds: float = 3.0
     score_history_seconds: int = 300
+    risk_pause_enabled: bool = True
+    rolling_loss_window_minutes: float = 1440.0
+    rolling_loss_limit_usd: float = 25.0
+    loss_streak_pause_count: int = 3
+    loss_streak_pause_minutes: float = 30.0
 
     @field_validator(
-        "quote_amount_usd",
         "entry_confirmation_seconds",
+        "entry_start_seconds_after_open",
+        "metric_warmup_seconds",
         "min_entry_remaining_seconds",
         "min_hold_seconds",
         "exit_confirmation_seconds",
+        "score_exit_end_seconds_after_open",
+        "exit_intent_ttl_seconds",
         "max_spread_cents",
         "chainlink_max_age_seconds",
         "book_max_age_seconds",
@@ -421,6 +469,9 @@ class BtcWeightedConfig(BaseModel):
         "gap_std_floor_bps",
         "sample_tolerance_seconds",
         "weight_ema_seconds",
+        "rolling_loss_window_minutes",
+        "rolling_loss_limit_usd",
+        "loss_streak_pause_minutes",
     )
     @classmethod
     def positive_weighted_value(cls, value: float) -> float:
@@ -442,11 +493,12 @@ class BtcWeightedConfig(BaseModel):
 
     @field_validator(
         "entry_confirmation_updates",
+        "metric_min_samples",
         "exit_confirmation_updates",
-        "max_entries_per_market",
         "short_volatility_window_seconds",
         "long_volatility_window_seconds",
         "score_history_seconds",
+        "loss_streak_pause_count",
     )
     @classmethod
     def positive_weighted_count(cls, value: int) -> int:
@@ -456,14 +508,156 @@ class BtcWeightedConfig(BaseModel):
 
     @model_validator(mode="after")
     def valid_weighted_shape(self) -> "BtcWeightedConfig":
+        segment_ids = [segment.id for segment in self.entry_segments]
+        if segment_ids != ["early", "middle", "late"]:
+            raise ValueError("BTC weighted entry segments must be early, middle, late in order")
+        if sum(segment.duration_seconds for segment in self.entry_segments) != 300:
+            raise ValueError("BTC weighted entry segment durations must total 300 seconds")
         if not 0 <= self.min_buy_price_cents < self.max_buy_price_cents <= 100:
             raise ValueError("BTC weighted buy price range must be within 0-100 cents")
+        if not 0 <= self.min_score_exit_price_cents <= 100:
+            raise ValueError("BTC weighted minimum score exit price must be within 0-100 cents")
+        if (
+            max(self.entry_start_seconds_after_open, self.metric_warmup_seconds)
+            + self.min_entry_remaining_seconds
+            >= 300
+        ):
+            raise ValueError("BTC weighted entry time window must leave a positive interval")
         if self.min_entry_remaining_seconds > 300:
             raise ValueError("BTC weighted entry remaining time must be at most 300 seconds")
+        if self.score_exit_end_seconds_after_open > 300:
+            raise ValueError("BTC weighted score exit window must be at most 300 seconds")
+        if self.metric_warmup_seconds > self.score_history_seconds:
+            raise ValueError("BTC weighted metric warmup exceeds score history")
         if self.short_volatility_window_seconds >= self.long_volatility_window_seconds:
             raise ValueError("BTC weighted short volatility window must be below long window")
         if self.long_volatility_window_seconds > self.score_history_seconds:
             raise ValueError("BTC weighted long volatility window exceeds score history")
+        return self
+
+
+class BtcLeadPredictionConfig(BaseModel):
+    enabled: bool = False
+    spot_sources: list[Literal["binance", "coinbase", "kraken"]] = Field(
+        default_factory=lambda: ["binance", "coinbase", "kraken"]
+    )
+    futures_diagnostics_enabled: bool = True
+    prediction_horizons_seconds: list[int] = Field(default_factory=lambda: [1, 3, 5, 8])
+    primary_horizon_seconds: int = 5
+    quote_amount_usd: float = 1.0
+    buy_limit_buffer_cents: float = 0.0
+    shock_threshold_bps: float = 1.5
+    confirmation_seconds: float = 0.8
+    confirmation_updates: int = 3
+    min_healthy_sources: int = 2
+    max_source_dispersion_bps: float = 2.0
+    min_expected_reprice_cents: float = 6.0
+    min_p95_net_edge_cents: float = 2.0
+    min_buy_price_cents: float = 40.0
+    max_buy_price_cents: float = 85.0
+    max_spread_cents: float = 2.0
+    chainlink_max_age_seconds: float = 1.0
+    external_max_age_seconds: float = 0.5
+    book_max_age_seconds: float = 0.5
+    max_hold_seconds: float = 8.0
+    exit_liquidity_retry_seconds: float = 3.0
+    target_net_profit_cents: float = 3.0
+    adverse_move_cents: float = 4.0
+    cooldown_seconds: float = 5.0
+    max_trades_per_market: int = 3
+    stop_entry_remaining_seconds: float = 30.0
+    force_exit_remaining_seconds: float = 20.0
+    source_basis_window_seconds: float = 60.0
+    calibration_window_minutes: float = 60.0
+    calibration_min_samples: int = 30
+    calibration_update_seconds: float = 5.0
+    velocity_half_life_seconds: float = 2.0
+    risk_pause_enabled: bool = True
+    loss_streak_pause_count: int = 3
+    loss_streak_pause_minutes: float = 30.0
+    daily_p95_loss_limit_usd: float = 10.0
+
+    @field_validator(
+        "quote_amount_usd",
+        "shock_threshold_bps",
+        "confirmation_seconds",
+        "max_source_dispersion_bps",
+        "min_expected_reprice_cents",
+        "min_p95_net_edge_cents",
+        "max_spread_cents",
+        "chainlink_max_age_seconds",
+        "external_max_age_seconds",
+        "book_max_age_seconds",
+        "max_hold_seconds",
+        "exit_liquidity_retry_seconds",
+        "target_net_profit_cents",
+        "adverse_move_cents",
+        "cooldown_seconds",
+        "stop_entry_remaining_seconds",
+        "force_exit_remaining_seconds",
+        "source_basis_window_seconds",
+        "calibration_window_minutes",
+        "calibration_update_seconds",
+        "velocity_half_life_seconds",
+        "loss_streak_pause_minutes",
+        "daily_p95_loss_limit_usd",
+    )
+    @classmethod
+    def positive_lead_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC lead prediction values must be positive")
+        return value
+
+    @field_validator("buy_limit_buffer_cents")
+    @classmethod
+    def nonnegative_buy_limit_buffer(cls, value: float) -> float:
+        if not 0 <= value <= 10:
+            raise ValueError("BTC lead buy limit buffer must be within 0-10 cents")
+        return value
+
+    @field_validator(
+        "confirmation_updates",
+        "min_healthy_sources",
+        "max_trades_per_market",
+        "calibration_min_samples",
+        "loss_streak_pause_count",
+    )
+    @classmethod
+    def positive_lead_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("BTC lead prediction counts must be at least one")
+        return value
+
+    @field_validator("spot_sources")
+    @classmethod
+    def unique_lead_sources(cls, values: list[str]) -> list[str]:
+        result = list(dict.fromkeys(values))
+        if not result:
+            raise ValueError("BTC lead prediction requires at least one spot source")
+        return result
+
+    @field_validator("prediction_horizons_seconds")
+    @classmethod
+    def valid_lead_horizons(cls, values: list[int]) -> list[int]:
+        result = sorted(set(values))
+        if not result or any(value < 1 for value in result):
+            raise ValueError("BTC lead prediction horizons must be positive")
+        return result
+
+    @model_validator(mode="after")
+    def valid_lead_shape(self) -> "BtcLeadPredictionConfig":
+        if self.primary_horizon_seconds not in self.prediction_horizons_seconds:
+            raise ValueError("BTC lead primary horizon must be in prediction horizons")
+        if 3 not in self.prediction_horizons_seconds or 5 not in self.prediction_horizons_seconds:
+            raise ValueError("BTC lead prediction horizons must include 3 and 5 seconds")
+        if self.min_healthy_sources > len(self.spot_sources):
+            raise ValueError("BTC lead healthy-source minimum exceeds configured sources")
+        if not 0 <= self.min_buy_price_cents < self.max_buy_price_cents <= 100:
+            raise ValueError("BTC lead buy price range must be within 0-100 cents")
+        if self.stop_entry_remaining_seconds > 300:
+            raise ValueError("BTC lead stop-entry time must be at most 300 seconds")
+        if self.force_exit_remaining_seconds >= self.stop_entry_remaining_seconds:
+            raise ValueError("BTC lead force-exit time must be below stop-entry time")
         return self
 
 
@@ -728,6 +922,74 @@ class OrderbookChaseConfig(BaseModel):
             raise ValueError("orderbook chase survival thresholds must be within (0, 1]")
         return value
 
+
+class BtcMakerArbitrageConfig(BaseModel):
+    """Conservative shadow-only UP/DOWN maker-arbitrage settings."""
+
+    enabled: bool = False
+    mode: Literal["SHADOW_ONLY"] = "SHADOW_ONLY"
+    sizing_mode: Literal["quantity", "budget"] = "quantity"
+    quantity_per_leg: float = 5.0
+    pair_budget_usd: float = 5.0
+    min_locked_profit_cents: float = 2.0
+    maker_fee_reserve_cents: float = 0.0
+    quote_ttl_seconds: float = 2.0
+    reprice_cooldown_ms: int = 500
+    max_unhedged_seconds: float = 5.0
+    stop_new_quotes_remaining_seconds: float = 60.0
+    emergency_exit_remaining_seconds: float = 30.0
+    max_pairs_per_market: int = 3
+    # CLOB updates are event-driven.  Allow enough time for the REST
+    # reconciliation fallback to complete when a quiet WebSocket does not
+    # publish a top-of-book change.
+    book_max_age_seconds: float = 1.5
+    trade_print_max_age_seconds: float = 1.0
+    max_single_leg_loss_usd: float = 0.50
+    daily_shadow_loss_limit_usd: float = 5.0
+
+    @field_validator(
+        "quantity_per_leg",
+        "pair_budget_usd",
+        "min_locked_profit_cents",
+        "quote_ttl_seconds",
+        "max_unhedged_seconds",
+        "stop_new_quotes_remaining_seconds",
+        "emergency_exit_remaining_seconds",
+        "book_max_age_seconds",
+        "trade_print_max_age_seconds",
+        "max_single_leg_loss_usd",
+        "daily_shadow_loss_limit_usd",
+    )
+    @classmethod
+    def positive_maker_value(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("BTC maker arbitrage values must be positive")
+        return value
+
+    @field_validator("maker_fee_reserve_cents")
+    @classmethod
+    def nonnegative_maker_reserve(cls, value: float) -> float:
+        if not 0 <= value < 100:
+            raise ValueError("BTC maker fee reserve must be within [0, 100) cents")
+        return value
+
+    @field_validator("reprice_cooldown_ms", "max_pairs_per_market")
+    @classmethod
+    def positive_maker_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("BTC maker counts must be at least one")
+        return value
+
+    @model_validator(mode="after")
+    def valid_maker_shape(self) -> "BtcMakerArbitrageConfig":
+        if self.min_locked_profit_cents + self.maker_fee_reserve_cents >= 100:
+            raise ValueError("BTC maker profit plus fee reserve must be below 100 cents")
+        if self.stop_new_quotes_remaining_seconds > 300:
+            raise ValueError("BTC maker stop-new-quotes time must be at most 300 seconds")
+        if self.emergency_exit_remaining_seconds >= self.stop_new_quotes_remaining_seconds:
+            raise ValueError("BTC maker emergency exit must be below stop-new-quotes time")
+        return self
+
 class AppConfig(BaseModel):
     data_dir: Path = Path("data")
     data_cleanup_enabled: bool = True
@@ -740,8 +1002,14 @@ class AppConfig(BaseModel):
     btc_recovery: BtcRecoveryConfig = Field(default_factory=BtcRecoveryConfig)
     btc_dynamic: BtcDynamicConfig = Field(default_factory=BtcDynamicConfig)
     btc_weighted: BtcWeightedConfig = Field(default_factory=BtcWeightedConfig)
+    btc_lead_prediction: BtcLeadPredictionConfig = Field(
+        default_factory=BtcLeadPredictionConfig
+    )
     btc_v8: BtcV8Config = Field(default_factory=BtcV8Config)
     orderbook_chase: OrderbookChaseConfig = Field(default_factory=OrderbookChaseConfig)
+    btc_maker_arbitrage: BtcMakerArbitrageConfig = Field(
+        default_factory=BtcMakerArbitrageConfig
+    )
     real_trading: RealTradingConfig = Field(default_factory=RealTradingConfig)
 
     @field_validator("data_retention_hours", "data_cleanup_interval_seconds")

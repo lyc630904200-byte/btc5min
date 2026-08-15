@@ -14,16 +14,34 @@ CRYPTO_FIVE_MINUTE_SLUG_RE = re.compile(
     r"^(?P<asset>bitcoin|btc|ethereum|eth)-updown-5m-(?P<start>\d+)$"
 )
 FIVE_MINUTES = 5 * 60
+SUPPORTED_TWAP_LOOKBACK_SECONDS = frozenset({30, 60})
+
+
+def twap_rtds_tick_source(window_seconds: int) -> str:
+    return f"polymarket_rtds_twap_{window_seconds}s"
+
+
+def twap_rtds_candidate_source(window_seconds: int) -> str:
+    return f"{twap_rtds_tick_source(window_seconds)}_start_tick"
+
+
+def twap_rtds_threshold_source(window_seconds: int) -> str:
+    return f"{twap_rtds_tick_source(window_seconds)}_verified_open_price"
+
+
+# Retain the original public constants as 30-second aliases for compatibility.
+TWAP_RTDS_CANDIDATE_SOURCE = twap_rtds_candidate_source(30)
+TWAP_RTDS_THRESHOLD_SOURCE = twap_rtds_threshold_source(30)
+TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE = "polymarket_page_twap_rtds_verified_open_price"
+TWAP_RTDS_THRESHOLD_SOURCES = frozenset(
+    twap_rtds_threshold_source(window) for window in SUPPORTED_TWAP_LOOKBACK_SECONDS
+)
 VERIFIED_DYNAMIC_THRESHOLD_SOURCES = {
     "polymarket_page_verified_open_price",
     "gamma_page_verified_price_to_beat",
     "polymarket_page_rtds_verified_open_price",
-    "polymarket_rtds_twap_30s_verified_open_price",
     "polymarket_page_twap_rtds_verified_open_price",
-}
-TWAP_RTDS_CANDIDATE_SOURCE = "polymarket_rtds_twap_30s_start_tick"
-TWAP_RTDS_THRESHOLD_SOURCE = "polymarket_rtds_twap_30s_verified_open_price"
-TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE = "polymarket_page_twap_rtds_verified_open_price"
+} | TWAP_RTDS_THRESHOLD_SOURCES
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -96,13 +114,21 @@ def market_twap_lookback_seconds(market: MarketState) -> int | None:
     return value
 
 
+def supported_market_twap_lookback_seconds(market: MarketState | None) -> int | None:
+    if market is None:
+        return None
+    window_seconds = market_twap_lookback_seconds(market)
+    return window_seconds if window_seconds in SUPPORTED_TWAP_LOOKBACK_SECONDS else None
+
+
 def twap_threshold_candidate_is_valid(market: MarketState) -> bool:
+    window_seconds = supported_market_twap_lookback_seconds(market)
     return bool(
-        market_twap_lookback_seconds(market) == 30
+        window_seconds is not None
         and market.threshold_candidate_price is not None
         and market.threshold_price is not None
         and abs(market.threshold_candidate_price - market.threshold_price) <= 0.01
-        and market.threshold_candidate_source == TWAP_RTDS_CANDIDATE_SOURCE
+        and market.threshold_candidate_source == twap_rtds_candidate_source(window_seconds)
         and market.threshold_candidate_observed_at == market.start_time
         and market.threshold_candidate_received_at is not None
         and market.start_time is not None
@@ -114,7 +140,12 @@ def twap_threshold_candidate_is_valid(market: MarketState) -> bool:
 
 
 def threshold_needs_page_confirmation(market: MarketState) -> bool:
-    return market.threshold_source == TWAP_RTDS_THRESHOLD_SOURCE and threshold_is_tradable(market)
+    window_seconds = supported_market_twap_lookback_seconds(market)
+    return bool(
+        window_seconds is not None
+        and market.threshold_source == twap_rtds_threshold_source(window_seconds)
+        and threshold_is_tradable(market)
+    )
 
 
 def threshold_is_tradable(market: MarketState) -> bool:
@@ -137,10 +168,10 @@ def threshold_is_tradable(market: MarketState) -> bool:
     )
     if not common_verified:
         return False
-    if market.threshold_source in {
-        TWAP_RTDS_THRESHOLD_SOURCE,
-        TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE,
-    }:
+    if (
+        market.threshold_source in TWAP_RTDS_THRESHOLD_SOURCES
+        or market.threshold_source == TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE
+    ):
         return twap_threshold_candidate_is_valid(market)
     candidate_fields_present = any(
         value is not None

@@ -440,6 +440,22 @@ def test_latency_probe_only_requests_clob_time(tmp_path) -> None:
     registry.close()
 
 
+def test_latency_probe_is_enabled_for_lead_prediction_only(tmp_path) -> None:
+    config = AppConfig(
+        data_dir=tmp_path,
+        btc_lead_prediction={"enabled": True},
+    )
+    registry = OrderbookChaseRegistry(tmp_path / "orderbook-chase-ledger.sqlite3")
+    probe = ClobLatencyProbe(config, registry)
+
+    assert config.orderbook_chase.enabled is False
+    assert config.btc_weighted.enabled is False
+    assert probe.sampling_enabled() is True
+
+    asyncio.run(probe.close())
+    registry.close()
+
+
 def test_latency_probe_rebuilds_exhausted_connection_pool(tmp_path) -> None:
     config = AppConfig(data_dir=tmp_path, orderbook_chase={"enabled": True})
     registry = OrderbookChaseRegistry(tmp_path / "orderbook-chase-ledger.sqlite3")

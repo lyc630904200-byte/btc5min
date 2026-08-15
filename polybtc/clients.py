@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Iterable
@@ -29,6 +30,7 @@ POLYMARKET_RTDS_TWAP_TOPICS = {
 PROXY_ATTEMPT_TIMEOUT_SECONDS = 1.5
 CLOB_HEARTBEAT_SECONDS = 10
 CLOB_RECONNECT_DELAY_SECONDS = 0.25
+RTDS_HEARTBEAT_SECONDS = 5
 
 
 class ProxySafeClientConnection(ClientConnection):
@@ -320,6 +322,11 @@ def update_books_from_market_message(
     # snapshot for each token.  Publishing every intermediate snapshot floods
     # the runner, journal, and dashboard and makes the visible top of book lag.
     updates: dict[str, OrderBookSnapshot] = {}
+    result: list[tuple[str, OrderBookSnapshot]] = []
+
+    def flush_snapshots() -> None:
+        result.extend(updates.items())
+        updates.clear()
     for event in parse_clob_market_messages(raw):
         event_type = str(event.get("type") or "")
         payload = event.get("payload") or {}
@@ -372,6 +379,30 @@ def update_books_from_market_message(
             updates[token_id] = updated
             continue
 
+        if event_type == "tick_size_change":
+            token_id = str(payload.get("asset_id") or payload.get("token_id") or "")
+            book = books.get(token_id)
+            if not token_id or book is None:
+                continue
+            try:
+                tick_size = float(payload["new_tick_size"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(tick_size) or tick_size <= 0:
+                continue
+            timestamp = clob_timestamp(payload.get("timestamp"))
+            if timestamp < book.timestamp:
+                continue
+            updated = book.model_copy(deep=True)
+            updated.market_id = str(payload.get("market") or book.market_id or "")
+            updated.timestamp = timestamp
+            updated.received_at = datetime.now(timezone.utc)
+            updated.tick_size = tick_size
+            updated.raw = {"_tick_size_change": payload}
+            books[token_id] = updated
+            updates[token_id] = updated
+            continue
+
         if event_type == "last_trade_price":
             token_id = str(payload.get("asset_id") or payload.get("token_id") or "")
             book = books.get(token_id)
@@ -385,9 +416,13 @@ def update_books_from_market_message(
             updated.received_at = datetime.now(timezone.utc)
             updated.raw = {"_last_trade": payload}
             books[token_id] = updated
-            updates[token_id] = updated
+            # Trade prints drive the conservative shadow queue.  Never merge
+            # them by token: every print must reach the runner in wire order.
+            flush_snapshots()
+            result.append((token_id, updated))
             continue
-    return list(updates.items())
+    flush_snapshots()
+    return result
 
 
 def parse_rtds_crypto_price_message(
@@ -555,7 +590,7 @@ def parse_polymarket_outcome_prices(html: str, asset: str = "BTC") -> list[Polym
             len(query_key) == 8
             and query_key[6] is True
             and type(query_key[7]) is int
-            and query_key[7] == 30
+            and query_key[7] in POLYMARKET_RTDS_TWAP_TOPICS
         )
         if (
             not (legacy_key or twap_key)
@@ -701,6 +736,7 @@ class PolymarketClient:
         self.rtds_symbol = f"{self.asset.lower()}/usd"
         self._book_http_clients: dict[tuple[str | None, bool], httpx.AsyncClient] = {}
         self._book_http_route: tuple[str | None, bool] | None = None
+        self._book_http_route_failures = 0
         self._clob_ws_options: dict[str, Any] | None = None
 
     def _book_route_attempts(self) -> list[tuple[str | None, bool]]:
@@ -713,6 +749,7 @@ class PolymarketClient:
         self, token_id: str
     ) -> tuple[httpx.Response, datetime, datetime, bool]:
         attempts = self._book_route_attempts()
+        preferred_route = self._book_http_route
         for index, route in enumerate(attempts):
             proxy, trust_env = route
             client = self._book_http_clients.get(route)
@@ -721,7 +758,10 @@ class PolymarketClient:
                 client = httpx.AsyncClient(trust_env=trust_env, **options)
                 self._book_http_clients[route] = client
             start = datetime.now(timezone.utc)
-            timeout = PROXY_ATTEMPT_TIMEOUT_SECONDS if proxy else 8
+            # A book snapshot is useful only while it is recent.  Never let an
+            # unavailable direct route stall a proxy-fed market for eight
+            # seconds after one transient proxy failure.
+            timeout = PROXY_ATTEMPT_TIMEOUT_SECONDS
             try:
                 response = await client.get(
                     f"{self.config.clob_url}/book",
@@ -733,11 +773,21 @@ class PolymarketClient:
                 stale_client = self._book_http_clients.pop(route, None)
                 if stale_client is not None:
                     await stale_client.aclose()
+                if route == preferred_route:
+                    self._book_http_route_failures += 1
+                    if self._book_http_route_failures < 3:
+                        # Reconnect the route that has already proved usable on
+                        # the next fast polling cycle.  Exploring a known-slow
+                        # fallback here creates multi-second book gaps.
+                        raise
+                    self._book_http_route = None
+                    self._book_http_route_failures = 0
                 if index == len(attempts) - 1 or not should_retry_with_env_proxy(exc):
                     raise
                 continue
             end = datetime.now(timezone.utc)
             self._book_http_route = route
+            self._book_http_route_failures = 0
             return response, start, end, trust_env
         raise RuntimeError("unreachable book HTTP retry state")
 
@@ -928,46 +978,56 @@ class PolymarketClient:
                 ) as websocket:
                     connected = True
                     await websocket.send(json.dumps(subscription, separators=(",", ":"), ensure_ascii=False))
-                    loop = asyncio.get_running_loop()
-                    last_tick_at = loop.time()
-                    while True:
-                        remaining = self.config.rtds_stale_seconds - (loop.time() - last_tick_at)
-                        if remaining <= 0:
-                            raise TimeoutError(
-                                f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
-                                f"{self.config.rtds_stale_seconds:g} seconds"
+                    heartbeat = asyncio.create_task(send_rtds_heartbeats(websocket))
+                    try:
+                        loop = asyncio.get_running_loop()
+                        last_tick_at = loop.time()
+                        while True:
+                            remaining = self.config.rtds_stale_seconds - (loop.time() - last_tick_at)
+                            if remaining <= 0:
+                                raise TimeoutError(
+                                    f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
+                                    f"{self.config.rtds_stale_seconds:g} seconds"
+                                )
+                            try:
+                                message = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+                            except asyncio.TimeoutError as exc:
+                                raise TimeoutError(
+                                    f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
+                                    f"{self.config.rtds_stale_seconds:g} seconds"
+                                ) from exc
+                            ticks = parse_rtds_crypto_price_message(
+                                message,
+                                symbol=symbol,
+                                source=source,
+                                expected_topic=topic,
+                                window_seconds=window_seconds,
                             )
-                        try:
-                            message = await asyncio.wait_for(websocket.recv(), timeout=remaining)
-                        except asyncio.TimeoutError as exc:
-                            raise TimeoutError(
-                                f"Polymarket RTDS stale: no valid {symbol.upper()} tick for "
-                                f"{self.config.rtds_stale_seconds:g} seconds"
-                            ) from exc
-                        ticks = parse_rtds_crypto_price_message(
-                            message,
-                            symbol=symbol,
-                            source=source,
-                            expected_topic=topic,
-                            window_seconds=window_seconds,
-                        )
-                        if ticks:
-                            last_tick_at = loop.time()
-                        for tick in ticks:
-                            yield tick
+                            if ticks:
+                                last_tick_at = loop.time()
+                            for tick in ticks:
+                                yield tick
+                    finally:
+                        heartbeat.cancel()
+                        await asyncio.gather(heartbeat, return_exceptions=True)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 if connected or options == options_list[-1]:
                     raise
                 continue
 
     async def rtds_crypto_price_ticks(self, symbol: str | None = None) -> AsyncIterator[PriceTick]:
-        async for tick in self._rtds_price_ticks(
-            topic=POLYMARKET_RTDS_CRYPTO_TOPIC,
-            event_type="*",
-            source="polymarket_rtds",
-            symbol=symbol or self.rtds_symbol,
-        ):
-            yield tick
+        async with aclosing(
+            self._rtds_price_ticks(
+                topic=POLYMARKET_RTDS_CRYPTO_TOPIC,
+                event_type="*",
+                source="polymarket_rtds",
+                symbol=symbol or self.rtds_symbol,
+            )
+        ) as ticks:
+            async for tick in ticks:
+                yield tick
 
     async def rtds_twap_price_ticks(
         self,
@@ -977,14 +1037,17 @@ class PolymarketClient:
         topic = POLYMARKET_RTDS_TWAP_TOPICS.get(window_seconds)
         if topic is None:
             raise ValueError(f"unsupported Polymarket RTDS TWAP window: {window_seconds}")
-        async for tick in self._rtds_price_ticks(
-            topic=topic,
-            event_type="update",
-            source=f"polymarket_rtds_twap_{window_seconds}s",
-            symbol=symbol or self.rtds_symbol,
-            window_seconds=window_seconds,
-        ):
-            yield tick
+        async with aclosing(
+            self._rtds_price_ticks(
+                topic=topic,
+                event_type="update",
+                source=f"polymarket_rtds_twap_{window_seconds}s",
+                symbol=symbol or self.rtds_symbol,
+                window_seconds=window_seconds,
+            )
+        ) as ticks:
+            async for tick in ticks:
+                yield tick
 
     async def event_page_text(self, market_slug: str, timeout: float | None = None) -> str:
         response, _, _, _ = await get_direct_first(
@@ -1127,6 +1190,12 @@ class PolymarketClient:
 async def send_clob_heartbeats(websocket: Any) -> None:
     while True:
         await asyncio.sleep(CLOB_HEARTBEAT_SECONDS)
+        await websocket.send("PING")
+
+
+async def send_rtds_heartbeats(websocket: Any) -> None:
+    while True:
+        await asyncio.sleep(RTDS_HEARTBEAT_SECONDS)
         await websocket.send("PING")
 
 

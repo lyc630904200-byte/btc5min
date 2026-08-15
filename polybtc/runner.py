@@ -12,6 +12,8 @@ from typing import Any, Awaitable, Callable
 
 from .btc_recovery import BtcRecoveryEngine, BtcRecoveryRegistry
 from .btc_dynamic import BtcDynamicEngine, BtcDynamicRegistry
+from .btc_lead_prediction import BtcLeadPredictionEngine, BtcLeadPredictionRegistry
+from .btc_maker_arbitrage import BtcMakerArbitrageEngine, BtcMakerArbitrageRegistry
 from .btc_weighted import BtcWeightedEngine, BtcWeightedRegistry
 from .btc_v8 import BtcV8Engine, BtcV8Registry, V8Trade
 from .clients import BinanceClient, PolymarketClient
@@ -21,14 +23,14 @@ from .entry_registry import SqliteMarketEntryRegistry, historical_market_entry_c
 from .journal import RunJournal
 from .market import (
     TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE,
-    TWAP_RTDS_CANDIDATE_SOURCE,
     choose_current_market,
-    market_twap_lookback_seconds,
     market_interval_from_slug,
     market_is_active,
     markets_are_adjacent,
+    supported_market_twap_lookback_seconds,
     threshold_is_tradable,
     threshold_needs_page_confirmation,
+    twap_rtds_candidate_source,
 )
 from .models import Direction, MarketState, OrderBookSnapshot, PriceTick, rest_request_started_at
 from .orderbook_chase import OrderbookChaseEngine, OrderbookChaseRegistry
@@ -50,18 +52,22 @@ from .signal_sources import (
 UpdateCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 BeforeMarketUpdatesCallback = Callable[[dict[str, MarketState]], bool | None]
 BINANCE_TICK_EMIT_INTERVAL = timedelta(milliseconds=200)
-# Keep a sub-second REST safety net when the CLOB WebSocket is quiet.  The
-# strategy freshness limit is one second, so a two-second fallback was too slow.
-BOOK_REST_FALLBACK_AFTER = timedelta(milliseconds=500)
-BOOK_REST_RECONCILE_AFTER = timedelta(seconds=2)
+# The CLOB WebSocket is the primary order-book source.  REST is only a safety
+# net after a genuinely quiet stream and a slower periodic depth reconciliation.
+BOOK_REST_FALLBACK_AFTER = timedelta(seconds=1)
+BOOK_REST_RECONCILE_AFTER = timedelta(seconds=5)
+CLOB_WS_INITIAL_DATA_TIMEOUT_SECONDS = 6.0
+CLOB_WS_DATA_STALE_SECONDS = 3.0
 LIVE_EVENT_COALESCE_SECONDS = 0.02
 BOOK_PUBLISH_HEARTBEAT = timedelta(milliseconds=250)
+MAKER_STATE_HEARTBEAT = timedelta(milliseconds=250)
 THRESHOLD_MATCH_TOLERANCE_USD = 0.01
 THRESHOLD_FINALIZATION_DELAY = timedelta(milliseconds=250)
+TWAP_SUBSCRIPTION_RECHECK_SECONDS = 0.05
 
 
 def standard_entry_enabled(config: AppConfig, asset: str) -> bool:
-    if config.btc_v8.enabled:
+    if config.btc_v8.enabled or config.btc_lead_prediction.enabled:
         return False
     return not (
         config.pair_match.enabled
@@ -76,12 +82,31 @@ def btc_v8_signal_source_enabled(config: AppConfig, source: str) -> bool:
     return source != "binance_futures"
 
 
+def btc_signal_source_enabled(config: AppConfig, source: str) -> bool:
+    if btc_v8_signal_source_enabled(config, source):
+        return True
+    settings = config.btc_lead_prediction
+    if not settings.enabled:
+        return False
+    if source == "binance_futures":
+        return settings.futures_diagnostics_enabled
+    return source in settings.spot_sources
+
+
 def btc_dynamic_runtime_enabled(config: AppConfig) -> bool:
     return bool(config.btc_dynamic.enabled)
 
 
 def btc_v8_runtime_enabled(config: AppConfig) -> bool:
     return bool(config.btc_v8.enabled)
+
+
+def btc_lead_prediction_runtime_enabled(config: AppConfig) -> bool:
+    return bool(config.btc_lead_prediction.enabled)
+
+
+def btc_maker_arbitrage_runtime_enabled(config: AppConfig) -> bool:
+    return bool(config.btc_maker_arbitrage.enabled)
 
 
 def orderbook_chase_runtime_enabled(config: AppConfig) -> bool:
@@ -225,6 +250,8 @@ def live_snapshot(
     btc_v8: dict[str, Any] | None = None,
     orderbook_chase: dict[str, Any] | None = None,
     btc_weighted: dict[str, Any] | None = None,
+    btc_lead_prediction: dict[str, Any] | None = None,
+    btc_maker_arbitrage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     books = {direction.value: live_book_payload(book) for direction, book in engine.books.items()}
     event_payload: Any
@@ -263,6 +290,8 @@ def live_snapshot(
         "btc_v8": btc_v8 or {},
         "orderbook_chase": orderbook_chase or {},
         "btc_weighted": btc_weighted or {},
+        "btc_lead_prediction": btc_lead_prediction or {},
+        "btc_maker_arbitrage": btc_maker_arbitrage or {},
     }
 
 
@@ -465,13 +494,14 @@ async def apply_polymarket_page_threshold(
         <= market.threshold_candidate_received_at
         <= market.start_time + timedelta(seconds=2)
     )
+    market_twap_window = supported_market_twap_lookback_seconds(market)
     twap_candidate_is_exact = bool(
         not market.threshold_candidate_conflicted
-        and market_twap_lookback_seconds(market) == 30
-        and outcome_price.twap_lookback_seconds == 30
+        and market_twap_window is not None
+        and outcome_price.twap_lookback_seconds == market_twap_window
         and market.threshold_candidate_price is not None
         and math.isfinite(market.threshold_candidate_price)
-        and market.threshold_candidate_source == TWAP_RTDS_CANDIDATE_SOURCE
+        and market.threshold_candidate_source == twap_rtds_candidate_source(market_twap_window)
         and market.threshold_candidate_observed_at == market.start_time
         and market.threshold_candidate_received_at is not None
         and market.start_time - timedelta(seconds=1)
@@ -702,14 +732,48 @@ async def polymarket_price_loop(client: PolymarketClient, queue: asyncio.Queue) 
             await asyncio.sleep(1)
 
 
-async def polymarket_twap_price_loop(client: PolymarketClient, queue: asyncio.Queue) -> None:
+async def polymarket_twap_price_loop(
+    client: PolymarketClient,
+    engine: PaperEngine,
+    queue: asyncio.Queue,
+) -> None:
     while True:
+        window_seconds = supported_market_twap_lookback_seconds(engine.market)
+        if window_seconds is None:
+            await asyncio.sleep(TWAP_SUBSCRIPTION_RECHECK_SECONDS)
+            continue
+        stream = None
+        next_tick_task: asyncio.Task | None = None
         try:
-            async for tick in client.rtds_twap_price_ticks(window_seconds=30):
+            stream = client.rtds_twap_price_ticks(window_seconds=window_seconds)
+            iterator = stream.__aiter__()
+            next_tick_task = asyncio.create_task(anext(iterator))
+            while supported_market_twap_lookback_seconds(engine.market) == window_seconds:
+                done, _ = await asyncio.wait(
+                    {next_tick_task},
+                    timeout=TWAP_SUBSCRIPTION_RECHECK_SECONDS,
+                )
+                if not done:
+                    continue
+                tick = next_tick_task.result()
+                next_tick_task = asyncio.create_task(anext(iterator))
+                if supported_market_twap_lookback_seconds(engine.market) != window_seconds:
+                    break
                 await queue.put(("polymarket_twap_tick", tick))
+        except StopAsyncIteration:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             await queue.put(("error", {"source": "polymarket_twap_rtds", "error": str(exc)}))
             await asyncio.sleep(1)
+        finally:
+            if next_tick_task is not None and not next_tick_task.done():
+                next_tick_task.cancel()
+                await asyncio.gather(next_tick_task, return_exceptions=True)
+            close_stream = getattr(stream, "aclose", None)
+            if close_stream is not None:
+                await close_stream()
 
 
 async def pair_resolution_loop(
@@ -782,6 +846,8 @@ async def btc_v8_resolution_loop(
     queue: asyncio.Queue[tuple[str, str, Any]],
     orderbook_chase_engine: OrderbookChaseEngine | None = None,
     weighted_engine: BtcWeightedEngine | None = None,
+    lead_engine: BtcLeadPredictionEngine | None = None,
+    maker_engine: BtcMakerArbitrageEngine | None = None,
 ) -> None:
     while True:
         slugs = set(v8_engine.unresolved_slugs())
@@ -789,6 +855,10 @@ async def btc_v8_resolution_loop(
             slugs.update(orderbook_chase_engine.unresolved_slugs())
         if weighted_engine is not None:
             slugs.update(weighted_engine.unresolved_slugs())
+        if lead_engine is not None:
+            slugs.update(lead_engine.unresolved_slugs())
+        if maker_engine is not None:
+            slugs.update(maker_engine.unresolved_slugs())
         for slug in sorted(slugs):
             try:
                 outcome = await btc_client.resolved_outcome(slug)
@@ -812,10 +882,10 @@ async def btc_v8_signal_collector(
     config: AppConfig,
 ) -> None:
     while True:
-        while not btc_v8_signal_source_enabled(config, source):
+        while not btc_signal_source_enabled(config, source):
             await asyncio.sleep(0.25)
         async for event in client.events():
-            if not btc_v8_signal_source_enabled(config, source):
+            if not btc_signal_source_enabled(config, source):
                 break
             if buffer.full():
                 try:
@@ -833,7 +903,7 @@ async def btc_v8_signal_batch_loop(
     loop = asyncio.get_running_loop()
     last_heartbeat = loop.time()
     while True:
-        if not config.btc_v8.enabled:
+        if not (config.btc_v8.enabled or config.btc_lead_prediction.enabled):
             for buffer in buffers.values():
                 while not buffer.empty():
                     buffer.get_nowait()
@@ -842,7 +912,7 @@ async def btc_v8_signal_batch_loop(
             continue
         batch: list[SignalEvent] = []
         for source, buffer in buffers.items():
-            if not btc_v8_signal_source_enabled(config, source):
+            if not btc_signal_source_enabled(config, source):
                 while not buffer.empty():
                     buffer.get_nowait()
                 continue
@@ -865,12 +935,25 @@ def book_matches_market(market: MarketState, direction: Direction, book: OrderBo
 
 
 async def emit_rest_books(client: PolymarketClient, market: MarketState, queue: asyncio.Queue) -> None:
-    up_book, down_book = await asyncio.gather(client.book(market.up_token_id), client.book(market.down_token_id))
-    current_market = market
-    if book_matches_market(current_market, Direction.UP, up_book):
-        await queue.put(("book", (Direction.UP, up_book)))
-    if book_matches_market(current_market, Direction.DOWN, down_book):
-        await queue.put(("book", (Direction.DOWN, down_book)))
+    results = await asyncio.gather(
+        client.book(market.up_token_id),
+        client.book(market.down_token_id),
+        return_exceptions=True,
+    )
+    for direction, result in zip((Direction.UP, Direction.DOWN), results, strict=True):
+        if isinstance(result, BaseException):
+            await queue.put(
+                (
+                    "error",
+                    {
+                        "source": f"clob_rest_{direction.value.lower()}",
+                        "error": f"{type(result).__name__}: {result}",
+                    },
+                )
+            )
+            continue
+        if book_matches_market(market, direction, result):
+            await queue.put(("book", (direction, result)))
 
 
 def books_need_rest_refresh(
@@ -896,7 +979,33 @@ def books_need_rest_refresh(
     )
 
 
-async def book_rest_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
+def book_needs_rest_refresh(
+    engine: PaperEngine,
+    market: MarketState,
+    direction: Direction,
+    now: datetime,
+    last_rest_refresh_at: datetime | None = None,
+) -> bool:
+    book = engine.books.get(direction)
+    return bool(
+        not book
+        or not book_matches_market(market, direction, book)
+        or not book.depth_trusted
+        or now - book.received_at >= BOOK_REST_FALLBACK_AFTER
+        or (
+            last_rest_refresh_at is not None
+            and now - last_rest_refresh_at >= BOOK_REST_RECONCILE_AFTER
+        )
+    )
+
+
+async def book_rest_leg_loop(
+    client: PolymarketClient,
+    engine: PaperEngine,
+    queue: asyncio.Queue,
+    poll_ms: int,
+    direction: Direction,
+) -> None:
     check_interval_seconds = max(poll_ms / 1000, 0.1)
     last_rest_refresh_at = datetime.min.replace(tzinfo=timezone.utc)
     while True:
@@ -908,22 +1017,42 @@ async def book_rest_loop(client: PolymarketClient, engine: PaperEngine, queue: a
         if market.end_time <= started_at:
             await asyncio.sleep(0.05)
             continue
-        if books_need_rest_refresh(engine, market, started_at, last_rest_refresh_at):
+        if book_needs_rest_refresh(
+            engine, market, direction, started_at, last_rest_refresh_at
+        ):
+            token_id = (
+                market.up_token_id if direction == Direction.UP else market.down_token_id
+            )
             try:
-                await emit_rest_books(client, market, queue)
+                book = await client.book(token_id)
+                if book_matches_market(market, direction, book):
+                    await queue.put(("book", (direction, book)))
             except Exception as exc:
-                await queue.put(("error", {"source": "clob_rest", "error": str(exc)}))
+                await queue.put(
+                    (
+                        "error",
+                        {
+                            "source": f"clob_rest_{direction.value.lower()}",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                )
             finally:
-                # Schedule from the request start, not its completion.  The
-                # proxy round trip can take ~500 ms; completion-based timing
-                # added another full fallback interval between snapshots.
                 last_rest_refresh_at = started_at
         elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
         await asyncio.sleep(max(0.02, check_interval_seconds - elapsed))
 
 
+async def book_rest_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
+    await asyncio.gather(
+        book_rest_leg_loop(client, engine, queue, poll_ms, Direction.UP),
+        book_rest_leg_loop(client, engine, queue, poll_ms, Direction.DOWN),
+    )
+
+
 async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asyncio.Queue, poll_ms: int) -> None:
     timeout_seconds = max(poll_ms / 1000, 0.1)
+    loop = asyncio.get_running_loop()
     while True:
         market = engine.market
         if not market:
@@ -935,6 +1064,7 @@ async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asynci
 
         current_market_id = market.condition_id
         websocket_active = False
+        last_market_event_at = loop.time()
         stream = client.book_stream((market.up_token_id, market.down_token_id))
         next_book_task: asyncio.Task[tuple[str, OrderBookSnapshot]] | None = None
         try:
@@ -948,6 +1078,15 @@ async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asynci
                 try:
                     done, _ = await asyncio.wait({next_book_task}, timeout=timeout_seconds)
                     if not done:
+                        stale_after = (
+                            CLOB_WS_DATA_STALE_SECONDS
+                            if websocket_active
+                            else CLOB_WS_INITIAL_DATA_TIMEOUT_SECONDS
+                        )
+                        if loop.time() - last_market_event_at >= stale_after:
+                            raise TimeoutError(
+                                f"CLOB market stream silent for {stale_after:g} seconds"
+                            )
                         continue
                     if next_book_task not in done:
                         continue
@@ -960,6 +1099,7 @@ async def book_loop(client: PolymarketClient, engine: PaperEngine, queue: asynci
                         next_book_task = None
                     raise
                 websocket_active = True
+                last_market_event_at = loop.time()
                 current_market = engine.market
                 if not current_market or current_market.condition_id != current_market_id:
                     break
@@ -1094,6 +1234,25 @@ def should_publish_book_update(
     return last_published_at is None or current.received_at - last_published_at >= BOOK_PUBLISH_HEARTBEAT
 
 
+def maker_state_heartbeat_due(
+    *,
+    maker_enabled: bool,
+    input_changed: bool,
+    has_real_events: bool,
+    now: datetime,
+    last_emitted_at: datetime | None,
+) -> bool:
+    return bool(
+        maker_enabled
+        and input_changed
+        and not has_real_events
+        and (
+            last_emitted_at is None
+            or now - last_emitted_at >= MAKER_STATE_HEARTBEAT
+        )
+    )
+
+
 class AssetEventQueue:
     def __init__(self, queue: asyncio.Queue[tuple[str, str, Any]], asset: str):
         self.queue = queue
@@ -1151,6 +1310,12 @@ async def run_live(
     chase_path = config.data_dir / "orderbook-chase-ledger.sqlite3"
     chase_registry = OrderbookChaseRegistry(chase_path)
     weighted_registry = BtcWeightedRegistry(config.data_dir / "btc-weighted-ledger.sqlite3")
+    lead_registry = BtcLeadPredictionRegistry(
+        config.data_dir / "btc-lead-prediction-ledger.sqlite3"
+    )
+    maker_registry = BtcMakerArbitrageRegistry(
+        config.data_dir / "btc-maker-arbitrage-ledger.sqlite3"
+    )
     real_registry = RealTradingRegistry(config.data_dir / "real-trading-ledger.sqlite3")
     clients: dict[str, PolymarketClient] = {}
     try:
@@ -1179,6 +1344,12 @@ async def run_live(
             weighted_registry,
             orderbook_chase_engine.latency,
         )
+        lead_engine = BtcLeadPredictionEngine(
+            config,
+            lead_registry,
+            orderbook_chase_engine.latency,
+        )
+        maker_engine = BtcMakerArbitrageEngine(config, maker_registry)
         real_engine = RealTradingEngine(
             config,
             real_registry,
@@ -1188,6 +1359,8 @@ async def run_live(
         recovery_enabled = bool(config.btc_recovery.enabled)
         dynamic_enabled = btc_dynamic_runtime_enabled(config)
         v8_enabled = btc_v8_runtime_enabled(config)
+        lead_enabled = btc_lead_prediction_runtime_enabled(config)
+        maker_enabled = btc_maker_arbitrage_runtime_enabled(config)
         chase_enabled = orderbook_chase_runtime_enabled(config)
         real_enabled = real_trading_runtime_enabled(config)
         await asyncio.gather(
@@ -1206,15 +1379,20 @@ async def run_live(
             if chase_enabled:
                 orderbook_chase_engine.set_market(btc_engine.market)
             weighted_engine.set_market(btc_engine.market)
+            lead_engine.set_market(btc_engine.market)
+            maker_engine.set_market(btc_engine.market)
             settlement_tick = btc_engine.settlement_price_tick()
             if v8_enabled and settlement_tick is not None:
                 v8_engine.add_chainlink_tick(settlement_tick)
             if settlement_tick is not None:
                 weighted_engine.add_chainlink_tick(settlement_tick)
+                lead_engine.add_chainlink_tick(settlement_tick)
             for direction, book in btc_engine.books.items():
                 if v8_enabled:
                     v8_engine.add_polymarket_book(direction, book)
                 weighted_engine.add_book(direction, book)
+                lead_engine.add_book(direction, book)
+                maker_engine.add_book(direction, book)
     except BaseException:
         try:
             await asyncio.wait_for(
@@ -1230,6 +1408,8 @@ async def run_live(
         v8_registry.close()
         chase_registry.close()
         weighted_registry.close()
+        lead_registry.close()
+        maker_registry.close()
         real_registry.close()
         raise
 
@@ -1257,6 +1437,12 @@ async def run_live(
     def weighted_dashboard_state() -> dict[str, Any]:
         return weighted_engine.dashboard_state()
 
+    def lead_dashboard_state() -> dict[str, Any]:
+        return lead_engine.dashboard_state()
+
+    def maker_dashboard_state() -> dict[str, Any]:
+        return maker_engine.dashboard_state()
+
     tasks = [
         asyncio.create_task(data_cleanup_loop(config, output_dir, journal)),
     ]
@@ -1272,7 +1458,7 @@ async def run_live(
                 asyncio.create_task(market_loop(poly, engine, asset_queue, config.sources.market_refresh_seconds)),
                 asyncio.create_task(binance_loop(binance_clients[asset], asset_queue)),
                 asyncio.create_task(polymarket_price_loop(poly, asset_queue)),
-                asyncio.create_task(polymarket_twap_price_loop(poly, asset_queue)),
+                asyncio.create_task(polymarket_twap_price_loop(poly, engine, asset_queue)),
                 asyncio.create_task(book_rest_loop(poly, engine, asset_queue, config.sources.poly_book_poll_ms)),
                 asyncio.create_task(book_loop(poly, engine, asset_queue, config.sources.poly_book_poll_ms)),
             ]
@@ -1296,12 +1482,13 @@ async def run_live(
             )
         tasks.append(
             asyncio.create_task(
-                btc_v8_resolution_loop(
-                    clients["BTC"], v8_engine, queue, orderbook_chase_engine, weighted_engine
-                )
+                    btc_v8_resolution_loop(
+                        clients["BTC"], v8_engine, queue, orderbook_chase_engine,
+                    weighted_engine, lead_engine, maker_engine
+                    )
             )
         )
-    if v8_enabled:
+    if "BTC" in clients:
         signal_clients: dict[str, Any] = {
             "binance": BinanceSpotSignalClient(config.sources),
             "coinbase": CoinbaseSignalClient(config.sources),
@@ -1321,6 +1508,7 @@ async def run_live(
             asyncio.create_task(btc_v8_signal_batch_loop(signal_buffers, queue, config))
         )
     started = datetime.now(timezone.utc)
+    last_maker_state_emitted_at: datetime | None = None
     try:
         while True:
             if max_seconds is not None and (datetime.now(timezone.utc) - started).total_seconds() >= max_seconds:
@@ -1376,6 +1564,12 @@ async def run_live(
                         orderbook_chase_engine.control(
                             command.removeprefix("orderbook_chase_")
                         )
+                    elif command == "btc_maker_pause":
+                        maker_engine.pause()
+                    elif command == "btc_maker_resume":
+                        maker_engine.resume()
+                    elif command == "btc_maker_cancel_quotes":
+                        maker_engine.cancel_quotes("manual_cancel")
             # Give simultaneous market frames a tiny window to accumulate so
             # hundreds of depth-only deltas collapse to the newest complete
             # UP/DOWN snapshots.  This bounds added latency at 20 ms.
@@ -1396,6 +1590,8 @@ async def run_live(
             dynamic_input_changed = dynamic_enabled and (timer_tick or dynamic_control_changed)
             v8_input_changed = (v8_enabled or chase_enabled) and timer_tick
             weighted_input_changed = timer_tick
+            lead_input_changed = timer_tick
+            maker_input_changed = timer_tick
             for asset in assets:
                 asset_events = [(event_type, payload) for event_asset, event_type, payload in pending_events if event_asset == asset]
                 if not asset_events:
@@ -1409,6 +1605,8 @@ async def run_live(
                         recovery_input_changed = recovery_input_changed or (recovery_enabled and asset == "BTC")
                         dynamic_input_changed = dynamic_input_changed or (dynamic_enabled and asset == "BTC")
                         weighted_input_changed = weighted_input_changed or asset == "BTC"
+                        lead_input_changed = lead_input_changed or asset == "BTC"
+                        maker_input_changed = maker_input_changed or asset == "BTC"
                         market: MarketState = payload
                         if not market_is_active(market, datetime.now(timezone.utc)):
                             continue
@@ -1421,6 +1619,8 @@ async def run_live(
                             if chase_enabled:
                                 orderbook_chase_engine.set_market(market)
                             weighted_engine.set_market(market)
+                            lead_engine.set_market(market)
+                            maker_engine.set_market(market)
                             settlement_tick = engine.settlement_price_tick()
                             if dynamic_enabled and settlement_tick is not None:
                                 dynamic_engine.add_chainlink_tick(settlement_tick)
@@ -1428,6 +1628,7 @@ async def run_live(
                                 v8_engine.add_chainlink_tick(settlement_tick)
                             if settlement_tick is not None:
                                 weighted_engine.add_chainlink_tick(settlement_tick)
+                                lead_engine.add_chainlink_tick(settlement_tick)
                             v8_input_changed = v8_input_changed or v8_enabled or chase_enabled
                         journal.market(market)
                     elif event_type == "tick":
@@ -1449,7 +1650,9 @@ async def run_live(
                                 v8_engine.add_chainlink_tick(tick)
                                 v8_input_changed = True
                             weighted_engine.add_chainlink_tick(tick)
+                            lead_engine.add_chainlink_tick(tick)
                             weighted_input_changed = True
+                            lead_input_changed = True
                         journal.event("polymarket_tick", tick)
                     elif event_type == "polymarket_twap_tick":
                         tick = payload
@@ -1463,7 +1666,9 @@ async def run_live(
                                 v8_engine.add_chainlink_tick(tick)
                                 v8_input_changed = True
                             weighted_engine.add_chainlink_tick(tick)
+                            lead_engine.add_chainlink_tick(tick)
                             weighted_input_changed = True
+                            lead_input_changed = True
                         if threshold_changed and engine.market is not None:
                             pair_input_changed = pair_input_changed or pair_enabled
                             dynamic_input_changed = dynamic_input_changed or (dynamic_enabled and asset == "BTC")
@@ -1485,6 +1690,10 @@ async def run_live(
                         if asset == "BTC" and active_book is book:
                             weighted_engine.add_book(direction, active_book)
                             weighted_input_changed = True
+                            lead_engine.add_book(direction, active_book)
+                            lead_input_changed = True
+                            maker_engine.add_book(direction, active_book)
+                            maker_input_changed = True
                         publish_update = active_book is book and should_publish_book_update(
                             previous_book,
                             book,
@@ -1495,6 +1704,9 @@ async def run_live(
                             last_published_book_at[(asset, direction)] = book.received_at
                     elif event_type == "error":
                         source = f"{asset.lower()}_{payload.get('source', 'unknown')}"
+                        if asset == "BTC" and str(payload.get("source", "")).startswith("clob"):
+                            maker_engine.mark_unmeasurable("clob_stream_interrupted")
+                            maker_input_changed = True
                         journal.latency_row(source, "stream", False, None, payload.get("error", ""))
                     live_events = flush_engine_updates(engine, journal, counters[asset])
                     for live_event_type, live_payload in live_events:
@@ -1512,6 +1724,7 @@ async def run_live(
                                 v8_dashboard_state(),
                                 orderbook_chase_dashboard_state(),
                                 weighted_dashboard_state(),
+                                lead_dashboard_state(),
                             ),
                         )
                     if publish_update:
@@ -1529,6 +1742,7 @@ async def run_live(
                                 v8_dashboard_state(),
                                 orderbook_chase_dashboard_state(),
                                 weighted_dashboard_state(),
+                                lead_dashboard_state(),
                             ),
                         )
 
@@ -1558,6 +1772,7 @@ async def run_live(
                                 v8_dashboard_state(),
                                 orderbook_chase_dashboard_state(),
                                 weighted_dashboard_state(),
+                                lead_dashboard_state(),
                             ),
                         )
                     if settled:
@@ -1626,14 +1841,20 @@ async def run_live(
             for event_type, payload in v8_events:
                 if event_type == "btc_v8_signals":
                     for signal_event in payload:
-                        v8_engine.add_signal(signal_event)
+                        if btc_v8_signal_source_enabled(config, signal_event.source):
+                            v8_engine.add_signal(signal_event)
+                    lead_engine.add_signals(payload)
                     v8_input_changed = True
+                    lead_input_changed = True
                 elif event_type == "btc_v8_resolution":
                     slug, outcome = payload
                     v8_engine.settle(slug, outcome)
                     orderbook_chase_engine.settle(slug, outcome)
                     weighted_engine.settle(slug, outcome)
+                    lead_engine.settle(slug, outcome)
+                    maker_engine.settle(slug, outcome)
                     v8_input_changed = True
+                    lead_input_changed = True
                 elif event_type == "btc_v8_error":
                     journal.latency_row(
                         payload.get("source", "btc_v8"),
@@ -1690,6 +1911,7 @@ async def run_live(
                         v8_dashboard_state(),
                         orderbook_chase_dashboard_state(),
                         weighted_dashboard_state(),
+                        lead_dashboard_state(),
                     ),
                 )
             if dynamic_enabled and dynamic_input_changed and btc_engine is not None:
@@ -1715,6 +1937,7 @@ async def run_live(
                             v8_dashboard_state(),
                             orderbook_chase_dashboard_state(),
                             weighted_dashboard_state(),
+                            lead_dashboard_state(),
                         ),
                     )
             if weighted_input_changed and btc_engine is not None:
@@ -1739,6 +1962,67 @@ async def run_live(
                         v8_dashboard_state(),
                         orderbook_chase_dashboard_state(),
                         weighted_dashboard_state(),
+                        lead_dashboard_state(),
+                    ),
+                )
+            if lead_input_changed and btc_engine is not None:
+                lead_engine.evaluate(
+                    datetime.now(timezone.utc),
+                    update_key=(
+                        f"{len(pending_events)}:{datetime.now(timezone.utc).timestamp()}"
+                    ),
+                )
+            for lead_event_type, lead_payload in lead_engine.drain_events():
+                journal.event(lead_event_type, lead_payload)
+                await emit_update(
+                    on_update,
+                    live_snapshot(
+                        primary_engine,
+                        output_dir,
+                        lead_event_type,
+                        lead_payload,
+                        pair_engine.dashboard_state(),
+                        recovery_dashboard_state(),
+                        real_dashboard_state(),
+                        dynamic_dashboard_state(),
+                        v8_dashboard_state(),
+                        orderbook_chase_dashboard_state(),
+                        weighted_dashboard_state(),
+                        lead_dashboard_state(),
+                    ),
+                )
+            if maker_input_changed and btc_engine is not None:
+                maker_engine.evaluate(datetime.now(timezone.utc))
+            maker_events = maker_engine.drain_events()
+            maker_emit_at = datetime.now(timezone.utc)
+            if maker_state_heartbeat_due(
+                maker_enabled=maker_enabled,
+                input_changed=maker_input_changed,
+                has_real_events=bool(maker_events),
+                now=maker_emit_at,
+                last_emitted_at=last_maker_state_emitted_at,
+            ):
+                maker_events = [("btc_maker_state", maker_dashboard_state())]
+            if maker_events:
+                last_maker_state_emitted_at = maker_emit_at
+            for maker_event_type, maker_payload in maker_events:
+                journal.event(maker_event_type, maker_payload)
+                await emit_update(
+                    on_update,
+                    live_snapshot(
+                        primary_engine,
+                        output_dir,
+                        maker_event_type,
+                        maker_payload,
+                        pair_engine.dashboard_state(),
+                        recovery_dashboard_state(),
+                        real_dashboard_state(),
+                        dynamic_dashboard_state(),
+                        v8_dashboard_state(),
+                        orderbook_chase_dashboard_state(),
+                        weighted_dashboard_state(),
+                        lead_dashboard_state(),
+                        maker_dashboard_state(),
                     ),
                 )
             v8_engine_events: list[tuple[str, Any]] = []
@@ -1781,6 +2065,7 @@ async def run_live(
                         v8_dashboard_state(),
                         orderbook_chase_dashboard_state(),
                         weighted_dashboard_state(),
+                        lead_dashboard_state(),
                     ),
                 )
             if chase_enabled:
@@ -1800,6 +2085,7 @@ async def run_live(
                             v8_dashboard_state(),
                             orderbook_chase_dashboard_state(),
                             weighted_dashboard_state(),
+                            lead_dashboard_state(),
                         ),
                     )
             if real_enabled:
@@ -1819,6 +2105,7 @@ async def run_live(
                             v8_dashboard_state(),
                             orderbook_chase_dashboard_state(),
                             weighted_dashboard_state(),
+                            lead_dashboard_state(),
                         ),
                     )
             if pair_input_changed:
@@ -1857,6 +2144,7 @@ async def run_live(
                         v8_dashboard_state(),
                         orderbook_chase_dashboard_state(),
                         weighted_dashboard_state(),
+                        lead_dashboard_state(),
                     ),
                 )
     finally:
@@ -1887,6 +2175,7 @@ async def run_live(
                         v8_dashboard_state(),
                         orderbook_chase_dashboard_state(),
                         weighted_dashboard_state(),
+                        lead_dashboard_state(),
                     ),
                 )
             summary = aggregate_engine_summaries(engines)
@@ -1920,5 +2209,7 @@ async def run_live(
             v8_registry.close()
             chase_registry.close()
             weighted_registry.close()
+            lead_registry.close()
+            maker_registry.close()
             real_registry.close()
     return output_dir

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from polybtc.config import AppConfig
@@ -7,22 +8,39 @@ from polybtc.market import (
     TWAP_RTDS_CANDIDATE_SOURCE,
     TWAP_RTDS_THRESHOLD_SOURCE,
     threshold_is_tradable,
+    twap_rtds_candidate_source,
+    twap_rtds_threshold_source,
 )
-from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot
+from polybtc.models import BookLevel, Direction, MarketState, OrderBookSnapshot, PriceTick
 from polybtc.runner import (
     THRESHOLD_FINALIZATION_DELAY,
     apply_polymarket_page_threshold,
+    book_loop,
     books_need_rest_refresh,
+    btc_signal_source_enabled,
     btc_v8_signal_source_enabled,
     coalesce_live_events,
     current_market_with_page_threshold,
+    emit_rest_books,
     live_book_payload,
+    maker_state_heartbeat_due,
+    polymarket_twap_price_loop,
     prefetch_next_market_threshold,
     should_keep_current_market,
     should_retry_threshold,
     should_publish_book_update,
     standard_entry_enabled,
 )
+
+
+class PartialRestBookClient:
+    def __init__(self, up_book: OrderBookSnapshot) -> None:
+        self.up_book = up_book
+
+    async def book(self, token_id: str) -> OrderBookSnapshot:
+        if token_id == "down":
+            raise TimeoutError("down leg timed out")
+        return self.up_book
 
 
 def market(now: datetime, threshold: float | None, end_delta: timedelta) -> MarketState:
@@ -75,6 +93,13 @@ def test_v8_pauses_standard_entry_for_every_asset() -> None:
     assert standard_entry_enabled(config, "ETH") is False
 
 
+def test_lead_prediction_pauses_standard_entry_for_every_asset() -> None:
+    config = AppConfig(btc_lead_prediction={"enabled": True})
+
+    assert standard_entry_enabled(config, "BTC") is False
+    assert standard_entry_enabled(config, "ETH") is False
+
+
 def test_v8_direction_mode_collects_spot_but_pauses_futures_signals() -> None:
     config = AppConfig(btc_v8={"enabled": True})
 
@@ -85,6 +110,25 @@ def test_v8_direction_mode_collects_spot_but_pauses_futures_signals() -> None:
 
     config.btc_v8.enabled = False
     assert btc_v8_signal_source_enabled(config, "binance") is False
+
+
+def test_lead_prediction_keeps_external_collectors_alive_without_v8() -> None:
+    config = AppConfig(
+        btc_v8={"enabled": False},
+        btc_lead_prediction={
+            "enabled": True,
+            "spot_sources": ["binance", "coinbase", "kraken"],
+            "futures_diagnostics_enabled": True,
+        },
+    )
+
+    assert btc_signal_source_enabled(config, "binance") is True
+    assert btc_signal_source_enabled(config, "coinbase") is True
+    assert btc_signal_source_enabled(config, "kraken") is True
+    assert btc_signal_source_enabled(config, "binance_futures") is True
+
+    config.btc_lead_prediction.futures_diagnostics_enabled = False
+    assert btc_signal_source_enabled(config, "binance_futures") is False
 
 
 def interval_market(start: datetime, *, condition_id: str = "m1", threshold: float | None = None) -> MarketState:
@@ -102,21 +146,27 @@ def interval_market(start: datetime, *, condition_id: str = "m1", threshold: flo
     )
 
 
-def direct_twap_market(start: datetime, price: float = 65031.38890253371) -> MarketState:
-    current = interval_market(start)
+def direct_twap_market(
+    start: datetime,
+    price: float = 65031.38890253371,
+    *,
+    twap_lookback_seconds: int = 30,
+    condition_id: str = "m1",
+) -> MarketState:
+    current = interval_market(start, condition_id=condition_id)
     current.raw = {
         "cryptoMarketConfig": {
             "twapEnabled": True,
-            "twapLookbackSeconds": 30,
+            "twapLookbackSeconds": twap_lookback_seconds,
         }
     }
     current.threshold_price = price
-    current.threshold_source = TWAP_RTDS_THRESHOLD_SOURCE
+    current.threshold_source = twap_rtds_threshold_source(twap_lookback_seconds)
     current.threshold_observed_at = start
     current.threshold_verified = True
     current.threshold_fetched_at = start + timedelta(seconds=1)
     current.threshold_candidate_price = price
-    current.threshold_candidate_source = TWAP_RTDS_CANDIDATE_SOURCE
+    current.threshold_candidate_source = twap_rtds_candidate_source(twap_lookback_seconds)
     current.threshold_candidate_observed_at = start
     current.threshold_candidate_received_at = start + timedelta(seconds=1)
     return current
@@ -337,6 +387,29 @@ def test_twap_page_confirmation_upgrades_fast_threshold_source() -> None:
     assert current.threshold_source == TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE
     assert current.threshold_verified is True
     assert current.threshold_fetched_at == start + timedelta(seconds=90)
+    assert threshold_is_tradable(current) is True
+
+
+def test_60_second_twap_page_confirmation_validates_matching_candidate() -> None:
+    start = datetime(2026, 8, 15, 1, 0, tzinfo=timezone.utc)
+    current = direct_twap_market(start, twap_lookback_seconds=60)
+
+    changed = asyncio.run(
+        apply_polymarket_page_threshold(
+            FakePolymarketClient(
+                price=65031.38890253371,
+                previous_close=65031.38890253371,
+                twap_lookback_seconds=60,
+            ),
+            current,
+            now=start + timedelta(seconds=90),
+        )
+    )
+
+    assert changed is True
+    assert current.threshold_source == TWAP_PAGE_VERIFIED_THRESHOLD_SOURCE
+    assert current.threshold_candidate_source == twap_rtds_candidate_source(60)
+    assert current.threshold_verified is True
     assert threshold_is_tradable(current) is True
 
 
@@ -815,6 +888,53 @@ def test_book_publication_is_immediate_on_top_change_and_rate_limited_otherwise(
     assert should_publish_book_update(previous, heartbeat, now) is True
 
 
+def test_maker_state_heartbeat_is_enabled_latest_state_only_and_rate_limited() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+
+    assert maker_state_heartbeat_due(
+        maker_enabled=True,
+        input_changed=True,
+        has_real_events=False,
+        now=now,
+        last_emitted_at=None,
+    ) is True
+    assert maker_state_heartbeat_due(
+        maker_enabled=False,
+        input_changed=True,
+        has_real_events=False,
+        now=now,
+        last_emitted_at=None,
+    ) is False
+    assert maker_state_heartbeat_due(
+        maker_enabled=True,
+        input_changed=False,
+        has_real_events=False,
+        now=now,
+        last_emitted_at=None,
+    ) is False
+    assert maker_state_heartbeat_due(
+        maker_enabled=True,
+        input_changed=True,
+        has_real_events=True,
+        now=now,
+        last_emitted_at=None,
+    ) is False
+    assert maker_state_heartbeat_due(
+        maker_enabled=True,
+        input_changed=True,
+        has_real_events=False,
+        now=now + timedelta(milliseconds=249),
+        last_emitted_at=now,
+    ) is False
+    assert maker_state_heartbeat_due(
+        maker_enabled=True,
+        input_changed=True,
+        has_real_events=False,
+        now=now + timedelta(milliseconds=250),
+        last_emitted_at=now,
+    ) is True
+
+
 def test_live_book_payload_keeps_only_top_levels_without_raw_depth() -> None:
     now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
     snapshot = OrderBookSnapshot(
@@ -862,7 +982,9 @@ def test_rest_book_fallback_only_runs_when_books_are_missing_or_stale() -> None:
     assert books_need_rest_refresh(engine, current_market, now) is True
     engine.books[Direction.UP].depth_trusted = True
 
-    engine.books[Direction.DOWN].received_at = now - timedelta(seconds=2)
+    engine.books[Direction.DOWN].received_at = now - timedelta(milliseconds=999)
+    assert books_need_rest_refresh(engine, current_market, now) is False
+    engine.books[Direction.DOWN].received_at = now - timedelta(seconds=1)
     assert books_need_rest_refresh(engine, current_market, now) is True
 
 
@@ -886,19 +1008,142 @@ def test_rest_book_reconciliation_runs_even_when_websocket_arrivals_are_fresh() 
 
     assert books_need_rest_refresh(engine, current_market, now, last_rest_refresh_at=now) is False
 
-    websocket_arrival = now + timedelta(milliseconds=400)
+    websocket_arrival = now + timedelta(milliseconds=4900)
     engine.books[Direction.UP].received_at = websocket_arrival
     engine.books[Direction.DOWN].received_at = websocket_arrival
 
     assert books_need_rest_refresh(
         engine,
         current_market,
-        now + timedelta(milliseconds=500),
+        now + timedelta(milliseconds=4999),
         last_rest_refresh_at=now,
     ) is False
     assert books_need_rest_refresh(
         engine,
         current_market,
-        now + timedelta(seconds=2),
+        now + timedelta(seconds=5),
         last_rest_refresh_at=now,
     ) is True
+
+
+def test_emit_rest_books_keeps_successful_leg_when_other_leg_fails() -> None:
+    now = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    current_market = market(now, threshold=64000, end_delta=timedelta(minutes=3))
+    up_book = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now,
+        depth_trusted=True,
+    )
+    queue: asyncio.Queue = asyncio.Queue()
+
+    asyncio.run(emit_rest_books(PartialRestBookClient(up_book), current_market, queue))
+
+    first_type, first_payload = queue.get_nowait()
+    assert first_type == "book"
+    assert first_payload == (Direction.UP, up_book)
+    second_type, second_payload = queue.get_nowait()
+    assert second_type == "error"
+    assert second_payload["source"] == "clob_rest_down"
+    assert "TimeoutError" in second_payload["error"]
+
+
+def test_book_loop_reconnects_when_active_market_stream_goes_silent(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    current_market = market(now, threshold=64000, end_delta=timedelta(minutes=3))
+    engine = PaperEngine(AppConfig())
+    engine.set_market(current_market)
+    first_book = OrderBookSnapshot(
+        token_id="up",
+        market_id="m1",
+        timestamp=now,
+        received_at=now,
+        depth_trusted=True,
+    )
+
+    class SilentAfterFirstClient:
+        def book_stream(self, token_ids):
+            async def events():
+                yield "up", first_book
+                await asyncio.sleep(3600)
+
+            return events()
+
+    monkeypatch.setattr("polybtc.runner.CLOB_WS_DATA_STALE_SECONDS", 0.05)
+
+    async def observe_reconnect() -> None:
+        queue: asyncio.Queue = asyncio.Queue()
+        task = asyncio.create_task(
+            book_loop(SilentAfterFirstClient(), engine, queue, poll_ms=10)
+        )
+        try:
+            event_type, payload = await asyncio.wait_for(queue.get(), timeout=0.5)
+            assert event_type == "book"
+            assert payload == (Direction.UP, first_book)
+            event_type, payload = await asyncio.wait_for(queue.get(), timeout=0.5)
+            assert event_type == "error"
+            assert payload["source"] == "clob_ws"
+            assert "market stream silent" in payload["error"]
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(observe_reconnect())
+
+
+def test_twap_loop_resubscribes_when_market_window_changes() -> None:
+    class SwitchingTwapClient:
+        def __init__(self) -> None:
+            self.subscribed_windows: list[int] = []
+            self.closed_windows: list[int] = []
+
+        async def rtds_twap_price_ticks(self, window_seconds: int = 30):
+            self.subscribed_windows.append(window_seconds)
+            try:
+                observed_at = datetime.now(timezone.utc)
+                yield PriceTick(
+                    source=f"polymarket_rtds_twap_{window_seconds}s",
+                    symbol="BTC/USD",
+                    price=65000 + window_seconds,
+                    exchange_timestamp=observed_at,
+                    received_at=observed_at,
+                )
+                await asyncio.Event().wait()
+            finally:
+                self.closed_windows.append(window_seconds)
+
+    async def exercise_switch() -> None:
+        start = datetime(2026, 8, 15, 1, 0, tzinfo=timezone.utc)
+        engine = PaperEngine(AppConfig())
+        engine.set_market(direct_twap_market(start, twap_lookback_seconds=30, condition_id="twap-30"))
+        client = SwitchingTwapClient()
+        queue: asyncio.Queue = asyncio.Queue()
+        task = asyncio.create_task(polymarket_twap_price_loop(client, engine, queue))
+        try:
+            event_type, first_tick = await asyncio.wait_for(queue.get(), timeout=1)
+            assert event_type == "polymarket_twap_tick"
+            assert first_tick.source == "polymarket_rtds_twap_30s"
+
+            engine.set_market(
+                direct_twap_market(
+                    start + timedelta(minutes=5),
+                    twap_lookback_seconds=60,
+                    condition_id="twap-60",
+                )
+            )
+            event_type, second_tick = await asyncio.wait_for(queue.get(), timeout=1)
+            assert event_type == "polymarket_twap_tick"
+            assert second_tick.source == "polymarket_rtds_twap_60s"
+            assert client.subscribed_windows[:2] == [30, 60]
+            assert 30 in client.closed_windows
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert 60 in client.closed_windows
+
+    asyncio.run(exercise_switch())

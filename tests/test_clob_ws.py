@@ -137,6 +137,50 @@ def test_clob_last_trade_price_is_forwarded_without_losing_book_depth() -> None:
     }
 
 
+def test_clob_consecutive_trade_prints_are_forwarded_in_wire_order() -> None:
+    books = {}
+    update_books_from_market_message(
+        {
+            "event_type": "book",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739400000,
+            "bids": [{"price": "0.48", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "12"}],
+        },
+        books,
+    )
+
+    updates = update_books_from_market_message(
+        [
+            {
+                "event_type": "last_trade_price",
+                "asset_id": "up",
+                "market": "m1",
+                "timestamp": 1783739401000,
+                "price": "0.48",
+                "size": "3",
+                "side": "SELL",
+            },
+            {
+                "event_type": "last_trade_price",
+                "asset_id": "up",
+                "market": "m1",
+                "timestamp": 1783739401001,
+                "price": "0.47",
+                "size": "4",
+                "side": "SELL",
+            },
+        ],
+        books,
+    )
+
+    assert len(updates) == 2
+    assert [item.raw["_last_trade"]["price"] for _, item in updates] == ["0.48", "0.47"]
+    assert updates[0][1].best_bid == 0.48
+    assert updates[1][1].best_ask == 0.52
+
+
 def test_clob_price_change_uses_authoritative_best_bid_and_ask() -> None:
     books = {}
     update_books_from_market_message(
@@ -267,6 +311,42 @@ def test_clob_market_updates_best_bid_ask_from_top_of_book_event() -> None:
     assert books["up"].best_bid == 0.49
     assert books["up"].best_ask == 0.51
     assert books["up"].depth_trusted is False
+
+
+def test_clob_tick_size_change_updates_cached_book_and_is_published() -> None:
+    books = {}
+    update_books_from_market_message(
+        {
+            "event_type": "book",
+            "asset_id": "up",
+            "market": "m1",
+            "timestamp": 1783739400000,
+            "bids": [{"price": "0.48", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "12"}],
+            "tick_size": "0.01",
+        },
+        books,
+    )
+    payload = {
+        "event_type": "tick_size_change",
+        "asset_id": "up",
+        "market": "m1",
+        "timestamp": 1783739401000,
+        "old_tick_size": "0.01",
+        "new_tick_size": "0.001",
+    }
+
+    updates = update_books_from_market_message(payload, books)
+
+    assert [token_id for token_id, _ in updates] == ["up"]
+    assert updates[0][1] is books["up"]
+    assert books["up"].tick_size == 0.001
+    assert books["up"].best_bid == 0.48
+    assert books["up"].best_ask == 0.52
+    assert books["up"].depth_trusted is True
+    assert books["up"].raw == {
+        "_tick_size_change": {key: value for key, value in payload.items() if key != "event_type"}
+    }
 
 
 def test_clob_best_bid_ask_can_seed_a_book_and_reject_stale_update() -> None:
@@ -507,3 +587,57 @@ def test_book_http_requests_reuse_successful_system_proxy_session(monkeypatch) -
     assert clients[0].kwargs["proxy"] == "http://127.0.0.1:7897"
     assert clients[0].calls == 2
     assert clients[0].closed is True
+
+
+def test_book_http_transient_preferred_route_failure_retries_next_cycle() -> None:
+    preferred = ("http://127.0.0.1:7897", False)
+    fallback = (None, False)
+
+    class FailingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.closed = False
+
+        async def get(self, *args, **kwargs):
+            self.calls += 1
+            raise RuntimeError("temporary proxy failure")
+
+        async def aclose(self):
+            self.closed = True
+
+    class UnexpectedFallbackClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("fallback must not run after one transient failure")
+
+        async def aclose(self):
+            return None
+
+    preferred_client = FailingClient()
+    fallback_client = UnexpectedFallbackClient()
+    polymarket = PolymarketClient(SourceConfig())
+    polymarket._book_http_route = preferred
+    polymarket._book_http_clients = {
+        preferred: preferred_client,
+        fallback: fallback_client,
+    }
+    polymarket._book_route_attempts = lambda: [preferred, fallback]
+
+    async def fail_once() -> None:
+        try:
+            await polymarket._book_response("up")
+        except RuntimeError as exc:
+            assert str(exc) == "temporary proxy failure"
+        else:
+            raise AssertionError("preferred route failure should be surfaced immediately")
+
+    asyncio.run(fail_once())
+
+    assert preferred_client.calls == 1
+    assert preferred_client.closed is True
+    assert fallback_client.calls == 0
+    assert polymarket._book_http_route == preferred
+    assert polymarket._book_http_route_failures == 1

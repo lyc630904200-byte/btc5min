@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from polybtc.clients import BinanceClient, PolymarketClient, parse_rtds_crypto_price_message
+from polybtc.clients import (
+    RTDS_HEARTBEAT_SECONDS,
+    BinanceClient,
+    PolymarketClient,
+    parse_rtds_crypto_price_message,
+    send_rtds_heartbeats,
+)
 from polybtc.config import AppConfig, SourceConfig
 from polybtc.engine import PaperEngine
 from polybtc.market import (
@@ -11,6 +17,8 @@ from polybtc.market import (
     TWAP_RTDS_THRESHOLD_SOURCE,
     threshold_is_tradable,
     threshold_needs_page_confirmation,
+    twap_rtds_candidate_source,
+    twap_rtds_threshold_source,
 )
 from polybtc.models import MarketState, PriceTick
 
@@ -210,6 +218,68 @@ def test_engine_accepts_exact_twap_boundary_tick_while_page_confirmation_is_pend
     assert engine.edge_correction_source() == "binance_minus_polymarket_twap_30s"
 
 
+def test_engine_accepts_only_current_60_second_twap_stream() -> None:
+    start = datetime(2026, 8, 15, 1, 0, tzinfo=timezone.utc)
+    engine = PaperEngine(AppConfig())
+    market = MarketState(
+        condition_id="twap-60-market",
+        slug=f"btc-updown-5m-{int(start.timestamp())}",
+        question="Bitcoin Up or Down",
+        threshold_price=None,
+        threshold_source="dynamic_start_price",
+        start_time=start,
+        end_time=start + timedelta(minutes=5),
+        up_token_id="up",
+        down_token_id="down",
+        raw={"cryptoMarketConfig": {"twapEnabled": True, "twapLookbackSeconds": 60}},
+    )
+    engine.set_market(market)
+
+    wrong_window_changed = engine.set_polymarket_twap_tick(
+        PriceTick(
+            source="polymarket_rtds_twap_30s",
+            symbol="BTC/USD",
+            price=65020,
+            exchange_timestamp=start,
+            received_at=start + timedelta(seconds=1),
+        )
+    )
+
+    assert wrong_window_changed is False
+    assert engine.polymarket_twap_tick is None
+    assert market.threshold_candidate_price is None
+
+    changed = engine.set_polymarket_twap_tick(
+        PriceTick(
+            source="polymarket_rtds_twap_60s",
+            symbol="BTC/USD",
+            price=65031.38890253371,
+            exchange_timestamp=start,
+            received_at=start + timedelta(seconds=1, milliseconds=250),
+        )
+    )
+
+    assert changed is True
+    assert market.threshold_price == 65031.38890253371
+    assert market.threshold_source == twap_rtds_threshold_source(60)
+    assert market.threshold_candidate_source == twap_rtds_candidate_source(60)
+    assert threshold_is_tradable(market) is True
+    assert threshold_needs_page_confirmation(market) is True
+    assert engine.settlement_price_tick() is engine.polymarket_twap_tick
+
+    engine.set_tick(
+        PriceTick(
+            source="binance",
+            symbol="BTCUSDT",
+            price=65080,
+            exchange_timestamp=start + timedelta(seconds=2),
+            received_at=start + timedelta(seconds=2),
+        )
+    )
+    assert engine.edge_correction_usd() == 65080 - 65031.38890253371
+    assert engine.edge_correction_source() == "binance_minus_polymarket_twap_60s"
+
+
 def test_twap_market_does_not_fall_back_to_chainlink_point_price() -> None:
     start = datetime(2026, 8, 7, 12, 10, tzinfo=timezone.utc)
     engine = PaperEngine(AppConfig())
@@ -286,6 +356,95 @@ def test_parse_rtds_crypto_price_message_ignores_heartbeats() -> None:
     ticks = parse_rtds_crypto_price_message("PONG")
 
     assert ticks == []
+
+
+def test_rtds_application_heartbeat_sends_ping_every_five_seconds(monkeypatch) -> None:
+    real_sleep = asyncio.sleep
+    sleep_delays = []
+    sent_messages = []
+    parked = asyncio.Event()
+
+    async def fake_sleep(delay):
+        sleep_delays.append(delay)
+        if len(sleep_delays) > 1:
+            await parked.wait()
+
+    class Socket:
+        async def send(self, message):
+            sent_messages.append(message)
+
+    monkeypatch.setattr("polybtc.clients.asyncio.sleep", fake_sleep)
+
+    async def exercise_heartbeat() -> None:
+        task = asyncio.create_task(send_rtds_heartbeats(Socket()))
+        try:
+            await real_sleep(0)
+            assert sleep_delays[:2] == [RTDS_HEARTBEAT_SECONDS, RTDS_HEARTBEAT_SECONDS]
+            assert RTDS_HEARTBEAT_SECONDS == 5
+            assert sent_messages == ["PING"]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert task.cancelled()
+
+    asyncio.run(exercise_heartbeat())
+
+
+def test_rtds_stream_cancels_heartbeat_when_closed(monkeypatch) -> None:
+    heartbeat_started = asyncio.Event()
+    heartbeat_cancelled = asyncio.Event()
+
+    class Socket:
+        def __init__(self):
+            self.sent_messages = []
+            self.delivered_tick = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def send(self, message):
+            self.sent_messages.append(message)
+
+        async def recv(self):
+            if not self.delivered_tick:
+                self.delivered_tick = True
+                return {
+                    "topic": "crypto_prices_chainlink",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "timestamp": 1783739400000,
+                        "value": 65000,
+                    },
+                }
+            await asyncio.Event().wait()
+
+    socket = Socket()
+
+    async def fake_heartbeat(websocket):
+        assert websocket is socket
+        heartbeat_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            heartbeat_cancelled.set()
+
+    monkeypatch.setattr("polybtc.clients.websockets.connect", lambda *args, **kwargs: socket)
+    monkeypatch.setattr("polybtc.clients.send_rtds_heartbeats", fake_heartbeat)
+
+    async def receive_then_close() -> None:
+        stream = PolymarketClient(SourceConfig(proxy_url=None)).rtds_crypto_price_ticks()
+        try:
+            tick = await anext(stream)
+            assert tick.price == 65000
+            await heartbeat_started.wait()
+        finally:
+            await stream.aclose()
+        assert heartbeat_cancelled.is_set()
+
+    asyncio.run(receive_then_close())
 
 
 def test_rtds_connection_restarts_after_no_valid_tick(monkeypatch) -> None:

@@ -483,9 +483,16 @@ class ClobLatencyProbe:
             if isinstance(exc, httpx.PoolTimeout):
                 await self._replace_client()
 
+    def sampling_enabled(self) -> bool:
+        return bool(
+            self.config.orderbook_chase.enabled
+            or self.config.btc_weighted.enabled
+            or self.config.btc_lead_prediction.enabled
+        )
+
     async def run(self) -> None:
         while True:
-            if self.config.orderbook_chase.enabled or self.config.btc_weighted.enabled:
+            if self.sampling_enabled():
                 await self.sample()
             await asyncio.sleep(self.config.orderbook_chase.latency_probe_interval_seconds)
 

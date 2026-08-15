@@ -1,7 +1,18 @@
 from datetime import datetime, timedelta, timezone
 
 from polybtc.config import SourceConfig
-from polybtc.market import asset_from_slug, choose_current_market, market_interval_from_slug, parse_market
+from polybtc.market import (
+    TWAP_RTDS_CANDIDATE_SOURCE,
+    TWAP_RTDS_THRESHOLD_SOURCE,
+    asset_from_slug,
+    choose_current_market,
+    market_interval_from_slug,
+    parse_market,
+    supported_market_twap_lookback_seconds,
+    twap_rtds_candidate_source,
+    twap_rtds_threshold_source,
+    twap_rtds_tick_source,
+)
 from polybtc.models import MarketState
 
 
@@ -211,6 +222,28 @@ def test_parse_market_rejects_slug_and_explicit_start_conflict() -> None:
     }
 
     assert parse_market(payload, SourceConfig(), now=start) is None
+
+
+def test_twap_source_names_support_60_seconds_and_keep_30_second_aliases() -> None:
+    start = datetime(2026, 8, 15, 1, 0, tzinfo=timezone.utc)
+    market = MarketState(
+        condition_id="twap-60",
+        slug=f"btc-updown-5m-{int(start.timestamp())}",
+        question="Bitcoin Up or Down",
+        threshold_price=None,
+        start_time=start,
+        end_time=start + timedelta(minutes=5),
+        up_token_id="up",
+        down_token_id="down",
+        raw={"cryptoMarketConfig": {"twapEnabled": True, "twapLookbackSeconds": 60}},
+    )
+
+    assert TWAP_RTDS_CANDIDATE_SOURCE == twap_rtds_candidate_source(30)
+    assert TWAP_RTDS_THRESHOLD_SOURCE == twap_rtds_threshold_source(30)
+    assert supported_market_twap_lookback_seconds(market) == 60
+    assert twap_rtds_tick_source(60) == "polymarket_rtds_twap_60s"
+    assert twap_rtds_candidate_source(60) == "polymarket_rtds_twap_60s_start_tick"
+    assert twap_rtds_threshold_source(60) == "polymarket_rtds_twap_60s_verified_open_price"
 
 
 def test_choose_current_market_never_selects_future_and_switches_at_boundary() -> None:

@@ -3,6 +3,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +13,91 @@ from polybtc.btc_v8 import BtcV8Engine, BtcV8Registry
 from polybtc.config import AppConfig
 from polybtc.dashboard import DashboardHub, DashboardRequestHandler
 from polybtc.models import MarketState
+
+
+def test_maker_page_and_shadow_controls_are_exposed() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="assetMAKER"' in html
+    assert 'id="makerForm"' in html
+    assert 'id="makerOpenQuotes"' in html
+    assert 'id="makerCurrentGroup"' in html
+    assert 'id="makerHistory"' in html
+    assert "fetch(`/api/btc-maker-arbitrage/${action}`" in html
+    assert 'id="makerMode"' not in html
+
+
+def test_dashboard_frontend_has_a_lightweight_market_data_lane() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "state?.type === 'market_data'" in html
+    assert "function applyMarketDataMessage(message)" in html
+    assert "function scheduleMarketRender()" in html
+    assert "function renderFastMarketData(aggregate)" in html
+    assert "sequence <= lastMarketDataSequence" in html
+
+
+def test_dashboard_static_html_declares_utf8_content_type(tmp_path) -> None:
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+    handler = type(
+        "TestUtf8DashboardRequestHandler",
+        (DashboardRequestHandler,),
+        {"hub": hub},
+    )
+    web_dir = Path(__file__).resolve().parents[1] / "web"
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(handler, directory=str(web_dir))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/", timeout=2
+        ) as response:
+            assert response.headers.get_content_type() == "text/html"
+            assert response.headers.get_content_charset() == "utf-8"
+            html = response.read().decode("utf-8")
+            assert "BTC Maker套利" in html
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_maker_runtime_config_is_forced_shadow_only_and_leaves_real_disabled(tmp_path) -> None:
+    hub = DashboardHub(
+        "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
+    )
+
+    response = hub.set_runtime_config(
+        {
+            "btc_maker_arbitrage": {
+                "enabled": True,
+                "mode": "REAL",
+                "quantity_per_leg": 7,
+                "min_locked_profit_cents": 3,
+            }
+        }
+    )
+
+    assert response["pending_btc_maker_arbitrage"]["enabled"] is True
+    assert response["pending_btc_maker_arbitrage"]["mode"] == "SHADOW_ONLY"
+    assert response["pending_btc_maker_arbitrage"]["quantity_per_leg"] == 7
+    assert response["pending_real_trading"]["enabled"] is False
+    assert hub.config.real_trading.enabled is False
+
+    assert hub.request_btc_maker_control("pause") == {
+        "accepted": True,
+        "command": "pause",
+        "mode": "SHADOW_ONLY",
+    }
+    assert hub.control_commands.get_nowait()[0] == "btc_maker_pause"
 
 
 def test_recovery_orders_table_uses_merged_order_columns() -> None:
@@ -64,9 +150,32 @@ def test_weighted_dashboard_exposes_independent_shadow_strategy_views() -> None:
     assert 'id="weightedGates"' in html
     assert 'id="weightedAttempts"' in html
     assert 'id="weightedPositions"' in html
+    assert 'id="weightedConfigVersion"' in html
+    assert 'id="weightedRiskState"' in html
+    assert 'id="weightedCurrentSegment"' in html
+    assert 'id="weightedSegmentStates"' in html
+    assert 'id="weightedEarlyEnabled"' in html
+    assert 'id="weightedReversalSequence"' in html
+    assert 'id="weightedReversalState"' in html
+    assert 'id="weightedReversalDirections"' in html
+    assert 'id="weightedReversalNext"' in html
+    assert 'id="weightedEarlyDuration"' in html
+    assert 'id="weightedEarlyQuote"' in html
+    assert 'id="weightedMiddleEnabled"' in html
+    assert 'id="weightedMiddleDuration"' in html
+    assert 'id="weightedMiddleQuote"' in html
+    assert 'id="weightedLateEnabled"' in html
+    assert 'id="weightedLateDuration"' in html
+    assert 'id="weightedLateQuote"' in html
+    assert 'id="weightedQuote"' not in html
+    assert 'id="weightedMaxEntries"' not in html
+    assert 'id="weightedEntryStart"' in html
+    assert 'id="weightedWarmupSeconds"' in html
+    assert 'id="weightedMinExitPrice"' in html
+    assert 'id="weightedRiskPause"' in html
     assert html.count("<th>信号时间</th>") == 2
-    assert html.count('class="weighted-lane-column">Observed 对照</th>') == 2
-    assert html.count('class="weighted-lane-column">P95 对照</th>') == 2
+    assert html.count('class="weighted-lane-column">Observed 对照</th>') == 4
+    assert html.count('class="weighted-lane-column">P95 对照</th>') == 4
     assert "function groupWeightedAttempts(attempts)" in html
     assert "function groupWeightedPositions(positions, attemptGroups)" in html
     assert "function fmtWeightedDateTime(value)" in html
@@ -77,7 +186,37 @@ def test_weighted_dashboard_exposes_independent_shadow_strategy_views() -> None:
     assert "gap_velocity_3s: '价差3秒速度'" in html
     assert "book_acceleration_3s: '盘口加速度'" in html
     assert "gap_acceleration_3s: '价差加速度'" in html
+    assert "entry_start_seconds_after_open: 'weightedEntryStart'" in html
+    assert "score_exit_end_seconds_after_open: 'weightedExitEnd'" in html
+    assert "risk_pause_enabled: $('weightedRiskPause').checked" in html
+    assert "reversal_sequence_enabled: $('weightedReversalSequence').checked" in html
+    assert "entry_segments: entrySegments" in html
+    assert "if (segmentSeconds !== 300)" in html
+    assert "$(inputs.duration).disabled = reversalSequenceEnabled || !enabled;" in html
+    assert "$(inputs.quote).disabled = !enabled;" in html
+    assert "enabled: $(inputs.enabled).checked" in html
+    assert "function weightedSegmentLabel(segment, quote = null)" in html
+    assert "const diagnostic = gate.blocking === false;" in html
+    assert "function weightedGateValue(value)" in html
     assert "showWeightedSaveFeedback('保存中...', '', 0);" in html
+
+
+def test_lead_dashboard_groups_observed_and_p95_orders_and_positions() -> None:
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert '<span id="leadPositionCount">0</span>' in html
+    assert "function groupLeadAttempts(attempts)" in html
+    assert "function groupLeadPositions(positions, attemptGroups)" in html
+    assert "function leadAttemptLaneHtml(attempt)" in html
+    assert "function leadPositionLaneHtml(position)" in html
+    assert "const attemptGroups = groupLeadAttempts(attempts);" in html
+    assert "const positionGroups = groupLeadPositions(positions, attemptGroups);" in html
+    assert "`${attemptGroups.length}组 / ${attempts.length}轨`" in html
+    assert "`${positionGroups.length}组 / ${positions.length}轨`" in html
+    assert '<th>订单组</th>' in html
+    assert '<th>仓位组</th>' in html
     assert "showWeightedSaveFeedback('已保存', 'success');" in html
     assert "showWeightedSaveFeedback('保存失败', 'error');" in html
     assert "btc_weighted: {" in html
@@ -295,10 +434,14 @@ def test_dashboard_keeps_global_history_out_of_asset_snapshots() -> None:
     assert len(body) < 500_000
 
 
-def test_dashboard_throttles_frequent_book_snapshots() -> None:
+def test_dashboard_streams_lightweight_book_data_while_throttling_full_snapshots() -> None:
     hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
     last_push_at = datetime.now(timezone.utc)
     hub.last_push_at = last_push_at
+    queued: list[tuple[bool, dict]] = []
+    hub._enqueue_client_message = lambda message, *, market_data: queued.append(  # type: ignore[method-assign]
+        (market_data, json.loads(message))
+    )
 
     asyncio.run(
         hub.publish(
@@ -319,6 +462,64 @@ def test_dashboard_throttles_frequent_book_snapshots() -> None:
 
     assert hub.last_push_at == last_push_at
     assert hub.latest["event"]["type"] == "book"
+    assert len(queued) == 1
+    assert queued[0][0] is True
+    assert queued[0][1]["type"] == "market_data"
+    assert queued[0][1]["asset"] == "BTC"
+    assert queued[0][1]["sequence"] == 1
+    assert queued[0][1]["data"]["books"] == {}
+
+
+def test_dashboard_slow_client_does_not_block_publish() -> None:
+    class SlowClient:
+        async def send(self, _message: str) -> None:
+            await asyncio.Event().wait()
+
+    async def scenario() -> None:
+        hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+        client = SlowClient()
+        hub._register_client(client, "{}")
+        try:
+            await asyncio.wait_for(
+                hub.publish(
+                    {
+                        "asset": "BTC",
+                        "event": {"type": "book", "payload": {}},
+                        "books": {},
+                    }
+                ),
+                timeout=0.05,
+            )
+            assert client in hub.clients
+            assert client in hub._client_pending_full or client in hub._client_pending_market
+        finally:
+            await hub._unregister_client(client)
+
+    asyncio.run(scenario())
+
+
+def test_dashboard_client_market_queue_is_latest_only() -> None:
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def send(self, message: str) -> None:
+            self.messages.append(message)
+
+    async def scenario() -> None:
+        hub = DashboardHub("127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig())
+        client = RecordingClient()
+        hub._register_client(client, '{"type":"snapshot"}')
+        hub._enqueue_client_message('{"sequence":1}', market_data=True)
+        hub._enqueue_client_message('{"sequence":2}', market_data=True)
+        hub._enqueue_client_message('{"sequence":3}', market_data=True)
+        await asyncio.sleep(0.01)
+        try:
+            assert client.messages == ['{"type":"snapshot"}', '{"sequence":3}']
+        finally:
+            await hub._unregister_client(client)
+
+    asyncio.run(scenario())
 
 
 def test_recent_events_keep_only_fills() -> None:
@@ -731,9 +932,18 @@ def test_btc_weighted_config_is_independent_and_activates_next_btc_market(tmp_pa
         {
             "btc_weighted": {
                 "enabled": True,
+                "reversal_sequence_enabled": True,
+                "entry_segments": [
+                    {"id": "early", "enabled": False, "duration_seconds": 70, "quote_amount_usd": 1.25},
+                    {"id": "middle", "enabled": True, "duration_seconds": 150, "quote_amount_usd": 3.5},
+                    {"id": "late", "enabled": True, "duration_seconds": 80, "quote_amount_usd": 5.75},
+                ],
                 "entry_score_threshold": 72,
                 "book_std_floor_cents": 0.75,
                 "gap_std_floor_bps": 0.2,
+                "entry_start_seconds_after_open": 12,
+                "min_score_exit_price_cents": 30,
+                "risk_pause_enabled": False,
             }
         }
     )
@@ -741,7 +951,16 @@ def test_btc_weighted_config_is_independent_and_activates_next_btc_market(tmp_pa
     assert response["config_status"] == "pending_next_btc_market"
     assert response["btc_weighted"]["enabled"] is False
     assert response["pending_btc_weighted"]["enabled"] is True
+    assert response["pending_btc_weighted"]["reversal_sequence_enabled"] is True
+    assert response["pending_btc_weighted"]["entry_segments"] == [
+        {"id": "early", "enabled": False, "duration_seconds": 70, "quote_amount_usd": 1.25},
+        {"id": "middle", "enabled": True, "duration_seconds": 150, "quote_amount_usd": 3.5},
+        {"id": "late", "enabled": True, "duration_seconds": 80, "quote_amount_usd": 5.75},
+    ]
     assert response["pending_btc_weighted"]["entry_score_threshold"] == 72.0
+    assert response["pending_btc_weighted"]["entry_start_seconds_after_open"] == 12.0
+    assert response["pending_btc_weighted"]["min_score_exit_price_cents"] == 30.0
+    assert response["pending_btc_weighted"]["risk_pause_enabled"] is False
     assert response["pending_btc_v8"]["enabled"] is True
 
     new_start, new_end = "2026-08-09T00:05:00Z", "2026-08-09T00:10:00Z"
@@ -754,9 +973,20 @@ def test_btc_weighted_config_is_independent_and_activates_next_btc_market(tmp_pa
         "127.0.0.1", 8765, "127.0.0.1", 8766, AppConfig(data_dir=tmp_path)
     )
     assert reloaded.config.btc_weighted.enabled is True
+    assert reloaded.config.btc_weighted.reversal_sequence_enabled is True
+    assert [
+        segment.model_dump() for segment in reloaded.config.btc_weighted.entry_segments
+    ] == [
+        {"id": "early", "enabled": False, "duration_seconds": 70, "quote_amount_usd": 1.25},
+        {"id": "middle", "enabled": True, "duration_seconds": 150, "quote_amount_usd": 3.5},
+        {"id": "late", "enabled": True, "duration_seconds": 80, "quote_amount_usd": 5.75},
+    ]
     assert reloaded.config.btc_weighted.entry_score_threshold == 72.0
     assert reloaded.config.btc_weighted.book_std_floor_cents == 0.75
     assert reloaded.config.btc_weighted.gap_std_floor_bps == 0.2
+    assert reloaded.config.btc_weighted.entry_start_seconds_after_open == 12.0
+    assert reloaded.config.btc_weighted.min_score_exit_price_cents == 30.0
+    assert reloaded.config.btc_weighted.risk_pause_enabled is False
     assert reloaded.config.btc_v8.enabled is True
 
 

@@ -24,6 +24,43 @@ from .runner import run_live
 DASHBOARD_SEND_TIMEOUT_SECONDS = 1.0
 DASHBOARD_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 LIVE_RESTART_DELAY_SECONDS = 1.0
+FAST_MARKET_EVENT_TYPES = frozenset(
+    {"tick", "polymarket_tick", "polymarket_twap_tick", "book"}
+)
+FREQUENT_FULL_EVENT_TYPES = FAST_MARKET_EVENT_TYPES | {"pair_state", "btc_maker_state"}
+GLOBAL_STATE_FIELDS = (
+    "pair_match",
+    "btc_recovery",
+    "btc_dynamic",
+    "btc_weighted",
+    "btc_lead_prediction",
+    "btc_maker_arbitrage",
+    "btc_v8",
+    "orderbook_chase",
+    "real_trading",
+)
+EVENT_GLOBAL_STATE_PREFIXES = (
+    ("pair_", "pair_match"),
+    ("btc_recovery_", "btc_recovery"),
+    ("btc_dynamic_", "btc_dynamic"),
+    ("btc_weighted_", "btc_weighted"),
+    ("btc_lead_", "btc_lead_prediction"),
+    ("btc_maker_", "btc_maker_arbitrage"),
+    ("btc_v8_", "btc_v8"),
+    ("orderbook_chase_", "orderbook_chase"),
+    ("real_trading_", "real_trading"),
+)
+MARKET_DATA_FIELDS = (
+    "created_at",
+    "market",
+    "tick",
+    "polymarket_tick",
+    "polymarket_twap_tick",
+    "settlement_tick",
+    "books",
+    "open_position",
+    "strategy",
+)
 
 
 class DashboardHub:
@@ -99,11 +136,66 @@ class DashboardHub:
                 "scores": {"UP": None, "DOWN": None},
                 "components": {"UP": {}, "DOWN": {}},
                 "weights": {},
+                "entry_segments": {
+                    "active_id": None,
+                    "elapsed_seconds": 0.0,
+                    "segments": [],
+                },
+                "reversal_sequence": {
+                    "enabled": self.config.btc_weighted.reversal_sequence_enabled,
+                    "state": "time_segments",
+                    "current_leader": None,
+                    "last_entry_direction": None,
+                    "recognized_direction": None,
+                    "next_segment_id": None,
+                    "next_quote_amount_usd": None,
+                    "completed_entries": 0,
+                    "remaining_enabled_segments": [],
+                },
                 "confirmations": {},
                 "positions": [],
                 "recent_attempts": [],
                 "recent_positions": [],
                 "score_history": [],
+                "summary": {},
+            },
+            "btc_lead_prediction": {
+                "mode": "SHADOW_ONLY",
+                "enabled": self.config.btc_lead_prediction.enabled,
+                "status": "starting",
+                "last_reason": "starting",
+                "config": self.config.btc_lead_prediction.model_dump(mode="json"),
+                "round": None,
+                "sources": {},
+                "exchange_weights": {},
+                "external_index": None,
+                "twap_projection": {},
+                "book_projection": {"UP": {}, "DOWN": {}},
+                "active_shock": None,
+                "confirmation": {},
+                "positions": [],
+                "recent_attempts": [],
+                "recent_positions": [],
+                "prediction_history": [],
+                "summary": {},
+                "risk_status": {},
+            },
+            "btc_maker_arbitrage": {
+                "mode": "SHADOW_ONLY",
+                "enabled": self.config.btc_maker_arbitrage.enabled,
+                "status": "starting",
+                "last_reason": "starting",
+                "paused": False,
+                "config": self.config.btc_maker_arbitrage.model_dump(mode="json"),
+                "market": None,
+                "books": {},
+                "trade_stream": {},
+                "opportunity": {},
+                "current_quotes": [],
+                "current_group": None,
+                "recent_groups": [],
+                "recent_quotes": [],
+                "recent_fills": [],
                 "summary": {},
             },
             "btc_v8": {
@@ -169,6 +261,8 @@ class DashboardHub:
         self.btc_recovery_state = self.latest["btc_recovery"]
         self.btc_dynamic_state = self.latest["btc_dynamic"]
         self.btc_weighted_state = self.latest["btc_weighted"]
+        self.btc_lead_prediction_state = self.latest["btc_lead_prediction"]
+        self.btc_maker_arbitrage_state = self.latest["btc_maker_arbitrage"]
         self.btc_v8_state = self.latest["btc_v8"]
         self.orderbook_chase_state = self.latest["orderbook_chase"]
         self.real_trading_state = self.latest["real_trading"]
@@ -179,6 +273,12 @@ class DashboardHub:
         self.asset_snapshots: dict[str, dict[str, Any]] = {}
         self.clients: set[Any] = set()
         self.lock = asyncio.Lock()
+        self.market_data_sequence = 0
+        self.state_data_sequence = 0
+        self._client_send_events: dict[Any, asyncio.Event] = {}
+        self._client_pending_full: dict[Any, dict[str, tuple[int, str]]] = {}
+        self._client_pending_market: dict[Any, str] = {}
+        self._client_sender_tasks: dict[Any, asyncio.Task[None]] = {}
 
     def _enforce_v8_exclusivity(self) -> None:
         changed = False
@@ -306,6 +406,15 @@ class DashboardHub:
             "btc_weighted_position",
             "btc_weighted_round",
             "btc_weighted_settlement",
+            "btc_lead_attempt",
+            "btc_lead_position",
+            "btc_lead_round",
+            "btc_lead_shock",
+            "btc_lead_settlement",
+            "btc_maker_state",
+            "btc_maker_quote",
+            "btc_maker_fill",
+            "btc_maker_group",
             "btc_v8_trade",
             "btc_v8_round",
             "btc_v8_settlement",
@@ -372,6 +481,138 @@ class DashboardHub:
         payload["risk"] = {**self.config_json()["risk"], **(payload.get("risk") or {})}
         return payload
 
+    def market_data_json(self, asset: str, snapshot: dict[str, Any]) -> str:
+        """Serialize the small, loss-tolerant lane used for live prices and top of book."""
+        self.market_data_sequence += 1
+        data = {
+            field: snapshot.get(field)
+            for field in MARKET_DATA_FIELDS
+            if field in snapshot
+        }
+        return orjson.dumps(
+            {
+                "type": "market_data",
+                "sequence": self.market_data_sequence,
+                "asset": asset,
+                "server_enqueued_at": datetime.now(timezone.utc).isoformat(),
+                "data": data,
+            }
+        ).decode("utf-8")
+
+    def global_state_fields_for_event(self, event_type: str | None) -> tuple[str, ...]:
+        if event_type in {"market", "summary"}:
+            return GLOBAL_STATE_FIELDS
+        for prefix, field in EVENT_GLOBAL_STATE_PREFIXES:
+            if event_type and event_type.startswith(prefix):
+                return (field,)
+        return ()
+
+    def global_state_value(self, field: str) -> dict[str, Any]:
+        return getattr(self, f"{field}_state")
+
+    def state_data_json(
+        self,
+        asset: str,
+        snapshot: dict[str, Any],
+        event_type: str | None,
+    ) -> tuple[int, str, str]:
+        """Serialize a compact state patch; the full aggregate remains server-side."""
+        self.state_data_sequence += 1
+        sequence = self.state_data_sequence
+        fields = self.global_state_fields_for_event(event_type)
+        data = dict(snapshot)
+        data.pop("ws_url", None)
+        globals_patch = {field: self.global_state_value(field) for field in fields}
+        state_key = "+".join(fields) if fields else f"asset:{asset}"
+        message = orjson.dumps(
+            {
+                "type": "state_data",
+                "sequence": sequence,
+                "asset": asset,
+                "event_type": event_type,
+                "server_enqueued_at": datetime.now(timezone.utc).isoformat(),
+                "data": data,
+                "globals": globals_patch,
+            }
+        ).decode("utf-8")
+        return sequence, state_key, message
+
+    async def _send_client_message(self, client: Any, message: str) -> None:
+        await asyncio.wait_for(
+            client.send(message),
+            timeout=DASHBOARD_SEND_TIMEOUT_SECONDS,
+        )
+
+    def _drop_client_state(self, client: Any) -> None:
+        self.clients.discard(client)
+        self._client_send_events.pop(client, None)
+        self._client_pending_full.pop(client, None)
+        self._client_pending_market.pop(client, None)
+        self._client_sender_tasks.pop(client, None)
+
+    async def _client_sender(self, client: Any, initial_message: str) -> None:
+        """Keep network backpressure out of the market-data consumer loop.
+
+        Full dashboard state and market data each have one latest-only slot.  A
+        slow browser therefore consumes bounded memory and catches up to the
+        newest quote instead of making the runner wait behind stale frames.
+        """
+        try:
+            await self._send_client_message(client, initial_message)
+            while client in self.clients:
+                wakeup = self._client_send_events.get(client)
+                if wakeup is None:
+                    return
+                await wakeup.wait()
+                wakeup.clear()
+                state_messages = self._client_pending_full.pop(client, {})
+                market_message = self._client_pending_market.pop(client, None)
+                for _, state_message in sorted(state_messages.values(), key=lambda item: item[0]):
+                    await self._send_client_message(client, state_message)
+                if market_message is not None:
+                    await self._send_client_message(client, market_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        finally:
+            self._drop_client_state(client)
+
+    def _register_client(self, client: Any, initial_message: str) -> None:
+        self.clients.add(client)
+        self._client_send_events[client] = asyncio.Event()
+        self._client_sender_tasks[client] = asyncio.create_task(
+            self._client_sender(client, initial_message)
+        )
+
+    async def _unregister_client(self, client: Any) -> None:
+        task = self._client_sender_tasks.get(client)
+        self._drop_client_state(client)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    def _enqueue_client_message(self, message: str, *, market_data: bool) -> None:
+        for client in tuple(self.clients):
+            wakeup = self._client_send_events.get(client)
+            if wakeup is None:
+                continue
+            if market_data:
+                self._client_pending_market[client] = message
+            else:
+                self._client_pending_full.setdefault(client, {})["state"] = (0, message)
+            wakeup.set()
+
+    def _enqueue_client_state_message(self, message: str, *, state_key: str, sequence: int) -> None:
+        for client in tuple(self.clients):
+            wakeup = self._client_send_events.get(client)
+            if wakeup is None:
+                continue
+            # One latest-only slot per fixed global module (or asset-only patch)
+            # keeps memory bounded without losing unrelated strategy updates.
+            self._client_pending_full.setdefault(client, {})[state_key] = (sequence, message)
+            wakeup.set()
+
     def config_json(self) -> dict[str, Any]:
         strategy = self.config.strategy
         risk = self.config.risk
@@ -399,6 +640,8 @@ class DashboardHub:
             "btc_recovery": self.config.btc_recovery.model_dump(mode="json"),
             "btc_dynamic": self.config.btc_dynamic.model_dump(mode="json"),
             "btc_weighted": self.config.btc_weighted.model_dump(mode="json"),
+            "btc_lead_prediction": self.config.btc_lead_prediction.model_dump(mode="json"),
+            "btc_maker_arbitrage": self.config.btc_maker_arbitrage.model_dump(mode="json"),
             "btc_v8": self.config.btc_v8.model_dump(mode="json"),
             "orderbook_chase": self.config.orderbook_chase.model_dump(mode="json"),
             "real_trading": self.config.real_trading.model_dump(mode="json"),
@@ -420,6 +663,8 @@ class DashboardHub:
             "pending_btc_recovery": pending.get("btc_recovery"),
             "pending_btc_dynamic": pending.get("btc_dynamic"),
             "pending_btc_weighted": pending.get("btc_weighted"),
+            "pending_btc_lead_prediction": pending.get("btc_lead_prediction"),
+            "pending_btc_maker_arbitrage": pending.get("btc_maker_arbitrage"),
             "pending_btc_v8": pending.get("btc_v8"),
             "pending_orderbook_chase": pending.get("orderbook_chase"),
             "pending_real_trading": pending.get("real_trading"),
@@ -448,6 +693,10 @@ class DashboardHub:
                 dynamic_payload.update(active.get("btc_dynamic") or {})
                 weighted_payload = self.config.btc_weighted.model_dump()
                 weighted_payload.update(active.get("btc_weighted") or {})
+                lead_payload = self.config.btc_lead_prediction.model_dump()
+                lead_payload.update(active.get("btc_lead_prediction") or {})
+                maker_payload = self.config.btc_maker_arbitrage.model_dump()
+                maker_payload.update(active.get("btc_maker_arbitrage") or {})
                 v8_payload = self.config.btc_v8.model_dump()
                 v8_payload.update(active.get("btc_v8") or {})
                 chase_payload = self.config.orderbook_chase.model_dump()
@@ -460,6 +709,12 @@ class DashboardHub:
                 btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
                 btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
                 btc_weighted = type(self.config.btc_weighted).model_validate(weighted_payload)
+                btc_lead_prediction = type(self.config.btc_lead_prediction).model_validate(
+                    lead_payload
+                )
+                btc_maker_arbitrage = type(self.config.btc_maker_arbitrage).model_validate(
+                    maker_payload
+                )
                 btc_v8 = type(self.config.btc_v8).model_validate(v8_payload)
                 orderbook_chase = type(self.config.orderbook_chase).model_validate(
                     chase_payload
@@ -474,6 +729,8 @@ class DashboardHub:
                 self.config.btc_recovery = btc_recovery
                 self.config.btc_dynamic = btc_dynamic
                 self.config.btc_weighted = btc_weighted
+                self.config.btc_lead_prediction = btc_lead_prediction
+                self.config.btc_maker_arbitrage = btc_maker_arbitrage
                 self.config.btc_v8 = btc_v8
                 self.config.orderbook_chase = orderbook_chase
                 self.config.real_trading = real_trading
@@ -493,6 +750,10 @@ class DashboardHub:
                 dynamic_payload.update(pending.get("btc_dynamic") or {})
                 weighted_payload = self.config.btc_weighted.model_dump()
                 weighted_payload.update(pending.get("btc_weighted") or {})
+                lead_payload = self.config.btc_lead_prediction.model_dump()
+                lead_payload.update(pending.get("btc_lead_prediction") or {})
+                maker_payload = self.config.btc_maker_arbitrage.model_dump()
+                maker_payload.update(pending.get("btc_maker_arbitrage") or {})
                 v8_payload = self.config.btc_v8.model_dump()
                 v8_payload.update(pending.get("btc_v8") or {})
                 chase_payload = self.config.orderbook_chase.model_dump()
@@ -505,6 +766,12 @@ class DashboardHub:
                 btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
                 btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
                 btc_weighted = type(self.config.btc_weighted).model_validate(weighted_payload)
+                btc_lead_prediction = type(self.config.btc_lead_prediction).model_validate(
+                    lead_payload
+                )
+                btc_maker_arbitrage = type(self.config.btc_maker_arbitrage).model_validate(
+                    maker_payload
+                )
                 btc_v8 = type(self.config.btc_v8).model_validate(v8_payload)
                 orderbook_chase = type(self.config.orderbook_chase).model_validate(
                     chase_payload
@@ -519,6 +786,8 @@ class DashboardHub:
                 "btc_recovery": btc_recovery.model_dump(),
                 "btc_dynamic": btc_dynamic.model_dump(),
                 "btc_weighted": btc_weighted.model_dump(),
+                "btc_lead_prediction": btc_lead_prediction.model_dump(),
+                "btc_maker_arbitrage": btc_maker_arbitrage.model_dump(),
                 "btc_v8": btc_v8.model_dump(),
                 "orderbook_chase": orderbook_chase.model_dump(),
                 "real_trading": real_trading.model_dump(),
@@ -542,6 +811,8 @@ class DashboardHub:
                 "btc_recovery": self.config.btc_recovery.model_dump(),
                 "btc_dynamic": self.config.btc_dynamic.model_dump(),
                 "btc_weighted": self.config.btc_weighted.model_dump(),
+                "btc_lead_prediction": self.config.btc_lead_prediction.model_dump(),
+                "btc_maker_arbitrage": self.config.btc_maker_arbitrage.model_dump(),
                 "btc_v8": self.config.btc_v8.model_dump(),
                 "orderbook_chase": self.config.orderbook_chase.model_dump(),
                 "real_trading": self.config.real_trading.model_dump(),
@@ -601,6 +872,12 @@ class DashboardHub:
         self.config.btc_weighted = type(self.config.btc_weighted).model_validate(
             self.pending_config["btc_weighted"]
         )
+        self.config.btc_lead_prediction = type(
+            self.config.btc_lead_prediction
+        ).model_validate(self.pending_config["btc_lead_prediction"])
+        self.config.btc_maker_arbitrage = type(
+            self.config.btc_maker_arbitrage
+        ).model_validate(self.pending_config["btc_maker_arbitrage"])
         self.config.btc_v8 = type(self.config.btc_v8).model_validate(
             self.pending_config["btc_v8"]
         )
@@ -624,6 +901,8 @@ class DashboardHub:
         recovery_update = payload.get("btc_recovery")
         dynamic_update = payload.get("btc_dynamic")
         weighted_update = payload.get("btc_weighted")
+        lead_update = payload.get("btc_lead_prediction")
+        maker_update = payload.get("btc_maker_arbitrage")
         v8_update = payload.get("btc_v8")
         chase_update = payload.get("orderbook_chase")
         real_update = payload.get("real_trading")
@@ -639,6 +918,10 @@ class DashboardHub:
             raise ValueError("btc_dynamic must be an object")
         if weighted_update is not None and not isinstance(weighted_update, dict):
             raise ValueError("btc_weighted must be an object")
+        if lead_update is not None and not isinstance(lead_update, dict):
+            raise ValueError("btc_lead_prediction must be an object")
+        if maker_update is not None and not isinstance(maker_update, dict):
+            raise ValueError("btc_maker_arbitrage must be an object")
         if v8_update is not None and not isinstance(v8_update, dict):
             raise ValueError("btc_v8 must be an object")
         if chase_update is not None and not isinstance(chase_update, dict):
@@ -653,13 +936,15 @@ class DashboardHub:
                 recovery_update,
                 dynamic_update,
                 weighted_update,
+                lead_update,
+                maker_update,
                 v8_update,
                 chase_update,
                 real_update,
             )
         ):
             raise ValueError(
-                "strategy, risk, pair_match, btc_recovery, btc_dynamic, btc_weighted, btc_v8, orderbook_chase, or real_trading settings are required"
+                "strategy, risk, pair_match, btc_recovery, btc_dynamic, btc_weighted, btc_lead_prediction, btc_maker_arbitrage, btc_v8, orderbook_chase, or real_trading settings are required"
             )
 
         strategy_fields = {
@@ -721,6 +1006,8 @@ class DashboardHub:
             "max_probability_correction_points",
         }
         weighted_fields = set(type(self.config.btc_weighted).model_fields)
+        lead_fields = set(type(self.config.btc_lead_prediction).model_fields)
+        maker_fields = set(type(self.config.btc_maker_arbitrage).model_fields)
         v8_fields = set(type(self.config.btc_v8).model_fields)
         chase_fields = set(type(self.config.orderbook_chase).model_fields)
         real_fields = {
@@ -738,6 +1025,8 @@ class DashboardHub:
         unexpected_recovery = set(recovery_update or {}) - recovery_fields
         unexpected_dynamic = set(dynamic_update or {}) - dynamic_fields
         unexpected_weighted = set(weighted_update or {}) - weighted_fields
+        unexpected_lead = set(lead_update or {}) - lead_fields
+        unexpected_maker = set(maker_update or {}) - maker_fields
         unexpected_v8 = set(v8_update or {}) - v8_fields
         unexpected_chase = set(chase_update or {}) - chase_fields
         unexpected_real = set(real_update or {}) - real_fields
@@ -749,6 +1038,8 @@ class DashboardHub:
                 unexpected_recovery,
                 unexpected_dynamic,
                 unexpected_weighted,
+                unexpected_lead,
+                unexpected_maker,
                 unexpected_v8,
                 unexpected_chase,
                 unexpected_real,
@@ -761,6 +1052,8 @@ class DashboardHub:
                 | unexpected_recovery
                 | unexpected_dynamic
                 | unexpected_weighted
+                | unexpected_lead
+                | unexpected_maker
                 | unexpected_v8
                 | unexpected_chase
                 | unexpected_real
@@ -786,6 +1079,17 @@ class DashboardHub:
             pending.get("btc_weighted") or self.config.btc_weighted.model_dump()
         )
         weighted_payload.update(weighted_update or {})
+        lead_payload = dict(
+            pending.get("btc_lead_prediction")
+            or self.config.btc_lead_prediction.model_dump()
+        )
+        lead_payload.update(lead_update or {})
+        maker_payload = dict(
+            pending.get("btc_maker_arbitrage")
+            or self.config.btc_maker_arbitrage.model_dump()
+        )
+        maker_payload.update(maker_update or {})
+        maker_payload["mode"] = "SHADOW_ONLY"
         v8_payload = dict(
             pending.get("btc_v8") or self.config.btc_v8.model_dump()
         )
@@ -818,6 +1122,12 @@ class DashboardHub:
         btc_recovery = type(self.config.btc_recovery).model_validate(recovery_payload)
         btc_dynamic = type(self.config.btc_dynamic).model_validate(dynamic_payload)
         btc_weighted = type(self.config.btc_weighted).model_validate(weighted_payload)
+        btc_lead_prediction = type(self.config.btc_lead_prediction).model_validate(
+            lead_payload
+        )
+        btc_maker_arbitrage = type(self.config.btc_maker_arbitrage).model_validate(
+            maker_payload
+        )
         btc_v8 = type(self.config.btc_v8).model_validate(v8_payload)
         orderbook_chase = type(self.config.orderbook_chase).model_validate(chase_payload)
         real_trading = type(self.config.real_trading).model_validate(real_payload)
@@ -828,12 +1138,15 @@ class DashboardHub:
             "btc_recovery": btc_recovery.model_dump(),
             "btc_dynamic": btc_dynamic.model_dump(),
             "btc_weighted": btc_weighted.model_dump(),
+            "btc_lead_prediction": btc_lead_prediction.model_dump(),
+            "btc_maker_arbitrage": btc_maker_arbitrage.model_dump(),
             "btc_v8": btc_v8.model_dump(),
             "orderbook_chase": orderbook_chase.model_dump(),
             "real_trading": real_trading.model_dump(),
         }
         btc_only = bool(
-            recovery_update or dynamic_update or weighted_update or v8_update or chase_update or real_update
+            recovery_update or dynamic_update or weighted_update or lead_update or maker_update
+            or v8_update or chase_update or real_update
         ) and not any(
             (strategy_update, risk_update, pair_update)
         )
@@ -901,7 +1214,10 @@ class DashboardHub:
         return self.apply_pending_config_for_market(market_ids[0] if market_ids else None)
 
     async def publish(self, snapshot: dict[str, Any]) -> None:
-        message: str
+        state_message: str | None = None
+        state_key: str | None = None
+        state_sequence: int | None = None
+        market_message: str | None = None
         event = snapshot.get("event")
         market = snapshot.get("market") or {}
         asset = str(snapshot.get("asset") or (snapshot.get("market") or {}).get("asset") or "BTC").upper()
@@ -928,6 +1244,12 @@ class DashboardHub:
             btc_weighted = snapshot.pop("btc_weighted", None)
             if isinstance(btc_weighted, dict) and btc_weighted:
                 self.btc_weighted_state = btc_weighted
+            btc_lead_prediction = snapshot.pop("btc_lead_prediction", None)
+            if isinstance(btc_lead_prediction, dict) and btc_lead_prediction:
+                self.btc_lead_prediction_state = btc_lead_prediction
+            btc_maker_arbitrage = snapshot.pop("btc_maker_arbitrage", None)
+            if isinstance(btc_maker_arbitrage, dict) and btc_maker_arbitrage:
+                self.btc_maker_arbitrage_state = btc_maker_arbitrage
             btc_v8 = snapshot.pop("btc_v8", None)
             if isinstance(btc_v8, dict) and btc_v8:
                 self.btc_v8_state = btc_v8
@@ -951,6 +1273,9 @@ class DashboardHub:
             snapshot["events"] = list(self.events_by_asset.get(asset, []))
             snapshot["ws_url"] = self.ws_url
             self.asset_snapshots[asset] = snapshot
+            event_type = event.get("type") if isinstance(event, dict) else None
+            if event_type in FAST_MARKET_EVENT_TYPES:
+                market_message = self.market_data_json(asset, snapshot)
             primary_asset = self.config.sources.enabled_assets[0]
             primary = self.asset_snapshots.get(primary_asset, snapshot)
             combined = dict(primary)
@@ -959,48 +1284,50 @@ class DashboardHub:
             combined["btc_recovery"] = self.btc_recovery_state
             combined["btc_dynamic"] = self.btc_dynamic_state
             combined["btc_weighted"] = self.btc_weighted_state
+            combined["btc_lead_prediction"] = self.btc_lead_prediction_state
+            combined["btc_maker_arbitrage"] = self.btc_maker_arbitrage_state
             combined["btc_v8"] = self.btc_v8_state
             combined["orderbook_chase"] = self.orderbook_chase_state
             combined["real_trading"] = self.real_trading_state
             combined["ws_url"] = self.ws_url
             combined["control_token"] = self.control_token
+            combined["market_data_sequence"] = self.market_data_sequence
+            combined["state_data_sequence"] = self.state_data_sequence
             combined.update(self.config_status_json())
             self.latest = combined
             now = datetime.now(timezone.utc)
-            event_type = event.get("type") if isinstance(event, dict) else None
             minimum_interval = (
                 self.push_interval
-                if event_type in {"tick", "polymarket_tick", "polymarket_twap_tick", "book", "pair_state"}
+                if event_type in FREQUENT_FULL_EVENT_TYPES
                 else None
             )
             should_push = minimum_interval is None or now - self.last_push_at >= minimum_interval
-            if not should_push:
-                return
-            self.last_push_at = now
-            message = orjson.dumps(combined).decode("utf-8")
-            clients = set(self.clients)
-        if clients:
-            results = await asyncio.gather(
-                *(
-                    asyncio.wait_for(client.send(message), timeout=DASHBOARD_SEND_TIMEOUT_SECONDS)
-                    for client in clients
-                ),
-                return_exceptions=True,
+            if should_push:
+                self.last_push_at = now
+                state_sequence, state_key, state_message = self.state_data_json(
+                    asset,
+                    snapshot,
+                    event_type,
+                )
+                combined["state_data_sequence"] = state_sequence
+        if market_message is not None:
+            self._enqueue_client_message(market_message, market_data=True)
+        if state_message is not None and state_key is not None and state_sequence is not None:
+            self._enqueue_client_state_message(
+                state_message,
+                state_key=state_key,
+                sequence=state_sequence,
             )
-            for client, result in zip(clients, results):
-                if isinstance(result, BaseException):
-                    self.clients.discard(client)
 
     async def ws_handler(self, websocket: Any) -> None:
-        self.clients.add(websocket)
         try:
             async with self.lock:
                 latest = orjson.dumps(self.latest).decode("utf-8")
-            await websocket.send(latest)
+                self._register_client(websocket, latest)
             async for _ in websocket:
                 pass
         finally:
-            self.clients.discard(websocket)
+            await self._unregister_client(websocket)
 
     def state_json(self) -> bytes:
         payload = dict(self.latest)
@@ -1052,9 +1379,19 @@ class DashboardHub:
         self.control_commands.put((f"orderbook_chase_{command}", True))
         return {"accepted": True, "command": command, "mode": "SHADOW_ONLY"}
 
+    def request_btc_maker_control(self, command: str) -> dict[str, Any]:
+        self.control_commands.put((f"btc_maker_{command}", True))
+        return {"accepted": True, "command": command, "mode": "SHADOW_ONLY"}
+
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     hub: DashboardHub
+
+    def guess_type(self, path: str) -> str:
+        content_type = super().guess_type(path)
+        if content_type.startswith("text/") and "charset=" not in content_type:
+            return f"{content_type}; charset=utf-8"
+        return content_type
 
     def send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = orjson.dumps(payload)
@@ -1091,6 +1428,17 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/btc-maker-arbitrage/"):
+            action = self.path.removeprefix("/api/btc-maker-arbitrage/")
+            allowed = {"pause", "resume", "cancel-quotes"}
+            if action not in allowed:
+                self.send_error(404)
+                return
+            self.send_json(
+                202,
+                self.hub.request_btc_maker_control(action.replace("-", "_")),
+            )
+            return
         if self.path.startswith("/api/orderbook-chase/"):
             if self.headers.get("X-Polybtc-Control-Token") != self.hub.control_token:
                 self.send_json(403, {"error": "invalid control token"})
